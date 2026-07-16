@@ -1,2 +1,11 @@
-# kaiMi-studio
-AI Powered YouTube Production Studio
+# KaiMi Studio
+
+Creative Intelligence Suite
+
+Version: 0.3.0
+
+Author:
+KaiMi
+
+Status:
+Development
