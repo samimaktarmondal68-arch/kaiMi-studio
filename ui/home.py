@@ -2,6 +2,11 @@ import customtkinter as ctk
 
 from ui.sidebar import Sidebar
 from ui.dashboard import Dashboard
+from ui.projects import ProjectsPage
+from ui.workspace import WorkspacePage
+from ui.assets import AssetsPage
+from ui.export import ExportPage
+from ui.settings_page import SettingsPage
 
 
 class HomeWindow:
@@ -21,7 +26,7 @@ class HomeWindow:
     def build_ui(self):
 
         # Sidebar
-        self.sidebar = Sidebar(self.app)
+        self.sidebar = Sidebar(self.app, self.show_page)
         self.sidebar.pack(
             side="left",
             fill="y"
@@ -40,9 +45,9 @@ class HomeWindow:
         )
 
         # Load Dashboard
-        self.show_page(Dashboard)
+        self.show_page(Dashboard, "Dashboard")
 
-    def show_page(self, page_class):
+    def show_page(self, page_class, title=None):
 
         # Remove previous page
         for widget in self.container.winfo_children():
@@ -54,6 +59,8 @@ class HomeWindow:
             fill="both",
             expand=True
         )
+
+        self.sidebar.set_active(title or page_class.__name__)
 
     def run(self):
         self.app.mainloop()

@@ -1,9 +1,7 @@
 import customtkinter as ctk
-from pathlib import Path
-from datetime import datetime
-
 from ui.dialogs import NewProjectDialog
 from core.project_manager import ProjectManager
+from core.version import VERSION
 
 
 class Dashboard(ctk.CTkFrame):
@@ -226,7 +224,7 @@ class Dashboard(ctk.CTkFrame):
             ("Storage Used", storage),
             ("Projects Folder", "projects/"),
             ("AI Status", "Ready"),
-            ("Version", "v0.1.0")
+            ("Version", f"v{VERSION}")
         ]
 
         for title, value in labels:
@@ -319,7 +317,7 @@ class Dashboard(ctk.CTkFrame):
 
         total = 0
 
-        for file in Path("projects").rglob("*"):
+        for file in self.pm.PROJECTS_DIR.rglob("*"):
 
             if file.is_file():
                 total += file.stat().st_size
@@ -345,4 +343,5 @@ class Dashboard(ctk.CTkFrame):
 
     def new_project(self):
 
-        NewProjectDialog(self)
+        dialog = NewProjectDialog(self)
+        dialog.bind("<Destroy>", lambda event: self.after(100, self.refresh_dashboard), add="+")

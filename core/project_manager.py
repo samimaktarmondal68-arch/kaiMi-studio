@@ -6,7 +6,7 @@ import shutil
 
 class ProjectManager:
 
-    PROJECTS_DIR = Path("projects")
+    PROJECTS_DIR = Path(__file__).resolve().parent.parent / "projects"
 
     def __init__(self):
         self.PROJECTS_DIR.mkdir(exist_ok=True)
@@ -27,6 +27,9 @@ class ProjectManager:
 
         if not name:
             raise ValueError("Project name cannot be empty.")
+
+        if Path(name).name != name or name in {".", ".."}:
+            raise ValueError("Project name cannot contain folder separators.")
 
         project_path = self.PROJECTS_DIR / name
 
@@ -97,8 +100,11 @@ class ProjectManager:
 
             if json_file.exists():
 
-                with open(json_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
+                try:
+                    with open(json_file, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                except (OSError, json.JSONDecodeError):
+                    continue
 
                 data["path"] = folder
 
@@ -123,7 +129,7 @@ class ProjectManager:
         projects = self.get_projects()
 
         projects.sort(
-            key=lambda x: x["created"],
+            key=lambda x: datetime.strptime(x.get("created", "01-01-1970 00:00"), "%d-%m-%Y %H:%M"),
             reverse=True
         )
 
