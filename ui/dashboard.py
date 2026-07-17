@@ -1,4 +1,5 @@
 import customtkinter as ctk
+from ui.components.stat_card import StatCard
 from ui.dialogs import NewProjectDialog
 from core.project_manager import ProjectManager
 from core.version import VERSION
@@ -168,6 +169,13 @@ class Dashboard(ctk.CTkFrame):
 
             for project in projects:
 
+                if not isinstance(project, dict):
+                    continue
+
+                project_name = project.get("name", "Untitled Project")
+                project_status = project.get("status", "Research")
+                project_created = project.get("created", "Unknown date")
+
                 item = ctk.CTkFrame(
                     recent,
                     fg_color="#2B2B2B",
@@ -182,19 +190,19 @@ class Dashboard(ctk.CTkFrame):
 
                 ctk.CTkLabel(
                     item,
-                    text=project["name"],
+                    text=project_name,
                     font=("Segoe UI", 16, "bold")
                 ).pack(anchor="w", padx=12, pady=(10, 0))
 
                 ctk.CTkLabel(
                     item,
-                    text=project["status"],
+                    text=project_status,
                     text_color="#4CAF50"
                 ).pack(anchor="w", padx=12)
 
                 ctk.CTkLabel(
                     item,
-                    text=project["created"],
+                    text=project_created,
                     text_color="gray"
                 ).pack(anchor="w", padx=12, pady=(0, 10))
 
@@ -260,54 +268,21 @@ class Dashboard(ctk.CTkFrame):
         projects = self.pm.get_project_count()
 
         stats = [
-
-            ("Projects", str(projects)),
-
-            ("Videos Created", "0"),
-
-            ("AI Status", "Ready")
-
+            ("Projects", str(projects), "📁"),
+            ("Videos Created", "0", "🎬"),
+            ("AI Status", "Ready", "🤖"),
         ]
 
-        for title, value in stats:
-
-            self.make_card(
+        for title, value, icon in stats:
+            StatCard(
                 self.stats_frame,
-                title,
-                value
+                title=title,
+                value=value,
+                icon=icon,
             ).pack(
                 side="left",
-                padx=15
+                padx=15,
             )
-
-    # ==========================================================
-    # CARD
-    # ==========================================================
-
-    def make_card(self, parent, title, value):
-
-        card = ctk.CTkFrame(
-            parent,
-            width=260,
-            height=160,
-            corner_radius=18
-        )
-
-        card.pack_propagate(False)
-
-        ctk.CTkLabel(
-            card,
-            text=title,
-            font=("Segoe UI", 18)
-        ).pack(pady=(25, 10))
-
-        ctk.CTkLabel(
-            card,
-            text=value,
-            font=("Segoe UI", 28, "bold")
-        ).pack()
-
-        return card
 
     # ==========================================================
     # STORAGE

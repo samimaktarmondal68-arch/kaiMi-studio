@@ -43,7 +43,17 @@ Verify the project compiles.
 Summarize changed files.
 
 If uncertain, preserve existing behavior rather than guessing.
+## Architecture Rules
 
+Business logic belongs in core services.
+
+UI pages should display data.
+
+UI pages should not calculate business data.
+
+Reusable logic should never be duplicated.
+
+Keep presentation separate from application logic.
 ---
 
 End of Prompt Rules.

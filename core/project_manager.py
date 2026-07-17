@@ -3,6 +3,8 @@ from datetime import datetime
 import json
 import shutil
 
+from core.workflow import build_initial_workflow_state
+
 
 class ProjectManager:
 
@@ -75,7 +77,8 @@ class ProjectManager:
             "language": language,
             "style": style,
             "created": datetime.now().strftime("%d-%m-%Y %H:%M"),
-            "status": "Research"
+            "status": "Research",
+            "workflow_state": build_initial_workflow_state(),
         }
 
         with open(project_path / "project.json", "w", encoding="utf-8") as f:

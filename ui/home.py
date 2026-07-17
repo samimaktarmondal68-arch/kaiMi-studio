@@ -20,6 +20,7 @@ class HomeWindow:
         self.app.title("KaiMi Studio")
         self.app.geometry("1500x900")
         self.app.minsize(1200, 700)
+        self.app._show_page = self.show_page
 
         self.build_ui()
 
@@ -47,13 +48,13 @@ class HomeWindow:
         # Load Dashboard
         self.show_page(Dashboard, "Dashboard")
 
-    def show_page(self, page_class, title=None):
+    def show_page(self, page_class, title=None, **kwargs):
 
         # Remove previous page
         for widget in self.container.winfo_children():
             widget.destroy()
 
-        page = page_class(self.container)
+        page = page_class(self.container, **kwargs)
 
         page.pack(
             fill="both",
