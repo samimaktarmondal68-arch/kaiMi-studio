@@ -202,6 +202,24 @@ class ProjectManager:
             return json.load(f)
 
     # ==========================================================
+    # LAST MODIFIED
+    # ==========================================================
+
+    def get_last_modified(self, project_name: str) -> str:
+        """Return a human-readable last-modified timestamp for a project folder."""
+        project_path = self.PROJECTS_DIR / project_name
+        if not project_path.exists():
+            return "Unknown"
+        try:
+            latest = max(
+                (f.stat().st_mtime for f in project_path.rglob("*") if f.is_file()),
+                default=project_path.stat().st_mtime,
+            )
+            return datetime.fromtimestamp(latest).strftime("%d-%m-%Y %H:%M")
+        except OSError:
+            return "Unknown"
+
+    # ==========================================================
     # UPDATE PROJECT
     # ==========================================================
 

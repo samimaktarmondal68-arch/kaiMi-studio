@@ -1,18 +1,20 @@
 import customtkinter as ctk
 from tkinter import messagebox
+from typing import Callable, Optional
 
 from core.project_manager import ProjectManager
 
 
 class NewProjectDialog(ctk.CTkToplevel):
 
-    def __init__(self, master):
+    def __init__(self, master, on_project_created: Optional[Callable[[str], None]] = None):
         super().__init__(master)
 
         self.manager = ProjectManager()
+        self.on_project_created = on_project_created
 
         self.title("New Project")
-        self.geometry("560x620")
+        self.geometry("560x660")
         self.resizable(False, False)
         self.configure(fg_color="#202020")
 
@@ -20,7 +22,7 @@ class NewProjectDialog(ctk.CTkToplevel):
         self.focus_set()
 
         main = ctk.CTkFrame(self, fg_color="transparent")
-        main.pack(fill="both", expand=True, padx=28, pady=24)
+        main.pack(fill="both", expand=True, padx=22, pady=20)
 
         title = ctk.CTkLabel(
             main,
@@ -35,7 +37,7 @@ class NewProjectDialog(ctk.CTkToplevel):
             font=("Segoe UI", 13),
             text_color="#B5B5B5"
         )
-        description.pack(anchor="w", pady=(6, 24))
+        description.pack(anchor="w", pady=(6, 18))
 
         form_frame = ctk.CTkFrame(main, fg_color="transparent")
         form_frame.pack(fill="both", expand=True)
@@ -137,7 +139,18 @@ class NewProjectDialog(ctk.CTkToplevel):
         self.style.pack(fill="x", pady=(6, 0))
 
         button_frame = ctk.CTkFrame(main, fg_color="transparent")
-        button_frame.pack(fill="x", pady=(20, 0))
+        button_frame.pack(fill="x", pady=(16, 0))
+
+        self.cancel_button = ctk.CTkButton(
+            button_frame,
+            text="Cancel",
+            width=120,
+            height=45,
+            fg_color="#3A3A3A",
+            hover_color="#4A4A4A",
+            command=self.destroy
+        )
+        self.cancel_button.pack(side="right", padx=(10, 0))
 
         self.create_button = ctk.CTkButton(
             button_frame,
@@ -147,6 +160,15 @@ class NewProjectDialog(ctk.CTkToplevel):
             command=self.create_project
         )
         self.create_button.pack(side="right")
+
+        self._ensure_content_fits()
+
+    def _ensure_content_fits(self):
+        self.update_idletasks()
+        required_height = self.winfo_reqheight() + 12
+        current_height = self.winfo_height()
+        if required_height > current_height:
+            self.geometry(f"560x{required_height}")
 
     # =====================================
     # Create Project
@@ -189,10 +211,8 @@ class NewProjectDialog(ctk.CTkToplevel):
 
             self.destroy()
 
-            root = self.winfo_toplevel()
-            if hasattr(root, "_show_page"):
-                from ui.workspace import WorkspacePage
-                root.after(50, lambda: root._show_page(WorkspacePage, "AI Workspace", initial_project_name=name))
+            if self.on_project_created is not None:
+                self.on_project_created(name)
 
         except Exception as e:
 

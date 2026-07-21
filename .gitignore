@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual Environment
+venv/
+.venv/
+
+# Secrets
+secrets/
+
+# Environment
+.env
+
+# Local Config
+config/provider_keys.json
+
+# IDE
+.vscode/
+# OS
+Thumbs.db
+.DS_Store

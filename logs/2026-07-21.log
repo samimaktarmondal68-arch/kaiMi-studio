@@ -1,0 +1,66 @@
+2026-07-21 17:18:59 | INFO | kaimi_studio | [Workspace] Project loaded: uhwoh
+2026-07-21 17:19:19 | INFO | kaimi_studio | [Workspace] Project loaded: experimen 1
+2026-07-21 17:24:51 | INFO | kaimi_studio | [Workspace] Project loaded: uhwoh
+2026-07-21 17:25:56 | INFO | kaimi_studio | [Workspace] Project loaded: hello
+2026-07-21 17:26:11 | INFO | kaimi_studio | [Workspace] Project loaded: experimen 1
+2026-07-21 17:26:21 | INFO | kaimi_studio | [Workspace] Project loaded: hello
+2026-07-21 17:33:29 | INFO | kaimi_studio | [Workspace] Project loaded: hbcksbjkbdkb
+2026-07-21 17:34:34 | INFO | kaimi_studio | [Workspace] Project loaded: hello
+2026-07-21 17:34:41 | INFO | kaimi_studio | [Workspace] Project loaded: experimen 1
+2026-07-21 17:38:14 | INFO | kaimi_studio | [Workspace] Project loaded: experimen 1
+2026-07-21 17:38:18 | INFO | kaimi_studio | [Workspace] Project loaded: hello
+2026-07-21 17:44:37 | INFO | kaimi_studio | [TaskManager] Task Started: Generate Research
+2026-07-21 17:44:37 | INFO | kaimi_studio | [TaskManager] Task Completed: Generate Research
+2026-07-21 17:44:37 | INFO | kaimi_studio | [Workspace] Research generation completed for project: hello
+2026-07-21 17:44:42 | INFO | kaimi_studio | [TaskManager] Task Started: Generate Research
+2026-07-21 17:44:42 | INFO | kaimi_studio | [TaskManager] Task Completed: Generate Research
+2026-07-21 17:44:42 | INFO | kaimi_studio | [Workspace] Research generation completed for project: hello
+2026-07-21 17:44:50 | INFO | kaimi_studio | [TaskManager] Task Started: Generate Research
+2026-07-21 17:44:50 | INFO | kaimi_studio | [TaskManager] Task Completed: Generate Research
+2026-07-21 17:44:50 | INFO | kaimi_studio | [Workspace] Research generation completed for project: hello
+2026-07-21 17:53:58 | INFO | kaimi_studio | [Workspace] Project loaded: I love you
+2026-07-21 17:54:28 | INFO | kaimi_studio | [TaskManager] Task Started: Generate Research
+2026-07-21 17:54:28 | INFO | kaimi_studio | [TaskManager] Task Completed: Generate Research
+2026-07-21 17:54:28 | INFO | kaimi_studio | [Workspace] Research generation completed for project: I love you
+2026-07-21 17:55:06 | INFO | kaimi_studio | [Workspace] Project loaded: experimen 1
+2026-07-21 17:55:12 | INFO | kaimi_studio | [Workspace] Project loaded: hello
+2026-07-21 18:01:30 | INFO | kaimi_studio | [Workspace] Project loaded: hello
+2026-07-21 18:03:13 | INFO | kaimi_studio | [Workspace] Project loaded: experimen 1
+2026-07-21 18:03:13 | INFO | kaimi_studio | [WorkspaceDebug] preview_research_prompt entered
+2026-07-21 18:03:13 | INFO | kaimi_studio | [WorkspaceDebug] preview inputs: current_project=experimen 1, topic='why human wear clothes', keywords='keyword1, keyword2', goal='Explain concepts clearly', sources='https://example.com'
+2026-07-21 18:03:13 | INFO | kaimi_studio | [WorkspaceDebug] preview validate_research_inputs=True
+2026-07-21 18:03:13 | INFO | kaimi_studio | [WorkspaceDebug] preview research_output_box exists=True
+2026-07-21 18:03:13 | INFO | kaimi_studio | [WorkspaceDebug] preview insert called (prompt preview)
+2026-07-21 18:03:13 | INFO | kaimi_studio | [WorkspaceDebug] save_research entered
+2026-07-21 18:03:13 | INFO | kaimi_studio | [WorkspaceDebug] save current_project=experimen 1
+2026-07-21 18:03:13 | INFO | kaimi_studio | [WorkspaceDebug] save current_project_is_none=False
+2026-07-21 18:03:13 | INFO | kaimi_studio | [WorkspaceDebug] save validate_research_inputs=True
+2026-07-21 18:03:13 | INFO | kaimi_studio | [WorkspaceDebug] save reached ResearchStorage.save()
+2026-07-21 18:03:20 | INFO | kaimi_studio | [Workspace] Project loaded: experimen 1
+2026-07-21 18:03:20 | INFO | kaimi_studio | [WorkspaceDebug] preview_research_prompt entered
+2026-07-21 18:03:20 | INFO | kaimi_studio | [WorkspaceDebug] preview inputs: current_project=experimen 1, topic='why human wear clothes', keywords='keyword1, keyword2', goal='Explain concepts clearly', sources='https://example.com'
+2026-07-21 18:03:20 | INFO | kaimi_studio | [WorkspaceDebug] preview validate_research_inputs=True
+2026-07-21 18:03:20 | INFO | kaimi_studio | [WorkspaceDebug] preview research_output_box exists=True
+2026-07-21 18:03:20 | INFO | kaimi_studio | [WorkspaceDebug] preview insert called (prompt preview)
+2026-07-21 18:04:21 | INFO | kaimi_studio | [Workspace] Project loaded: hello
+2026-07-21 18:04:38 | INFO | kaimi_studio | [TaskManager] Task Started: Generate Research
+2026-07-21 18:04:38 | INFO | kaimi_studio | [TaskManager] Task Completed: Generate Research
+2026-07-21 18:04:38 | INFO | kaimi_studio | [Workspace] Research generation completed for project: hello
+2026-07-21 18:05:23 | INFO | kaimi_studio | [Workspace] Project loaded: hello
+2026-07-21 18:05:58 | INFO | kaimi_studio | [TaskManager] Task Started: Generate Research
+2026-07-21 18:05:58 | INFO | kaimi_studio | [TaskManager] Task Completed: Generate Research
+2026-07-21 18:05:58 | INFO | kaimi_studio | [Workspace] Research generation completed for project: hello
+2026-07-21 18:10:54 | INFO | kaimi_studio | [TaskManager] Task Started: Generate Research
+2026-07-21 18:10:54 | INFO | kaimi_studio | [TaskManager] Task Completed: Generate Research
+2026-07-21 18:10:54 | INFO | kaimi_studio | [Workspace] Research generation completed for project: hello
+2026-07-21 18:16:04 | INFO | kaimi_studio | [Workspace] Project loaded: experimen 1
+2026-07-21 18:16:09 | INFO | kaimi_studio | [Workspace] Project loaded: hello
+2026-07-21 18:25:14 | INFO | kaimi_studio | [Workspace] Project loaded: experimen 1
+2026-07-21 19:40:03 | INFO | kaimi_studio | [Workspace] Project loaded: hello
+2026-07-21 19:40:45 | INFO | kaimi_studio | [Workspace] Project loaded: hello
+2026-07-21 19:40:59 | INFO | kaimi_studio | [TaskManager] Task Started: Generate Research
+2026-07-21 19:40:59 | INFO | kaimi_studio | [TaskManager] Task Completed: Generate Research
+2026-07-21 19:40:59 | INFO | kaimi_studio | [Workspace] Research generation completed for project: hello
+2026-07-21 19:51:03 | INFO | kaimi_studio | [Workspace] Project loaded: hello
+2026-07-21 19:51:55 | INFO | kaimi_studio | [Workspace] Project loaded: hello
+2026-07-21 19:55:42 | INFO | kaimi_studio | [Workspace] Project loaded: hello

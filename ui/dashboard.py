@@ -1,6 +1,7 @@
 import customtkinter as ctk
 from ui.components.stat_card import StatCard
 from ui.dialogs import NewProjectDialog
+from ui.workspace import WorkspacePage
 from core.project_manager import ProjectManager
 from core.version import VERSION
 
@@ -316,7 +317,14 @@ class Dashboard(ctk.CTkFrame):
     # NEW PROJECT
     # ==========================================================
 
+    def _handle_project_created(self, project_name: str):
+        self.refresh_dashboard()
+        self.winfo_toplevel()._show_page(
+            WorkspacePage,
+            "AI Workspace",
+            initial_project_name=project_name
+        )
+
     def new_project(self):
 
-        dialog = NewProjectDialog(self)
-        dialog.bind("<Destroy>", lambda event: self.after(100, self.refresh_dashboard), add="+")
+        NewProjectDialog(self, on_project_created=self._handle_project_created)

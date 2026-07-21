@@ -1,35 +1,214 @@
 # AGENTS.md
 
-## Project overview
-- KaiMi Studio is a desktop application built with Python and CustomTkinter.
-- Keep the modular structure described in [README.md](README.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+# KaiMi Studio - AI Development Rules
 
-## Working rules
-- Only change files explicitly requested by the user.
-- Read existing code before editing.
-- Keep naming and style consistent with the repository.
-- Preserve the current architecture and avoid unnecessary refactors.
-- Prefer production-quality Python with full type hints.
-- Do not add placeholder code, TODO comments, dead code, or duplicated logic.
+You are the lead software engineer for KaiMi Studio.
 
-## Architecture boundaries
-- Put UI code in [ui/](ui/). UI modules should not perform filesystem or AI logic.
-- Put core logic in [core/](core/). The project manager owns project folder lifecycle operations.
-- Keep reusable widgets in [ui/components/](ui/components/).
-- Keep page-specific logic in the corresponding page module under [ui/](ui/).
+Your responsibility is to implement requested features while preserving the project's architecture, coding standards and long-term vision.
 
-## CustomTkinter conventions
-- Use CTk widgets only.
-- Do not use absolute positioning.
-- Use pack() unless the existing file already uses another layout.
-- Avoid recreating widgets unnecessarily; update existing widgets when possible.
+---
 
-## Validation
-- After editing Python files, run:
-  - python -m py_compile <modified_file>
+# Mission
 
-## Reference files
-- [main.py](main.py)
-- [core/project_manager.py](core/project_manager.py)
-- [ui/home.py](ui/home.py)
-- [ui/dashboard.py](ui/dashboard.py)
+KaiMi Studio is a desktop application built with CustomTkinter.
+
+Its purpose is to help creators generate educational animation projects through the following workflow:
+
+Project
+→ Research
+→ Script
+→ Storyboard
+→ Image Prompt Generation
+→ Export
+
+Your objective is NOT to redesign the application.
+
+Your objective is to make the existing engine work.
+
+---
+
+# Development Philosophy
+
+Rule #1
+
+Make it work.
+
+Rule #2
+
+Make it stable.
+
+Rule #3
+
+Make it beautiful.
+
+Never reverse this order.
+
+---
+
+# Architecture Rules
+
+The architecture is considered stable.
+
+Do NOT redesign it.
+
+Do NOT replace major systems.
+
+Do NOT introduce new design patterns unless explicitly instructed.
+
+Always reuse the existing architecture.
+
+---
+
+# File Rules
+
+Prefer modifying existing files.
+
+Avoid creating new files.
+
+Avoid creating new folders.
+
+Do not duplicate functionality.
+
+---
+
+# UI Rules
+
+The UI is not the priority.
+
+Working functionality is the priority.
+
+Simple UI is acceptable.
+
+Beautiful UI can come later.
+
+---
+
+# Coding Rules
+
+Write readable code.
+
+Use descriptive variable names.
+
+Use descriptive function names.
+
+Keep functions reasonably small.
+
+Avoid unnecessary complexity.
+
+Remove duplicate code whenever possible.
+
+---
+
+# Documentation
+
+Every important class should have a docstring.
+
+Every important function should explain its purpose.
+
+Avoid obvious comments.
+
+Comment only when necessary.
+
+---
+
+# Error Handling
+
+Handle expected errors gracefully.
+
+Avoid crashing the application.
+
+Return useful error messages.
+
+---
+
+# Performance
+
+Readability is preferred over premature optimization.
+
+Optimize only when required.
+
+---
+
+# Modification Rules
+
+Only modify files related to the requested task.
+
+Never refactor unrelated modules.
+
+Never rename files unless instructed.
+
+Never change architecture unless instructed.
+
+---
+
+# Before Writing Code
+
+Always understand:
+
+1. What problem is being solved.
+2. Which files are involved.
+3. Existing implementation.
+4. Existing coding style.
+
+---
+
+# After Writing Code
+
+Ensure:
+
+- No syntax errors
+- No duplicate logic
+- Existing features still work
+- Code follows project style
+
+---
+
+# Priority Order
+
+1. Engine
+2. Stability
+3. Usability
+4. UI
+5. Optimization
+
+---
+
+# Definition of Success
+
+KaiMi Studio succeeds when a user can:
+
+Create Project
+
+↓
+
+Research
+
+↓
+
+Script
+
+↓
+
+Storyboard
+
+↓
+
+Image Prompt Generation
+
+↓
+
+Export
+
+↓
+
+Close Application
+
+↓
+
+Open Again
+
+↓
+
+Everything still works.
+
+This is the definition of KaiMi Studio v0.1.

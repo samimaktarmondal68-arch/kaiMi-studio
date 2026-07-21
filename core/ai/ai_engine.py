@@ -1,3 +1,5 @@
+import os
+
 from core.ai.base_provider import BaseProvider
 from core.ai.mock_provider import MockProvider
 from core.ai.gemini_provider import GeminiProvider
@@ -13,10 +15,10 @@ class AIEngine:
         if isinstance(provider, str):
             provider_name = provider.lower()
             if provider_name == "gemini":
-                return GeminiProvider()
+                return GeminiProvider() if os.getenv("GEMINI_API_KEY") else MockProvider()
             if provider_name == "mock":
                 return MockProvider()
-        return MockProvider()
+        return GeminiProvider() if os.getenv("GEMINI_API_KEY") else MockProvider()
 
     def generate(self, prompt: str) -> str:
         return self.provider.generate(prompt)

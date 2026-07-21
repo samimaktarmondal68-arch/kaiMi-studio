@@ -1,223 +1,277 @@
-# KaiMi Studio — Master Specification
+# MASTER_SPEC.md
 
-Version: 1.0
+# KaiMi Studio Master Specification
+
+Version: 0.1
+Status: Active
+
+---
+
+# Vision
+
+KaiMi Studio is an AI-powered desktop application designed to help creators produce educational and faceless animation content through a guided workflow.
+
+The software should eliminate repetitive work while keeping the creator in full control of creative decisions.
+
+KaiMi Studio is built to become a professional workflow platform, not just an AI tool.
 
 ---
 
 # Mission
 
-KaiMi Studio is an AI-powered desktop application designed to automate professional faceless YouTube production from idea to final export.
+Reduce the time required to create an animation project from several hours to a streamlined workflow while maintaining quality and consistency.
 
-The software must feel like a premium creative application similar to Notion, Arc Browser, Figma, Adobe Creative Cloud, or Cursor.
+---
 
-This is NOT a prototype.
+# Core Workflow
 
-Every release must be production quality.
+Every project follows the same pipeline:
+
+Project
+↓
+
+Research
+↓
+
+Script
+
+↓
+
+Storyboard
+
+↓
+
+Image Prompt Generation
+
+↓
+
+Export
+
+Every feature in KaiMi Studio should support this workflow.
+
+---
+
+# Core Principles
+
+1. Engine before appearance.
+
+2. Functionality before polish.
+
+3. Simplicity over complexity.
+
+4. Stability over speed.
+
+5. Modular architecture.
+
+6. AI assists creators — it does not replace them.
+
+---
+
+# Target Users
+
+Primary:
+
+- YouTube creators
+- Educational creators
+- Faceless content creators
+- Animation creators
+
+Future:
+
+- Agencies
+- Teams
+- AI content studios
+
+---
+
+# Version Roadmap
+
+## Version 0.1
+
+Goal:
+
+A complete working engine.
+
+Required:
+
+✔ Project Management
+
+✔ Research
+
+✔ Script
+
+✔ Storyboard
+
+✔ Image Prompt Generation
+
+✔ Export
+
+✔ Save / Load
+
+No UI polish required.
+
+---
+
+## Version 1.0
+
+Goal:
+
+Public Beta
+
+Focus:
+
+Improved UI
+
+Improved stability
+
+Better usability
+
+Error handling
+
+Settings
+
+Auto Save
+
+---
+
+## Version 1.1
+
+Goal:
+
+Professional Release
+
+Focus:
+
+Modern UI
+
+Animations
+
+Performance
+
+Workflow improvements
+
+Premium experience
+
+---
+
+## Version 2.0
+
+Goal:
+
+Commercial Product
+
+Possible features:
+
+Cloud Sync
+
+Multiple AI Providers
+
+Marketplace
+
+Plugin System
+
+Team Collaboration
+
+Advanced Automation
+
+Template Library
+
+Smart Workflow Assistance
 
 ---
 
 # Development Philosophy
 
-Never create placeholder code.
+KaiMi Studio should always evolve in this order:
 
-Never remove existing functionality.
+1.
 
-Never break imports.
-
-Never rewrite unrelated files.
-
-Keep the project modular.
-
-Prefer reusable components.
-
-Every release must compile successfully.
-
----
-
-# UI Philosophy
-
-Modern
-
-Minimal
-
-Premium
-
-Professional
-
-Fast
-
-Consistent
-
-The interface should feel handcrafted.
-
-Never use default CustomTkinter styling unless explicitly required.
-
----
-
-# Color System
-
-Primary Background:
-#1E1E1E
-
-Secondary Background:
-#252526
-
-Cards:
-#2D2D30
-
-Accent:
-#FF8C00
-
-Hover:
-#FFA733
-
-Text:
-White
-
-Secondary Text:
-#BBBBBB
-
-Borders:
-#3C3C3C
-
----
-
-# Typography
-
-Large headings
-
-Comfortable spacing
-
-Rounded corners
-
-Minimal shadows
-
-Professional desktop layout
-
----
-
-# Architecture
-
-HomeWindow
+Make it work.
 
 ↓
 
-Sidebar
+2.
+
+Make it reliable.
 
 ↓
 
-Pages
+3.
+
+Make it beautiful.
 
 ↓
 
-Components
+4.
+
+Make it intelligent.
+
+Never reverse this order.
+
+---
+
+# Definition of Success
+
+KaiMi Studio is considered successful when a creator can:
+
+Create Project
 
 ↓
 
-Core Services
+Research
 
 ↓
 
-Project Manager
+Write Script
 
 ↓
 
-Exports
+Create Storyboard
 
 ↓
 
-Assets
+Generate Image Prompts
+
+↓
+
+Export
+
+without unnecessary manual work.
 
 ---
 
-# Component Rules
+# Non-Goals for Version 0.1
 
-Every reusable UI element belongs in /components.
+Version 0.1 is NOT intended to include:
 
-Examples:
+Cloud Features
 
-Button
+Marketplace
 
-Card
+Collaboration
 
-Header
+Plugins
 
-Dialog
+Advanced Themes
 
-Input
+Complex Animations
 
-Stat Card
+Enterprise Features
 
-Scrollable Frame
-
-Icon Button
-
-Never duplicate component logic.
+These belong to later releases.
 
 ---
 
-# Page Rules
+# Final Rule
 
-Pages should never contain reusable UI code.
+Whenever a development decision is made, ask:
 
-Pages assemble components.
+"Does this help complete the creator's workflow?"
 
-Components provide functionality.
+If the answer is YES:
 
----
+Build it.
 
-# Navigation
+If the answer is NO:
 
-Sidebar controls navigation.
-
-Only one page visible at a time.
-
-Navigation must be dynamic.
-
----
-
-# Project Rules
-
-Projects are managed only through ProjectManager.
-
-Never manually manipulate project folders from UI pages.
-
----
-
-# Code Quality
-
-PEP8
-
-Clear method names
-
-Type hints where useful
-
-Short methods
-
-Readable classes
-
-Minimal duplication
-
----
-
-# AI Rules
-
-Before making any change:
-
-Read this document.
-
-Preserve architecture.
-
-Modify only requested files.
-
-Never reduce functionality.
-
-Return working code.
-
-Verify imports.
-
-Verify compilation.
-
----
-
-End of Specification.
+Move it to a future version.

@@ -1,0 +1,19 @@
+{
+    "name": "hello",
+    "topic": "Why do we say hello in telephone",
+    "language": "English",
+    "style": "Educational",
+    "created": "21-07-2026 17:25",
+    "status": "Research",
+    "workflow_state": {
+        "Research": "COMPLETED",
+        "Script": "AVAILABLE",
+        "Storyboard": "LOCKED",
+        "Image Prompts": "LOCKED",
+        "Images": "LOCKED",
+        "Voice Over": "LOCKED",
+        "Video Editing": "LOCKED",
+        "Thumbnail": "LOCKED",
+        "Export": "LOCKED"
+    }
+}

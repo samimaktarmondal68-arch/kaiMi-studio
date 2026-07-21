@@ -1,186 +1,293 @@
+# ARCHITECTURE.md
+
 # KaiMi Studio Architecture
 
-Version: 1.0
+Version: 0.1
 
 ---
 
-## Overview
+# Architecture Philosophy
 
 KaiMi Studio follows a modular architecture.
 
-The application separates:
+Every module has ONE responsibility.
 
-- UI
-- Components
-- Core logic
-- Project management
-- AI services
-- Assets
-- Export system
-
-No business logic should exist inside reusable UI components.
+No module should own responsibilities that belong to another module.
 
 ---
 
-# Folder Structure
+# Core Workflow
 
-kaiMi-studio/
+Project
 
-assets/
-core/
-docs/
-exports/
-projects/
-ui/
+↓
+
+Workspace
+
+↓
+
+Research
+
+↓
+
+Script
+
+↓
+
+Storyboard
+
+↓
+
+Image Prompt Generator
+
+↓
+
+Export
 
 ---
 
-# Application Flow
+# Module Responsibilities
 
-main.py
-
-↓
-
-HomeWindow
-
-↓
-
-Sidebar
-
-↓
-
-Pages
-
-↓
-
-Components
-
-↓
-
-Core Services
-
-↓
-
-ProjectManager
-
----
-
-# UI Layer
+## Project Manager
 
 Responsible for:
 
-- Window
+- Create Project
+- Open Project
+- Delete Project
+- Save Metadata
+- Load Metadata
+
+Must NOT contain UI logic.
+
+---
+
+## Workspace
+
+Responsible for:
+
+- Active Project
+- Current Session
+- Workflow State
+
+Must NOT generate content.
+
+---
+
+## Dashboard
+
+Responsible for:
+
+- Display information
+- Launch projects
+- Show recent projects
+
+Must NOT contain business logic.
+
+---
+
+## Sidebar
+
+Responsible for:
+
 - Navigation
-- Pages
-- Dialogs
-- User interaction
 
-No filesystem operations.
-
-No AI logic.
+Nothing else.
 
 ---
 
-# Components
-
-Reusable widgets.
-
-Examples:
-
-Button
-
-Card
-
-Header
-
-Input
-
-Dialog
-
-Stat Card
-
-Scrollable Frame
-
-Icon Button
-
-Pages assemble components.
-
-Components never know about pages.
-
----
-
-# Core Layer
+## Research
 
 Responsible for:
 
-ProjectManager
-
-Settings
-
-Theme
-
-Navigation
-
-Workflow
-
-Version
-
-AI Engine
-
-File Management
-
-No UI code.
+- Research data
+- Saving research
+- Loading research
 
 ---
 
-# Project Manager
+## Script
 
-Only ProjectManager may:
+Responsible for:
 
-Create projects
-
-Delete projects
-
-Rename projects
-
-Load metadata
-
-Read/write project files
-
-UI never directly edits project folders.
+- Script editing
+- Script saving
+- Script loading
 
 ---
 
-# Navigation
+## Storyboard
 
-Sidebar owns navigation.
+Responsible for:
 
-Only one page visible.
-
-Pages are dynamically loaded.
-
-Navigation should remain modular.
+- Storyboard data
+- Storyboard editing
+- Storyboard saving
 
 ---
 
-# Future Modules
+## Image Prompt Generator
 
-AI Workspace
+Responsible for:
 
-Prompt Manager
-
-Timeline
-
-Render Queue
-
-Export Queue
-
-Plugin System
-
-Updater
-
-Analytics
+- Prompt generation
+- Prompt editing
+- Prompt saving
 
 ---
 
-End of Architecture.
+## Export
+
+Responsible for:
+
+- TXT export
+- JSON export
+- Future export formats
+
+Must NEVER modify project data.
+
+---
+
+## AI Engine
+
+Responsible for:
+
+- AI Providers
+- Prompt execution
+- AI communication
+
+Must NEVER contain UI.
+
+---
+
+## Settings
+
+Responsible for:
+
+- User preferences
+- Application configuration
+- API Keys
+
+---
+
+## Logger
+
+Responsible for:
+
+- Logging
+- Debugging
+- Error reports
+
+---
+
+## Workflow Engine
+
+Responsible for:
+
+- Workflow progression
+- Module coordination
+- Navigation state
+
+---
+
+# Layer Rules
+
+UI
+
+↓
+
+Services
+
+↓
+
+Core Logic
+
+↓
+
+Data
+
+Never reverse this direction.
+
+---
+
+# Communication Rules
+
+Modules communicate through their public interfaces.
+
+Avoid direct dependencies whenever possible.
+
+Avoid circular imports.
+
+---
+
+# Data Ownership
+
+Project Manager
+
+owns
+
+Project Files
+
+Research Module
+
+owns
+
+Research Data
+
+Script Module
+
+owns
+
+Script Data
+
+Storyboard Module
+
+owns
+
+Storyboard Data
+
+Prompt Generator
+
+owns
+
+Prompt Data
+
+Export Module
+
+reads data
+
+It does NOT own data.
+
+---
+
+# Design Rules
+
+Keep modules independent.
+
+Keep files small.
+
+Avoid duplicate logic.
+
+Prefer composition over duplication.
+
+Business logic belongs outside UI.
+
+---
+
+# Future Rule
+
+New features should extend existing modules before creating new ones.
+
+Only create new modules when a completely new responsibility exists.
+
+---
+
+# Golden Rule
+
+Every file should answer one question:
+
+"What is my responsibility?"
+
+If the answer contains multiple unrelated responsibilities,
+
+the design should be reconsidered.

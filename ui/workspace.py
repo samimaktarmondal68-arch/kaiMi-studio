@@ -55,7 +55,7 @@ class WorkspacePage(ctk.CTkFrame):
         self.project_overview_modified_label: Optional[ctk.CTkLabel] = None
         self.placeholder_frame: Optional[ctk.CTkFrame] = None
         self.placeholder_label: Optional[ctk.CTkLabel] = None
-        self.research_frame: Optional[ctk.CTkScrollableFrame] = None
+        self.research_frame: Optional[ctk.CTkFrame] = None
         self.research_content: Optional[ctk.CTkFrame] = None
         self.topic_entry: Optional[ctk.CTkEntry] = None
         self.keywords_box: Optional[ctk.CTkTextbox] = None
@@ -103,7 +103,7 @@ class WorkspacePage(ctk.CTkFrame):
         self.build_top_bar()
 
         main_content = ctk.CTkFrame(self, fg_color="transparent")
-        main_content.pack(fill="both", expand=True, padx=36, pady=(0, 36))
+        main_content.pack(fill="both", expand=True, padx=24, pady=(0, 24))
 
         self.build_sidebar(main_content)
         self.build_content(main_content)
@@ -175,10 +175,10 @@ class WorkspacePage(ctk.CTkFrame):
 
     def build_top_bar(self) -> None:
         top_bar = ctk.CTkFrame(self, fg_color="#1E1E1E", corner_radius=18)
-        top_bar.pack(fill="x", padx=36, pady=(32, 20))
+        top_bar.pack(fill="x", padx=24, pady=(24, 16))
 
         left_column = ctk.CTkFrame(top_bar, fg_color="transparent")
-        left_column.pack(side="left", padx=24, pady=22, anchor="w")
+        left_column.pack(side="left", padx=20, pady=16, anchor="w")
 
         self.project_name_label = ctk.CTkLabel(
             left_column,
@@ -206,7 +206,7 @@ class WorkspacePage(ctk.CTkFrame):
         self.progress_bar.set(0.35)
 
         right_column = ctk.CTkFrame(top_bar, fg_color="transparent")
-        right_column.pack(side="right", padx=24, pady=22, anchor="e")
+        right_column.pack(side="right", padx=20, pady=16, anchor="e")
 
         names = [project["name"] for project in self.manager.get_projects()] or ["No projects available"]
         self.project_menu = ctk.CTkOptionMenu(
@@ -225,8 +225,8 @@ class WorkspacePage(ctk.CTkFrame):
         ).pack(anchor="e", pady=(8, 0))
 
     def build_sidebar(self, parent: ctk.CTkFrame) -> None:
-        sidebar = ctk.CTkFrame(parent, fg_color="#1E1E1E", width=260, corner_radius=18)
-        sidebar.pack(side="left", fill="y", padx=(0, 20))
+        sidebar = ctk.CTkFrame(parent, fg_color="#1E1E1E", width=250, corner_radius=18)
+        sidebar.pack(side="left", fill="y", padx=(0, 16))
         sidebar.pack_propagate(False)
 
         ctk.CTkLabel(
@@ -254,7 +254,7 @@ class WorkspacePage(ctk.CTkFrame):
         content_panel.pack(side="left", fill="both", expand=True)
 
         header = ctk.CTkFrame(content_panel, fg_color="transparent")
-        header.pack(fill="x", padx=24, pady=(22, 10))
+        header.pack(fill="x", padx=20, pady=(16, 8))
 
         self.current_stage_title = ctk.CTkLabel(
             header,
@@ -269,7 +269,7 @@ class WorkspacePage(ctk.CTkFrame):
             text_color="#B7B7B7",
             font=("Segoe UI", 13),
         )
-        self.current_stage_description.pack(anchor="w", padx=24, pady=(0, 16))
+        self.current_stage_description.pack(anchor="w", padx=20, pady=(0, 12))
 
         self.build_project_overview(content_panel)
         self.build_placeholder(content_panel)
@@ -286,7 +286,7 @@ class WorkspacePage(ctk.CTkFrame):
             width=180,
             height=42,
             corner_radius=12,
-        ).pack(anchor="e", padx=24, pady=(0, 22))
+        ).pack(anchor="e", padx=20, pady=(0, 16))
 
     def build_project_overview(self, parent: ctk.CTkFrame) -> None:
         self.project_overview_frame = ctk.CTkFrame(
@@ -294,7 +294,7 @@ class WorkspacePage(ctk.CTkFrame):
             fg_color="#252525",
             corner_radius=16,
         )
-        self.project_overview_frame.pack(fill="x", padx=24, pady=(0, 16))
+        self.project_overview_frame.pack(fill="x", padx=20, pady=(0, 12))
 
         overview_content = ctk.CTkFrame(self.project_overview_frame, fg_color="transparent")
         overview_content.pack(fill="x", padx=18, pady=18)
@@ -381,14 +381,14 @@ class WorkspacePage(ctk.CTkFrame):
         self.placeholder_label.pack(expand=True)
 
     def build_research_ui(self, parent: ctk.CTkFrame) -> None:
-        self.research_frame = ctk.CTkScrollableFrame(
+        self.research_frame = ctk.CTkFrame(
             parent,
             fg_color="transparent",
         )
         self.research_frame.pack_forget()
 
         self.research_content = ctk.CTkFrame(self.research_frame, fg_color="transparent")
-        self.research_content.pack(fill="both", expand=True, padx=24, pady=(0, 18))
+        self.research_content.pack(fill="both", expand=True, padx=20, pady=(0, 12))
 
         ctk.CTkLabel(
             self.research_content,
@@ -412,7 +412,7 @@ class WorkspacePage(ctk.CTkFrame):
 
         self.keywords_box = ctk.CTkTextbox(
             self.research_content,
-            height=90,
+            height=80,
             corner_radius=12,
         )
         self.keywords_box.pack(fill="x", pady=(6, 14))
@@ -425,7 +425,7 @@ class WorkspacePage(ctk.CTkFrame):
 
         self.goal_box = ctk.CTkTextbox(
             self.research_content,
-            height=90,
+            height=80,
             corner_radius=12,
         )
         self.goal_box.pack(fill="x", pady=(6, 14))
@@ -438,20 +438,41 @@ class WorkspacePage(ctk.CTkFrame):
 
         self.sources_box = ctk.CTkTextbox(
             self.research_content,
-            height=90,
+            height=80,
             corner_radius=12,
         )
         self.sources_box.pack(fill="x", pady=(6, 14))
 
+        research_actions = ctk.CTkFrame(self.research_content, fg_color="transparent")
+        research_actions.pack(fill="x", pady=(4, 16))
+
+        ctk.CTkButton(
+            research_actions,
+            text="Preview Prompt",
+            width=160,
+            height=42,
+            corner_radius=12,
+            command=self.preview_research_prompt,
+        ).pack(side="left")
+
         self.generate_button = ctk.CTkButton(
-            self.research_content,
+            research_actions,
             text="Generate Research",
             width=200,
             height=42,
             corner_radius=12,
             command=self.generate_research,
         )
-        self.generate_button.pack(anchor="w", pady=(4, 16))
+        self.generate_button.pack(side="left", padx=(10, 0))
+
+        ctk.CTkButton(
+            research_actions,
+            text="Save Research",
+            width=150,
+            height=42,
+            corner_radius=12,
+            command=self.save_research,
+        ).pack(side="left", padx=(10, 0))
 
         ctk.CTkLabel(
             self.research_content,
@@ -461,7 +482,7 @@ class WorkspacePage(ctk.CTkFrame):
 
         self.research_output_box = ctk.CTkTextbox(
             self.research_content,
-            height=220,
+            height=180,
             corner_radius=12,
         )
         self.research_output_box.pack(fill="both", expand=True, pady=(8, 0))
@@ -472,7 +493,7 @@ class WorkspacePage(ctk.CTkFrame):
         self.script_frame.pack_forget()
 
         script_content = ctk.CTkFrame(self.script_frame, fg_color="transparent")
-        script_content.pack(fill="both", expand=True, padx=24, pady=(0, 18))
+        script_content.pack(fill="both", expand=True, padx=20, pady=(0, 12))
 
         ctk.CTkLabel(
             script_content,
@@ -513,15 +534,36 @@ class WorkspacePage(ctk.CTkFrame):
         )
         self.script_tone_menu.pack(fill="x", pady=(6, 14))
 
+        script_actions = ctk.CTkFrame(script_content, fg_color="transparent")
+        script_actions.pack(fill="x", pady=(4, 16))
+
+        ctk.CTkButton(
+            script_actions,
+            text="Preview Prompt",
+            width=160,
+            height=42,
+            corner_radius=12,
+            command=self.preview_script_prompt,
+        ).pack(side="left")
+
         self.script_generate_button = ctk.CTkButton(
-            script_content,
+            script_actions,
             text="Generate Script",
             width=180,
             height=42,
             corner_radius=12,
             command=self.generate_script,
         )
-        self.script_generate_button.pack(anchor="w", pady=(4, 16))
+        self.script_generate_button.pack(side="left", padx=(10, 0))
+
+        ctk.CTkButton(
+            script_actions,
+            text="Save Script",
+            width=140,
+            height=42,
+            corner_radius=12,
+            command=self.save_script,
+        ).pack(side="left", padx=(10, 0))
 
         ctk.CTkLabel(
             script_content,
@@ -541,7 +583,7 @@ class WorkspacePage(ctk.CTkFrame):
         self.storyboard_frame.pack_forget()
 
         storyboard_content = ctk.CTkFrame(self.storyboard_frame, fg_color="transparent")
-        storyboard_content.pack(fill="both", expand=True, padx=24, pady=(0, 18))
+        storyboard_content.pack(fill="both", expand=True, padx=20, pady=(0, 12))
 
         self.storyboard_toolbar = ctk.CTkFrame(storyboard_content, fg_color="transparent")
         self.storyboard_toolbar.pack(fill="x", pady=(0, 12))
@@ -585,7 +627,7 @@ class WorkspacePage(ctk.CTkFrame):
         self.image_prompt_frame.pack_forget()
 
         prompt_content = ctk.CTkFrame(self.image_prompt_frame, fg_color="transparent")
-        prompt_content.pack(fill="both", expand=True, padx=24, pady=(0, 18))
+        prompt_content.pack(fill="both", expand=True, padx=20, pady=(0, 12))
 
         self.image_prompt_toolbar = ctk.CTkFrame(prompt_content, fg_color="transparent")
         self.image_prompt_toolbar.pack(fill="x", pady=(0, 12))
@@ -617,7 +659,7 @@ class WorkspacePage(ctk.CTkFrame):
 
     def build_task_status_ui(self, parent: ctk.CTkFrame) -> None:
         self.task_status_frame = ctk.CTkFrame(parent, fg_color="#252525", corner_radius=16)
-        self.task_status_frame.pack(fill="x", padx=24, pady=(0, 16))
+        self.task_status_frame.pack(fill="x", padx=20, pady=(0, 12))
 
         self.task_status_content = ctk.CTkFrame(self.task_status_frame, fg_color="transparent")
         self.task_status_content.pack(fill="x", padx=18, pady=16)
@@ -646,7 +688,7 @@ class WorkspacePage(ctk.CTkFrame):
         self.export_frame.pack_forget()
 
         export_content = ctk.CTkFrame(self.export_frame, fg_color="transparent")
-        export_content.pack(fill="both", expand=True, padx=24, pady=(0, 18))
+        export_content.pack(fill="both", expand=True, padx=20, pady=(0, 12))
 
         self.export_generate_button = ctk.CTkButton(
             export_content,
@@ -667,9 +709,16 @@ class WorkspacePage(ctk.CTkFrame):
             command=self.open_export_folder,
         ).pack(anchor="w", pady=(10, 0))
 
+    def _pack_stage_frame(self, frame: Optional[ctk.CTkFrame]) -> None:
+        if frame is None:
+            return
+        if self.task_status_frame is not None:
+            frame.pack(fill="both", expand=True, padx=20, pady=(0, 12), before=self.task_status_frame)
+        else:
+            frame.pack(fill="both", expand=True, padx=20, pady=(0, 12))
+
     def show_placeholder(self) -> None:
-        if self.placeholder_frame is not None:
-            self.placeholder_frame.pack(fill="both", expand=True, padx=24, pady=(0, 18))
+        self._pack_stage_frame(self.placeholder_frame)
         if self.research_frame is not None:
             self.research_frame.pack_forget()
         if self.script_frame is not None:
@@ -682,8 +731,7 @@ class WorkspacePage(ctk.CTkFrame):
             self.export_frame.pack_forget()
 
     def show_research(self) -> None:
-        if self.research_frame is not None:
-            self.research_frame.pack(fill="both", expand=True, padx=24, pady=(0, 18))
+        self._pack_stage_frame(self.research_frame)
         if self.placeholder_frame is not None:
             self.placeholder_frame.pack_forget()
         if self.script_frame is not None:
@@ -696,18 +744,20 @@ class WorkspacePage(ctk.CTkFrame):
             self.export_frame.pack_forget()
 
     def show_script(self) -> None:
-        if self.script_frame is not None:
-            self.script_frame.pack(fill="both", expand=True, padx=24, pady=(0, 18))
+        self._pack_stage_frame(self.script_frame)
         if self.placeholder_frame is not None:
             self.placeholder_frame.pack_forget()
         if self.research_frame is not None:
             self.research_frame.pack_forget()
         if self.storyboard_frame is not None:
             self.storyboard_frame.pack_forget()
+        if self.image_prompt_frame is not None:
+            self.image_prompt_frame.pack_forget()
+        if self.export_frame is not None:
+            self.export_frame.pack_forget()
 
     def show_storyboard(self) -> None:
-        if self.storyboard_frame is not None:
-            self.storyboard_frame.pack(fill="both", expand=True, padx=24, pady=(0, 18))
+        self._pack_stage_frame(self.storyboard_frame)
         if self.placeholder_frame is not None:
             self.placeholder_frame.pack_forget()
         if self.research_frame is not None:
@@ -716,10 +766,11 @@ class WorkspacePage(ctk.CTkFrame):
             self.script_frame.pack_forget()
         if self.image_prompt_frame is not None:
             self.image_prompt_frame.pack_forget()
+        if self.export_frame is not None:
+            self.export_frame.pack_forget()
 
     def show_image_prompts(self) -> None:
-        if self.image_prompt_frame is not None:
-            self.image_prompt_frame.pack(fill="both", expand=True, padx=24, pady=(0, 18))
+        self._pack_stage_frame(self.image_prompt_frame)
         if self.placeholder_frame is not None:
             self.placeholder_frame.pack_forget()
         if self.research_frame is not None:
@@ -732,8 +783,7 @@ class WorkspacePage(ctk.CTkFrame):
             self.export_frame.pack_forget()
 
     def show_export(self) -> None:
-        if self.export_frame is not None:
-            self.export_frame.pack(fill="both", expand=True, padx=24, pady=(0, 18))
+        self._pack_stage_frame(self.export_frame)
         if self.placeholder_frame is not None:
             self.placeholder_frame.pack_forget()
         if self.research_frame is not None:
@@ -757,23 +807,25 @@ class WorkspacePage(ctk.CTkFrame):
         if self.current_stage_title is not None:
             self.current_stage_title.configure(text=stage_name)
         if self.current_stage_description is not None:
-            self.current_stage_description.configure(text="No content has been created yet.")
+            if stage_name == "Research":
+                self.current_stage_description.configure(text="Define your research inputs and generate content.")
+            else:
+                self.current_stage_description.configure(text="No content has been created yet.")
         if self.placeholder_label is not None:
             self.placeholder_label.configure(text=f"{stage_name}\n\nNo content has been created yet.")
 
-        if self.placeholder_frame is not None and self.research_frame is not None and self.script_frame is not None:
-            if stage_name == "Research":
-                self.show_research()
-            elif stage_name == "Script":
-                self.show_script()
-            elif stage_name == "Storyboard":
-                self.show_storyboard()
-            elif stage_name == "Image Prompts":
-                self.show_image_prompts()
-            elif stage_name == "Export":
-                self.show_export()
-            else:
-                self.show_placeholder()
+        if stage_name == "Research":
+            self.show_research()
+        elif stage_name == "Script":
+            self.show_script()
+        elif stage_name == "Storyboard":
+            self.show_storyboard()
+        elif stage_name == "Image Prompts":
+            self.show_image_prompts()
+        elif stage_name == "Export":
+            self.show_export()
+        else:
+            self.show_placeholder()
 
     def load_project(self, name: Optional[str]) -> None:
         self.selected_name = name if name not in (None, "No projects available") else None
@@ -832,6 +884,12 @@ class WorkspacePage(ctk.CTkFrame):
                 )
 
             script_data = self.script_storage.load(self.selected_name)
+            if self.script_style_menu is not None:
+                self.script_style_menu.set(script_data.get("style", "Educational"))
+            if self.script_length_menu is not None:
+                self.script_length_menu.set(script_data.get("length", "Medium"))
+            if self.script_tone_menu is not None:
+                self.script_tone_menu.set(script_data.get("tone", "Friendly"))
             if self.script_output_box is not None:
                 self.script_output_box.delete("0.0", "end")
                 self.script_output_box.insert("0.0", script_data.get("script_output", ""))
@@ -873,6 +931,47 @@ class WorkspacePage(ctk.CTkFrame):
             "sources": sources,
         }
 
+    def preview_research_prompt(self) -> None:
+        inputs = self.collect_research_inputs()
+        is_valid = self.validate_research_inputs(inputs)
+        if not is_valid:
+            if self.research_output_box is not None:
+                self.research_output_box.delete("1.0", "end")
+                self.research_output_box.insert("1.0", "Topic must not be empty.")
+            return
+
+        prompt_preview = self.build_research_prompt(inputs)
+        if self.research_output_box is not None:
+            self.research_output_box.delete("1.0", "end")
+            self.research_output_box.insert("1.0", prompt_preview)
+
+    def save_research(self) -> None:
+        if self.selected_name is None:
+            return
+
+        inputs = self.collect_research_inputs()
+        is_valid = self.validate_research_inputs(inputs)
+        if not is_valid:
+            if self.research_output_box is not None:
+                self.research_output_box.delete("0.0", "end")
+                self.research_output_box.insert("0.0", "Topic must not be empty.")
+            return
+
+        prompt_preview = self.build_research_prompt(inputs)
+        generated_research = ""
+        if self.research_output_box is not None:
+            generated_research = self.research_output_box.get("0.0", "end").strip()
+
+        self.research_storage.save(
+            project_name=self.selected_name,
+            topic=inputs.get("topic", ""),
+            keywords=inputs.get("keywords", ""),
+            goal=inputs.get("goal", ""),
+            sources=inputs.get("sources", ""),
+            prompt_preview=prompt_preview,
+            generated_research=generated_research,
+        )
+
     def validate_research_inputs(self, inputs: dict[str, str]) -> bool:
         return bool(inputs.get("topic", ""))
 
@@ -882,6 +981,68 @@ class WorkspacePage(ctk.CTkFrame):
             keywords=inputs.get("keywords", ""),
             goal=inputs.get("goal", ""),
             sources=inputs.get("sources", ""),
+        )
+
+    def collect_script_inputs(self) -> dict[str, str]:
+        return {
+            "style": self.script_style_menu.get() if self.script_style_menu is not None else "Educational",
+            "length": self.script_length_menu.get() if self.script_length_menu is not None else "Medium",
+            "tone": self.script_tone_menu.get() if self.script_tone_menu is not None else "Friendly",
+        }
+
+    def build_script_prompt(self, inputs: dict[str, str]) -> str:
+        if self.selected_name is None:
+            return ""
+
+        ai_engine = getattr(self.script_service, "ai_engine", None)
+        if ai_engine is None or not hasattr(ai_engine, "generate"):
+            return ""
+
+        captured: dict[str, str] = {"prompt": ""}
+        original_generate = ai_engine.generate
+
+        def capture_prompt(prompt: str) -> str:
+            captured["prompt"] = prompt
+            return prompt
+
+        ai_engine.generate = capture_prompt
+        try:
+            self.script_service.generate(
+                project_name=self.selected_name,
+                style=inputs.get("style", "Educational"),
+                length=inputs.get("length", "Medium"),
+                tone=inputs.get("tone", "Friendly"),
+            )
+        finally:
+            ai_engine.generate = original_generate
+
+        return captured["prompt"]
+
+    def preview_script_prompt(self) -> None:
+        if self.selected_name is None:
+            return
+
+        inputs = self.collect_script_inputs()
+        prompt_preview = self.build_script_prompt(inputs)
+        if self.script_output_box is not None:
+            self.script_output_box.delete("1.0", "end")
+            self.script_output_box.insert("1.0", prompt_preview)
+
+    def save_script(self) -> None:
+        if self.selected_name is None:
+            return
+
+        inputs = self.collect_script_inputs()
+        script_output = ""
+        if self.script_output_box is not None:
+            script_output = self.script_output_box.get("1.0", "end").strip()
+
+        self.script_storage.save(
+            project_name=self.selected_name,
+            style=inputs.get("style", "Educational"),
+            length=inputs.get("length", "Medium"),
+            tone=inputs.get("tone", "Friendly"),
+            script_output=script_output,
         )
 
     def toggle_task_controls(self, running: bool) -> None:
@@ -989,9 +1150,10 @@ class WorkspacePage(ctk.CTkFrame):
         if self.selected_name is None:
             return
 
-        style = self.script_style_menu.get() if self.script_style_menu is not None else "Educational"
-        length = self.script_length_menu.get() if self.script_length_menu is not None else "Medium"
-        tone = self.script_tone_menu.get() if self.script_tone_menu is not None else "Friendly"
+        script_inputs = self.collect_script_inputs()
+        style = script_inputs.get("style", "Educational")
+        length = script_inputs.get("length", "Medium")
+        tone = script_inputs.get("tone", "Friendly")
 
         self.schedule_ui_update(self.toggle_task_controls, True)
         self.schedule_ui_update(self.update_task_status, "Generating script...", 0.1)
