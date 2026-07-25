@@ -5,14 +5,23 @@ from typing import Optional
 import customtkinter as ctk
 
 from core.project_manager import ProjectManager
-from core.research_service import ResearchService
+from operators.research.operator import ResearchOperator
+from operators.research.prompt_builder import ResearchRequest
 from core.research_storage import ResearchStorage
 from core.script_service import ScriptService
+from operators.script.operator import ScriptOperator
+from operators.script.models import ScriptRequest
 from core.script_storage import ScriptStorage
 from core.storyboard_service import StoryboardService
 from core.storyboard_storage import StoryboardStorage
+from operators.storyboard.operator import StoryboardOperator
+from operators.storyboard.models import StoryboardRequest, StoryboardParseError
+from operators.storyboard.parser import StoryboardParser
 from core.image_prompt_service import ImagePromptService
 from core.image_prompt_storage import ImagePromptStorage
+from operators.image_prompt.operator import ImagePromptOperator
+from operators.image_prompt.models import ImagePromptRequest, ImagePromptParseError
+from operators.image_prompt.parser import ImagePromptParser
 from core.export_service import ExportService
 from core.logger import get_logger
 from core.task_manager import TaskManager
@@ -55,20 +64,25 @@ class WorkspacePage(ctk.CTkFrame):
         self.project_overview_modified_label: Optional[ctk.CTkLabel] = None
         self.placeholder_frame: Optional[ctk.CTkFrame] = None
         self.placeholder_label: Optional[ctk.CTkLabel] = None
-        self.research_frame: Optional[ctk.CTkFrame] = None
+        self.research_frame: Optional[ctk.CTkScrollableFrame] = None
         self.research_content: Optional[ctk.CTkFrame] = None
         self.topic_entry: Optional[ctk.CTkEntry] = None
         self.keywords_box: Optional[ctk.CTkTextbox] = None
         self.goal_box: Optional[ctk.CTkTextbox] = None
         self.sources_box: Optional[ctk.CTkTextbox] = None
         self.research_output_box: Optional[ctk.CTkTextbox] = None
-        self.research_service = ResearchService()
+        self.research_operator = ResearchOperator()
         self.research_storage = ResearchStorage()
         self.script_service = ScriptService()
+        self.script_operator = ScriptOperator()
         self.script_storage = ScriptStorage()
         self.storyboard_service = StoryboardService()
+        self.storyboard_operator = StoryboardOperator()
+        self.storyboard_parser = StoryboardParser()
         self.storyboard_storage = StoryboardStorage()
         self.image_prompt_service = ImagePromptService()
+        self.image_prompt_operator = ImagePromptOperator()
+        self.image_prompt_parser = ImagePromptParser()
         self.image_prompt_storage = ImagePromptStorage()
         self.export_service = ExportService()
         self.task_manager = TaskManager()
@@ -381,7 +395,7 @@ class WorkspacePage(ctk.CTkFrame):
         self.placeholder_label.pack(expand=True)
 
     def build_research_ui(self, parent: ctk.CTkFrame) -> None:
-        self.research_frame = ctk.CTkFrame(
+        self.research_frame = ctk.CTkScrollableFrame(
             parent,
             fg_color="transparent",
         )
@@ -976,12 +990,13 @@ class WorkspacePage(ctk.CTkFrame):
         return bool(inputs.get("topic", ""))
 
     def build_research_prompt(self, inputs: dict[str, str]) -> str:
-        return self.research_service.preview(
+        request = ResearchRequest(
             topic=inputs.get("topic", ""),
             keywords=inputs.get("keywords", ""),
             goal=inputs.get("goal", ""),
             sources=inputs.get("sources", ""),
         )
+        return self.research_operator.get_prompt_preview(request)
 
     def collect_script_inputs(self) -> dict[str, str]:
         return {
@@ -994,29 +1009,16 @@ class WorkspacePage(ctk.CTkFrame):
         if self.selected_name is None:
             return ""
 
-        ai_engine = getattr(self.script_service, "ai_engine", None)
-        if ai_engine is None or not hasattr(ai_engine, "generate"):
-            return ""
-
-        captured: dict[str, str] = {"prompt": ""}
-        original_generate = ai_engine.generate
-
-        def capture_prompt(prompt: str) -> str:
-            captured["prompt"] = prompt
-            return prompt
-
-        ai_engine.generate = capture_prompt
-        try:
-            self.script_service.generate(
-                project_name=self.selected_name,
-                style=inputs.get("style", "Educational"),
-                length=inputs.get("length", "Medium"),
-                tone=inputs.get("tone", "Friendly"),
-            )
-        finally:
-            ai_engine.generate = original_generate
-
-        return captured["prompt"]
+        research_data = self.research_storage.load(self.selected_name)
+        request = ScriptRequest(
+            topic=research_data.get("topic", ""),
+            style=inputs.get("style", "Educational"),
+            length=inputs.get("length", "Medium"),
+            tone=inputs.get("tone", "Friendly"),
+            keywords=research_data.get("keywords", ""),
+            goal=research_data.get("goal", ""),
+        )
+        return self.script_operator.get_prompt_preview(request)
 
     def preview_script_prompt(self) -> None:
         if self.selected_name is None:
@@ -1096,16 +1098,17 @@ class WorkspacePage(ctk.CTkFrame):
         self.schedule_ui_update(self.toggle_task_controls, True)
         self.schedule_ui_update(self.update_task_status, "Generating research...", 0.1)
 
-        def run_task(task_manager: TaskManager) -> str:
+        def run_task(task_manager: TaskManager) -> tuple[str, str]:
             task_manager.update_progress(0.2, "Preparing research request...")
-            prompt = self.build_research_prompt(inputs)
-            task_manager.update_progress(0.6, "Generating research content...")
-            generated_research = self.research_service.generate(
+            request = ResearchRequest(
                 topic=inputs.get("topic", ""),
                 keywords=inputs.get("keywords", ""),
                 goal=inputs.get("goal", ""),
                 sources=inputs.get("sources", ""),
             )
+            prompt = self.research_operator.get_prompt_preview(request)
+            task_manager.update_progress(0.6, "Generating research content...")
+            generated_research = self.research_operator.execute(request)
             if task_manager.check_cancelled():
                 raise RuntimeError("Task was cancelled.")
             task_manager.update_progress(0.95, "Saving research output...")
@@ -1159,13 +1162,19 @@ class WorkspacePage(ctk.CTkFrame):
         self.schedule_ui_update(self.update_task_status, "Generating script...", 0.1)
 
         def run_task(task_manager: TaskManager) -> str:
+            task_manager.update_progress(0.15, "Loading research data...")
+            research_data = self.research_storage.load(self.selected_name)
             task_manager.update_progress(0.25, "Preparing script request...")
-            generated_script = self.script_service.generate(
-                project_name=self.selected_name,
+            request = ScriptRequest(
+                topic=research_data.get("topic", ""),
                 style=style,
                 length=length,
                 tone=tone,
+                keywords=research_data.get("keywords", ""),
+                goal=research_data.get("goal", ""),
             )
+            task_manager.update_progress(0.4, "Generating script...")
+            generated_script = self.script_operator.execute(request)
             if task_manager.check_cancelled():
                 raise RuntimeError("Task was cancelled.")
             task_manager.update_progress(0.95, "Saving script output...")
@@ -1288,11 +1297,23 @@ class WorkspacePage(ctk.CTkFrame):
         self.schedule_ui_update(self.update_task_status, "Generating storyboard...", 0.1)
 
         def run_task(task_manager: TaskManager) -> list[dict]:
-            task_manager.update_progress(0.25, "Preparing storyboard request...")
+            task_manager.update_progress(0.15, "Loading script data...")
             script_data = self.script_storage.load(self.selected_name)
-            scenes = self.storyboard_service.generate(script_data)
+            task_manager.update_progress(0.25, "Preparing storyboard request...")
+            script_text = (script_data.get("script_output") or "").strip()
+            topic = script_text.splitlines()[0].replace("Title:", "").strip() if script_text else ""
+            length = (script_data.get("length") or "Medium").strip()
+            request = StoryboardRequest(
+                script_text=script_text,
+                topic=topic,
+                length=length,
+            )
+            task_manager.update_progress(0.4, "Generating storyboard...")
+            raw_response = self.storyboard_operator.execute(request)
             if task_manager.check_cancelled():
                 raise RuntimeError("Task was cancelled.")
+            task_manager.update_progress(0.85, "Parsing storyboard scenes...")
+            scenes = self.storyboard_parser.parse(raw_response)
             task_manager.update_progress(0.95, "Saving storyboard scenes...")
             return scenes
 
@@ -1405,11 +1426,25 @@ class WorkspacePage(ctk.CTkFrame):
         self.schedule_ui_update(self.update_task_status, "Generating image prompts...", 0.1)
 
         def run_task(task_manager: TaskManager) -> list[dict]:
-            task_manager.update_progress(0.25, "Preparing prompt generation...")
+            task_manager.update_progress(0.15, "Loading storyboard data...")
             storyboard_data = self.storyboard_storage.load(self.selected_name)
-            prompts = self.image_prompt_service.generate(storyboard_data)
+            task_manager.update_progress(0.25, "Preparing prompt generation...")
+            scenes = storyboard_data.get("scenes", []) if isinstance(storyboard_data, dict) else []
+            storyboard_text = "\n\n".join(
+                f"Scene {s.get('scene_number', i+1)}: {s.get('narration', '')}"
+                for i, s in enumerate(scenes)
+            )
+            topic = scenes[0].get("narration", "") if scenes else ""
+            request = ImagePromptRequest(
+                storyboard_text=storyboard_text,
+                topic=topic,
+            )
+            task_manager.update_progress(0.4, "Generating image prompts...")
+            raw_response = self.image_prompt_operator.execute(request)
             if task_manager.check_cancelled():
                 raise RuntimeError("Task was cancelled.")
+            task_manager.update_progress(0.85, "Parsing image prompts...")
+            prompts = self.image_prompt_parser.parse(raw_response)
             task_manager.update_progress(0.95, "Saving prompts...")
             return prompts
 

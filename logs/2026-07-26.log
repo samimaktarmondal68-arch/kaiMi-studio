@@ -1,0 +1,6 @@
+2026-07-26 00:35:46 | INFO | kaimi_studio | [Workspace] Project loaded: HI
+2026-07-26 00:37:24 | INFO | kaimi_studio | [TaskManager] Task Started: Generate Research
+2026-07-26 00:37:25 | ERROR | kaimi_studio | [TaskManager] Task Failed: Generate Research | exception=ProviderConfigurationError("Provider 'Gemini' is not configured. Please set a valid API key in Settings.")
+2026-07-26 00:37:27 | INFO | kaimi_studio | [TaskManager] Task Started: Generate Research
+2026-07-26 00:37:27 | ERROR | kaimi_studio | [TaskManager] Task Failed: Generate Research | exception=ProviderConfigurationError("Provider 'Gemini' is not configured. Please set a valid API key in Settings.")
+2026-07-26 03:12:55 | INFO | kaimi_studio | [Workspace] Project loaded: HI
