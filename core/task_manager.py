@@ -21,26 +21,13 @@ class TaskManager:
         self._status_message: Optional[str] = None
 
     @property
-    def is_running(self) -> bool:
-        return self._is_running
-
-    @property
-    def current_task_name(self) -> Optional[str]:
-        return self._current_task_name
-
-    @property
     def progress(self) -> float:
         return self._progress
-
-    @property
-    def status_message(self) -> Optional[str]:
-        return self._status_message
 
     def run_task(
         self,
         task_name: str,
         task_func: Callable[["TaskManager"], object],
-        on_progress: Optional[Callable[[float, str], None]] = None,
         on_complete: Optional[Callable[[object], None]] = None,
         on_error: Optional[Callable[[Exception], None]] = None,
     ) -> bool:
@@ -56,7 +43,7 @@ class TaskManager:
         self.logger.info("TaskManager", f"Task Started: {task_name}")
         self._thread = threading.Thread(
             target=self._execute,
-            args=(task_func, on_progress, on_complete, on_error, task_name),
+            args=(task_func, on_complete, on_error, task_name),
             daemon=True,
         )
         self._thread.start()
@@ -65,7 +52,6 @@ class TaskManager:
     def _execute(
         self,
         task_func: Callable[["TaskManager"], object],
-        on_progress: Optional[Callable[[float, str], None]],
         on_complete: Optional[Callable[[object], None]],
         on_error: Optional[Callable[[Exception], None]],
         task_name: str,

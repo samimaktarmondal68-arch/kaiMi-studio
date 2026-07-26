@@ -153,41 +153,6 @@ class ProjectManager:
         return False
 
     # ==========================================================
-    # RENAME PROJECT
-    # ==========================================================
-
-    def rename_project(
-        self,
-        old_name,
-        new_name
-    ):
-
-        old_path = self.PROJECTS_DIR / old_name
-        new_path = self.PROJECTS_DIR / new_name
-
-        if not old_path.exists():
-            return False
-
-        if new_path.exists():
-            return False
-
-        old_path.rename(new_path)
-
-        json_file = new_path / "project.json"
-
-        if json_file.exists():
-
-            with open(json_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-
-            data["name"] = new_name
-
-            with open(json_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=4)
-
-        return True
-
-    # ==========================================================
     # LOAD SINGLE PROJECT
     # ==========================================================
 

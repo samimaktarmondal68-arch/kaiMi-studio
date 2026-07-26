@@ -2,11 +2,6 @@ import customtkinter as ctk
 
 from ui.sidebar import Sidebar
 from ui.dashboard import Dashboard
-from ui.projects import ProjectsPage
-from ui.workspace import WorkspacePage
-from ui.assets import AssetsPage
-from ui.export import ExportPage
-from ui.settings_page import SettingsPage
 
 
 class HomeWindow:

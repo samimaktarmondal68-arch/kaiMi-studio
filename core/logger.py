@@ -55,9 +55,6 @@ class AppLogger:
     def error(self, component: str, message: str, exc: Optional[BaseException] = None) -> None:
         self._log(logging.ERROR, component, message, exc)
 
-    def exception(self, component: str, message: str, exc: Optional[BaseException] = None) -> None:
-        self._log(logging.ERROR, component, message, exc)
-
 
 def get_logger() -> AppLogger:
     return AppLogger()

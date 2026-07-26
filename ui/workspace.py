@@ -8,24 +8,21 @@ from core.project_manager import ProjectManager
 from operators.research.operator import ResearchOperator
 from operators.research.prompt_builder import ResearchRequest
 from core.research_storage import ResearchStorage
-from core.script_service import ScriptService
 from operators.script.operator import ScriptOperator
 from operators.script.models import ScriptRequest
 from core.script_storage import ScriptStorage
-from core.storyboard_service import StoryboardService
 from core.storyboard_storage import StoryboardStorage
 from operators.storyboard.operator import StoryboardOperator
-from operators.storyboard.models import StoryboardRequest, StoryboardParseError
+from operators.storyboard.models import StoryboardRequest
 from operators.storyboard.parser import StoryboardParser
-from core.image_prompt_service import ImagePromptService
 from core.image_prompt_storage import ImagePromptStorage
 from operators.image_prompt.operator import ImagePromptOperator
-from operators.image_prompt.models import ImagePromptRequest, ImagePromptParseError
+from operators.image_prompt.models import ImagePromptRequest
 from operators.image_prompt.parser import ImagePromptParser
 from core.export_service import ExportService
 from core.logger import get_logger
-from core.task_manager import TaskManager
-from core.workflow import advance_workflow_state, normalize_workflow_state
+from core.task_manager import TaskCancelledError, TaskManager
+from core.workflow import advance_workflow_state, build_initial_workflow_state, normalize_workflow_state
 
 
 class WorkspacePage(ctk.CTkFrame):
@@ -73,14 +70,11 @@ class WorkspacePage(ctk.CTkFrame):
         self.research_output_box: Optional[ctk.CTkTextbox] = None
         self.research_operator = ResearchOperator()
         self.research_storage = ResearchStorage()
-        self.script_service = ScriptService()
         self.script_operator = ScriptOperator()
         self.script_storage = ScriptStorage()
-        self.storyboard_service = StoryboardService()
         self.storyboard_operator = StoryboardOperator()
         self.storyboard_parser = StoryboardParser()
         self.storyboard_storage = StoryboardStorage()
-        self.image_prompt_service = ImagePromptService()
         self.image_prompt_operator = ImagePromptOperator()
         self.image_prompt_parser = ImagePromptParser()
         self.image_prompt_storage = ImagePromptStorage()
@@ -132,12 +126,9 @@ class WorkspacePage(ctk.CTkFrame):
 
         self.select_stage(self.selected_stage)
 
-    def get_default_workflow_state(self) -> dict[str, str]:
-        return {stage: "AVAILABLE" if stage == "Research" else "LOCKED" for stage in self.stages}
-
     def get_project_workflow_state(self, project_name: Optional[str]) -> dict[str, str]:
         if not project_name:
-            return self.get_default_workflow_state()
+            return build_initial_workflow_state()
 
         project_data = self.manager.load_project(project_name) or {}
         workflow_state = normalize_workflow_state(project_data.get("workflow_state"))
@@ -1110,7 +1101,7 @@ class WorkspacePage(ctk.CTkFrame):
             task_manager.update_progress(0.6, "Generating research content...")
             generated_research = self.research_operator.execute(request)
             if task_manager.check_cancelled():
-                raise RuntimeError("Task was cancelled.")
+                raise TaskCancelledError("Task was cancelled.")
             task_manager.update_progress(0.95, "Saving research output...")
             return generated_research, prompt
 
@@ -1176,7 +1167,7 @@ class WorkspacePage(ctk.CTkFrame):
             task_manager.update_progress(0.4, "Generating script...")
             generated_script = self.script_operator.execute(request)
             if task_manager.check_cancelled():
-                raise RuntimeError("Task was cancelled.")
+                raise TaskCancelledError("Task was cancelled.")
             task_manager.update_progress(0.95, "Saving script output...")
             return generated_script
 
@@ -1311,7 +1302,7 @@ class WorkspacePage(ctk.CTkFrame):
             task_manager.update_progress(0.4, "Generating storyboard...")
             raw_response = self.storyboard_operator.execute(request)
             if task_manager.check_cancelled():
-                raise RuntimeError("Task was cancelled.")
+                raise TaskCancelledError("Task was cancelled.")
             task_manager.update_progress(0.85, "Parsing storyboard scenes...")
             scenes = self.storyboard_parser.parse(raw_response)
             task_manager.update_progress(0.95, "Saving storyboard scenes...")
@@ -1442,7 +1433,7 @@ class WorkspacePage(ctk.CTkFrame):
             task_manager.update_progress(0.4, "Generating image prompts...")
             raw_response = self.image_prompt_operator.execute(request)
             if task_manager.check_cancelled():
-                raise RuntimeError("Task was cancelled.")
+                raise TaskCancelledError("Task was cancelled.")
             task_manager.update_progress(0.85, "Parsing image prompts...")
             prompts = self.image_prompt_parser.parse(raw_response)
             task_manager.update_progress(0.95, "Saving prompts...")
@@ -1509,7 +1500,7 @@ class WorkspacePage(ctk.CTkFrame):
             task_manager.update_progress(0.4, "Preparing export package...")
             export_dir = self.export_service.export_project(project_data)
             if task_manager.check_cancelled():
-                raise RuntimeError("Task was cancelled.")
+                raise TaskCancelledError("Task was cancelled.")
             task_manager.update_progress(0.95, "Finishing export...")
             return export_dir
 
@@ -1542,8 +1533,3 @@ class WorkspacePage(ctk.CTkFrame):
         export_dir.mkdir(parents=True, exist_ok=True)
         if hasattr(os, "startfile"):
             os.startfile(str(export_dir))
-
-    def save(self) -> None:
-        if self.selected_name:
-            path = self.manager.PROJECTS_DIR / self.selected_name / "script.md"
-            path.write_text("", encoding="utf-8")
