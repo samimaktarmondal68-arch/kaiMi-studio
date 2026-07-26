@@ -19,7 +19,8 @@ class GeminiProvider(BaseProvider):
             from google import genai
         except ImportError as exc:
             raise RuntimeError(
-                "The 'google-genai' package is required to use GeminiProvider."
+                "Gemini SDK is not installed.\n\n"
+                "Run:\n\npip install google-genai"
             ) from exc
 
         try:
