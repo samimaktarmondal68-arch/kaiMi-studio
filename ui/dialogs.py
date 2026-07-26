@@ -1,222 +1,116 @@
+"""First-run welcome dialog for KaiMi Studio.
+
+Shows on first launch to guide new users through the application.
+"""
+
 import customtkinter as ctk
-from tkinter import messagebox
-from typing import Callable, Optional
 
-from core.project_manager import ProjectManager
+from core.theme import Dark, Fonts, Radius, Spacing
+from core.version import APP_NAME, VERSION, CODENAME
 
 
-class NewProjectDialog(ctk.CTkToplevel):
+class FirstRunDialog(ctk.CTkToplevel):
 
-    def __init__(self, master, on_project_created: Optional[Callable[[str], None]] = None):
+    def __init__(self, master, on_close=None):
         super().__init__(master)
 
-        self.manager = ProjectManager()
-        self.on_project_created = on_project_created
-
-        self.title("New Project")
-        self.geometry("560x660")
+        self.title(f"Welcome to {APP_NAME}")
+        self.geometry("520x580")
         self.resizable(False, False)
-        self.configure(fg_color="#202020")
-
+        self.configure(fg_color=Dark.BG)
         self.grab_set()
-        self.focus_set()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        main = ctk.CTkFrame(self, fg_color="transparent")
-        main.pack(fill="both", expand=True, padx=22, pady=20)
+        self._on_close = on_close
+        self._build()
 
-        title = ctk.CTkLabel(
-            main,
-            text="Create New Project",
-            font=("Segoe UI", 28, "bold")
+    def _build(self):
+        scroll = ctk.CTkScrollableFrame(
+            self, fg_color=Dark.BG,
+            scrollbar_button_color=Dark.BORDER,
+            scrollbar_button_hover_color=Dark.TEXT_MUTED,
         )
-        title.pack(anchor="w")
+        scroll.pack(fill="both", expand=True)
 
-        description = ctk.CTkLabel(
-            main,
-            text="Create a new AI video production project.",
-            font=("Segoe UI", 13),
-            text_color="#B5B5B5"
-        )
-        description.pack(anchor="w", pady=(6, 18))
-
-        form_frame = ctk.CTkFrame(main, fg_color="transparent")
-        form_frame.pack(fill="both", expand=True)
-
-        info_section = ctk.CTkFrame(
-            form_frame,
-            fg_color="#2A2A2A",
-            corner_radius=16
-        )
-        info_section.pack(fill="x", pady=(0, 16))
+        # Header
+        ctk.CTkLabel(
+            scroll, text=f"Welcome to {APP_NAME}",
+            font=Fonts.HEADING, text_color=Dark.PRIMARY,
+        ).pack(padx=Spacing.X8, pady=(Spacing.X8, Spacing.X2))
 
         ctk.CTkLabel(
-            info_section,
-            text="Project Information",
-            font=("Segoe UI", 17, "bold")
-        ).pack(anchor="w", padx=18, pady=(18, 10))
+            scroll, text=f"v{VERSION} \u2014 {CODENAME}",
+            font=Fonts.BODY, text_color=Dark.TEXT_SECONDARY,
+        ).pack(padx=Spacing.X8, pady=(0, Spacing.X6))
 
-        info_content = ctk.CTkFrame(info_section, fg_color="transparent")
-        info_content.pack(fill="x", padx=18, pady=(0, 16))
+        # Steps
+        steps = [
+            ("\U0001F3E0", "Create a Project", "Start from the Dashboard. Give your project a name, topic, and language."),
+            ("\U0001F50D", "Select a Provider", "Go to Provider Settings and configure your AI provider (Gemini, OpenAI, etc.)."),
+            ("\U0001F9E0", "Generate Research", "Open your project and let AI research your topic automatically."),
+            ("\U0001F4DD", "Write the Script", "The AI will create a structured script based on the research."),
+            ("\U0001F3AC", "Build Storyboard", "Generate scene-by-scene visual breakdowns."),
+            ("\U0001F5BC\uFE0F", "Create Image Prompts", "Get detailed prompts for each scene illustration."),
+            ("\U0001F4E4", "Export", "Download your completed project as TXT, PDF, DOCX, or ZIP."),
+        ]
 
-        ctk.CTkLabel(
-            info_content,
-            text="Project Name",
-            font=("Segoe UI", 13, "bold")
-        ).pack(anchor="w")
-
-        self.name = ctk.CTkEntry(
-            info_content,
-            width=380,
-            placeholder_text="Project Name",
-            height=38
-        )
-        self.name.pack(fill="x", pady=(6, 14))
-
-        ctk.CTkLabel(
-            info_content,
-            text="Video Topic",
-            font=("Segoe UI", 13, "bold")
-        ).pack(anchor="w")
-
-        self.topic = ctk.CTkEntry(
-            info_content,
-            width=380,
-            placeholder_text="Video Topic",
-            height=38
-        )
-        self.topic.pack(fill="x", pady=(6, 0))
-
-        settings_section = ctk.CTkFrame(
-            form_frame,
-            fg_color="#2A2A2A",
-            corner_radius=16
-        )
-        settings_section.pack(fill="x")
-
-        ctk.CTkLabel(
-            settings_section,
-            text="Production Settings",
-            font=("Segoe UI", 17, "bold")
-        ).pack(anchor="w", padx=18, pady=(18, 10))
-
-        settings_content = ctk.CTkFrame(settings_section, fg_color="transparent")
-        settings_content.pack(fill="x", padx=18, pady=(0, 16))
-
-        ctk.CTkLabel(
-            settings_content,
-            text="Language",
-            font=("Segoe UI", 13, "bold")
-        ).pack(anchor="w")
-
-        self.language = ctk.CTkOptionMenu(
-            settings_content,
-            values=[
-                "English",
-                "Hindi",
-                "Bengali"
-            ],
-            width=380,
-            height=38
-        )
-        self.language.pack(fill="x", pady=(6, 14))
-
-        ctk.CTkLabel(
-            settings_content,
-            text="Style",
-            font=("Segoe UI", 13, "bold")
-        ).pack(anchor="w")
-
-        self.style = ctk.CTkOptionMenu(
-            settings_content,
-            values=[
-                "Educational",
-                "Storytelling",
-                "Documentary"
-            ],
-            width=380,
-            height=38
-        )
-        self.style.pack(fill="x", pady=(6, 0))
-
-        button_frame = ctk.CTkFrame(main, fg_color="transparent")
-        button_frame.pack(fill="x", pady=(16, 0))
-
-        self.cancel_button = ctk.CTkButton(
-            button_frame,
-            text="Cancel",
-            width=120,
-            height=45,
-            fg_color="#3A3A3A",
-            hover_color="#4A4A4A",
-            command=self.destroy
-        )
-        self.cancel_button.pack(side="right", padx=(10, 0))
-
-        self.create_button = ctk.CTkButton(
-            button_frame,
-            text="Create Project",
-            width=250,
-            height=45,
-            command=self.create_project
-        )
-        self.create_button.pack(side="right")
-
-        self._ensure_content_fits()
-
-    def _ensure_content_fits(self):
-        self.update_idletasks()
-        required_height = self.winfo_reqheight() + 12
-        current_height = self.winfo_height()
-        if required_height > current_height:
-            self.geometry(f"560x{required_height}")
-
-    # =====================================
-    # Create Project
-    # =====================================
-
-    def create_project(self):
-
-        name = self.name.get().strip()
-        topic = self.topic.get().strip()
-        language = self.language.get()
-        style = self.style.get()
-
-        if name == "":
-            messagebox.showwarning(
-                "Missing Information",
-                "Please enter a project name."
+        for icon, title, desc in steps:
+            card = ctk.CTkFrame(
+                scroll, fg_color=Dark.CARD, corner_radius=Radius.MD,
+                border_width=1, border_color=Dark.BORDER, height=60,
             )
-            return
+            card.pack(fill="x", padx=Spacing.X8, pady=(0, Spacing.X3))
+            card.pack_propagate(False)
 
-        if topic == "":
-            messagebox.showwarning(
-                "Missing Information",
-                "Please enter a video topic."
-            )
-            return
+            inner = ctk.CTkFrame(card, fg_color="transparent")
+            inner.pack(fill="both", expand=True, padx=Spacing.X4, pady=Spacing.X3)
 
-        try:
+            icon_bg = ctk.CTkFrame(inner, width=32, height=32, corner_radius=Radius.SM, fg_color=Dark.SURFACE)
+            icon_bg.pack(side="left", padx=(0, Spacing.X3))
+            icon_bg.pack_propagate(False)
+            ctk.CTkLabel(icon_bg, text=icon, font=(Fonts.FAMILY, 14), fg_color="transparent").pack(expand=True)
 
-            project_path = self.manager.create_project(
-                name=name,
-                topic=topic,
-                language=language,
-                style=style
-            )
+            text_col = ctk.CTkFrame(inner, fg_color="transparent")
+            text_col.pack(side="left", fill="both", expand=True)
 
-            messagebox.showinfo(
-                "Success",
-                f"Project created successfully!\n\n{project_path}"
-            )
+            ctk.CTkLabel(
+                text_col, text=title,
+                font=Fonts.CARD_TITLE, text_color=Dark.TEXT,
+            ).pack(anchor="w")
 
-            self.destroy()
+            ctk.CTkLabel(
+                text_col, text=desc,
+                font=Fonts.SMALL, text_color=Dark.TEXT_SECONDARY,
+            ).pack(anchor="w")
 
-            if self.on_project_created is not None:
-                self.on_project_created(name)
+        # Keyboard shortcuts hint
+        ctk.CTkLabel(
+            scroll, text="Tip: Press Ctrl+K to search projects, Ctrl+S to save.",
+            font=Fonts.SMALL, text_color=Dark.TEXT_MUTED,
+        ).pack(padx=Spacing.X8, pady=(Spacing.X4, Spacing.X3))
 
-        except Exception as e:
+        # Buttons
+        btn_frame = ctk.CTkFrame(scroll, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=Spacing.X8, pady=(Spacing.X2, Spacing.X8))
 
-            messagebox.showerror(
-                "Error",
-                str(e)
-            )
+        ctk.CTkButton(
+            btn_frame, text="Don't show again",
+            font=Fonts.BODY, fg_color=Dark.SURFACE,
+            hover_color=Dark.HOVER, text_color=Dark.TEXT_SECONDARY,
+            height=38, corner_radius=Radius.MD,
+            command=self._on_close,
+        ).pack(side="left")
+
+        ctk.CTkButton(
+            btn_frame, text="Get Started",
+            font=Fonts.BODY_BOLD, fg_color=Dark.PRIMARY,
+            hover_color=Dark.PRIMARY_HOVER, text_color="#FFFFFF",
+            height=38, corner_radius=Radius.MD,
+            command=self._on_close,
+        ).pack(side="right")
+
+    def _on_close(self):
+        if self._on_close:
+            self._on_close()
+        self.grab_release()
+        self.destroy()

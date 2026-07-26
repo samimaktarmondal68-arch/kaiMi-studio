@@ -5,6 +5,9 @@ from typing import Optional
 import customtkinter as ctk
 
 from core.project_manager import ProjectManager
+from core.theme import Dark, Fonts, Radius, Spacing
+from core.notifications import NotificationService
+from core.history_manager import HistoryManager
 from operators.research.operator import ResearchOperator
 from operators.research.prompt_builder import ResearchRequest
 from core.research_storage import ResearchStorage
@@ -22,26 +25,16 @@ from operators.image_prompt.parser import ImagePromptParser
 from core.export_service import ExportService
 from core.logger import get_logger
 from core.task_manager import TaskCancelledError, TaskManager
-from core.workflow import advance_workflow_state, build_initial_workflow_state, normalize_workflow_state
+from core.workflow import WORKFLOW_STAGES, advance_workflow_state, build_initial_workflow_state, normalize_workflow_state
 
 
 class WorkspacePage(ctk.CTkFrame):
     def __init__(self, master, initial_project_name: Optional[str] = None):
-        super().__init__(master, fg_color="#202020")
+        super().__init__(master, fg_color=Dark.BG)
         self.manager = ProjectManager()
         self.selected_name: Optional[str] = None
         self.initial_project_name = initial_project_name
-        self.stages = [
-            "Research",
-            "Script",
-            "Storyboard",
-            "Image Prompts",
-            "Images",
-            "Voice Over",
-            "Video Editing",
-            "Thumbnail",
-            "Export",
-        ]
+        self.stages = WORKFLOW_STAGES
         self.selected_stage = self.stages[0]
         self.workflow_state: dict[str, str] = {}
         self.stage_buttons: dict[str, ctk.CTkButton] = {}
@@ -105,6 +98,12 @@ class WorkspacePage(ctk.CTkFrame):
         self.script_length_menu: Optional[ctk.CTkOptionMenu] = None
         self.script_tone_menu: Optional[ctk.CTkOptionMenu] = None
         self.script_output_box: Optional[ctk.CTkTextbox] = None
+        self._has_unsaved = False
+        self._save_indicator: Optional[ctk.CTkLabel] = None
+        self._last_saved_label: Optional[ctk.CTkLabel] = None
+        self._autosave_id: Optional[str] = None
+        self._history_manager = HistoryManager()
+        self._notifications = NotificationService.get()
         self.build()
 
     def build(self) -> None:
@@ -125,6 +124,7 @@ class WorkspacePage(ctk.CTkFrame):
             self.load_project(names[0])
 
         self.select_stage(self.selected_stage)
+        self._start_autosave()
 
     def get_project_workflow_state(self, project_name: Optional[str]) -> dict[str, str]:
         if not project_name:
@@ -136,12 +136,20 @@ class WorkspacePage(ctk.CTkFrame):
         research_data = self.research_storage.load(project_name)
         if research_data.get("generated_research"):
             workflow_state["Research"] = "COMPLETED"
-            workflow_state["Script"] = "AVAILABLE"
+            if workflow_state.get("Script") == "LOCKED":
+                workflow_state["Script"] = "AVAILABLE"
 
         script_data = self.script_storage.load(project_name)
         if script_data.get("script_output"):
             workflow_state["Script"] = "COMPLETED"
-            workflow_state["Storyboard"] = "AVAILABLE"
+            if workflow_state.get("Storyboard") == "LOCKED":
+                workflow_state["Storyboard"] = "AVAILABLE"
+
+        storyboard_data = self.storyboard_storage.load(project_name)
+        if storyboard_data.get("scenes"):
+            workflow_state["Storyboard"] = "COMPLETED"
+            if workflow_state.get("Image Prompts") == "LOCKED":
+                workflow_state["Image Prompts"] = "AVAILABLE"
 
         image_prompt_data = self.image_prompt_storage.load(project_name)
         if image_prompt_data.get("prompts"):
@@ -166,11 +174,11 @@ class WorkspacePage(ctk.CTkFrame):
         for stage, button in self.stage_buttons.items():
             state = self.workflow_state.get(stage, "LOCKED")
             if state == "LOCKED":
-                button.configure(state="disabled", fg_color="#5D5D5D", hover_color="#5D5D5D")
+                button.configure(state="disabled", fg_color=Dark.SURFACE, hover_color=Dark.SURFACE, text_color=Dark.TEXT_MUTED)
             elif state == "AVAILABLE":
-                button.configure(state="normal", fg_color="#2F62C6", hover_color="#3E79FF")
+                button.configure(state="normal", fg_color=Dark.CARD, hover_color=Dark.HOVER, text_color=Dark.PRIMARY)
             else:
-                button.configure(state="normal", fg_color="#2A9D5F", hover_color="#33B56B")
+                button.configure(state="normal", fg_color=Dark.CARD, hover_color=Dark.HOVER, text_color=Dark.SUCCESS)
 
         if self.progress_bar is not None:
             completed_count = sum(1 for state in self.workflow_state.values() if state == "COMPLETED")
@@ -179,65 +187,94 @@ class WorkspacePage(ctk.CTkFrame):
         self.update_project_overview()
 
     def build_top_bar(self) -> None:
-        top_bar = ctk.CTkFrame(self, fg_color="#1E1E1E", corner_radius=18)
+        top_bar = ctk.CTkFrame(self, fg_color=Dark.SURFACE, corner_radius=Radius.LG)
         top_bar.pack(fill="x", padx=24, pady=(24, 16))
 
         left_column = ctk.CTkFrame(top_bar, fg_color="transparent")
         left_column.pack(side="left", padx=20, pady=16, anchor="w")
 
         self.project_name_label = ctk.CTkLabel(
-            left_column,
-            text="Project Name",
-            font=("Segoe UI", 28, "bold"),
+            left_column, text="Project Name",
+            font=Fonts.SECTION, text_color=Dark.TEXT,
         )
         self.project_name_label.pack(anchor="w")
 
+        status_row = ctk.CTkFrame(left_column, fg_color="transparent")
+        status_row.pack(anchor="w", pady=(6, 14))
+
         self.project_status_label = ctk.CTkLabel(
-            left_column,
-            text="Status: Draft",
-            font=("Segoe UI", 14),
-            text_color="#7FD89C",
+            status_row, text="Status: Draft",
+            font=Fonts.BODY, text_color=Dark.SUCCESS,
         )
-        self.project_status_label.pack(anchor="w", pady=(6, 14))
+        self.project_status_label.pack(side="left")
+
+        self._save_indicator = ctk.CTkLabel(
+            status_row, text="", font=Fonts.TINY, text_color=Dark.TEXT_MUTED,
+        )
+        self._save_indicator.pack(side="left", padx=(Spacing.X3, 0))
+
+        prog_row = ctk.CTkFrame(left_column, fg_color="transparent")
+        prog_row.pack(anchor="w")
 
         ctk.CTkLabel(
-            left_column,
-            text="Overall Progress",
-            font=("Segoe UI", 13, "bold"),
-        ).pack(anchor="w")
+            prog_row, text="Progress",
+            font=Fonts.SMALL_BOLD, text_color=Dark.TEXT_SECONDARY,
+        ).pack(side="left")
 
-        self.progress_bar = ctk.CTkProgressBar(left_column, width=280, height=10)
-        self.progress_bar.pack(anchor="w", pady=(8, 0))
+        self.progress_bar = ctk.CTkProgressBar(
+            prog_row, width=220, height=10,
+            fg_color=Dark.SURFACE, progress_color=Dark.PRIMARY,
+        )
+        self.progress_bar.pack(side="left", padx=(Spacing.X3, 0))
         self.progress_bar.set(0.35)
 
         right_column = ctk.CTkFrame(top_bar, fg_color="transparent")
         right_column.pack(side="right", padx=20, pady=16, anchor="e")
 
+        nav_row = ctk.CTkFrame(right_column, fg_color="transparent")
+        nav_row.pack(anchor="e", pady=(0, 8))
+
+        self._prev_btn = ctk.CTkButton(
+            nav_row, text="\u25C0 Prev", width=80, height=30,
+            fg_color=Dark.CARD, hover_color=Dark.HOVER,
+            text_color=Dark.TEXT_SECONDARY, font=Fonts.SMALL,
+            corner_radius=Radius.SM, command=self._prev_stage,
+        )
+        self._prev_btn.pack(side="left", padx=(0, Spacing.X2))
+
+        self._next_btn = ctk.CTkButton(
+            nav_row, text="Next \u25B6", width=80, height=30,
+            fg_color=Dark.PRIMARY, hover_color=Dark.PRIMARY_HOVER,
+            text_color=Dark.TEXT, font=Fonts.SMALL_BOLD,
+            corner_radius=Radius.SM, command=self._next_stage,
+        )
+        self._next_btn.pack(side="left")
+
         names = [project["name"] for project in self.manager.get_projects()] or ["No projects available"]
         self.project_menu = ctk.CTkOptionMenu(
-            right_column,
-            values=names,
-            command=self.load_project,
-            width=300,
+            right_column, values=names, command=self.load_project,
+            width=300, fg_color=Dark.INPUT_BG,
+            button_color=Dark.PRIMARY, button_hover_color=Dark.PRIMARY_HOVER,
+            dropdown_fg_color=Dark.CARD, dropdown_hover_color=Dark.HOVER,
+            text_color=Dark.TEXT,
         )
         self.project_menu.pack(anchor="e")
 
-        ctk.CTkLabel(
-            right_column,
-            text="Select project",
-            text_color="#9A9A9A",
-            font=("Segoe UI", 12),
-        ).pack(anchor="e", pady=(8, 0))
+        self._last_saved_label = ctk.CTkLabel(
+            right_column, text="", font=Fonts.TINY, text_color=Dark.TEXT_MUTED,
+        )
+        self._last_saved_label.pack(anchor="e", pady=(4, 0))
 
     def build_sidebar(self, parent: ctk.CTkFrame) -> None:
-        sidebar = ctk.CTkFrame(parent, fg_color="#1E1E1E", width=250, corner_radius=18)
+        sidebar = ctk.CTkFrame(parent, fg_color=Dark.SURFACE, width=250, corner_radius=Radius.LG)
         sidebar.pack(side="left", fill="y", padx=(0, 16))
         sidebar.pack_propagate(False)
 
         ctk.CTkLabel(
             sidebar,
             text="Production Pipeline",
-            font=("Segoe UI", 18, "bold"),
+            font=Fonts.CARD_TITLE,
+            text_color=Dark.TEXT,
         ).pack(anchor="w", padx=20, pady=(20, 16))
 
         for stage in self.stages:
@@ -245,17 +282,29 @@ class WorkspacePage(ctk.CTkFrame):
                 sidebar,
                 text=stage,
                 height=42,
-                corner_radius=12,
-                fg_color="#2B2B2B",
-                hover_color="#303030",
+                corner_radius=Radius.MD,
+                fg_color=Dark.CARD,
+                hover_color=Dark.HOVER,
+                text_color=Dark.TEXT_SECONDARY,
+                font=Fonts.BODY,
                 anchor="w",
                 command=lambda stage_name=stage: self.select_stage(stage_name),
             )
             button.pack(fill="x", padx=16, pady=6)
             self.stage_buttons[stage] = button
 
+        ctk.CTkLabel(sidebar, text="", fg_color="transparent").pack(fill="x", expand=True)
+
+        ctk.CTkButton(
+            sidebar, text="Version History", height=38,
+            corner_radius=Radius.MD, fg_color=Dark.CARD,
+            hover_color=Dark.HOVER, text_color=Dark.TEXT_SECONDARY,
+            font=Fonts.SMALL, anchor="w",
+            command=self._open_history,
+        ).pack(fill="x", padx=16, pady=(8, 20))
+
     def build_content(self, parent: ctk.CTkFrame) -> None:
-        content_panel = ctk.CTkFrame(parent, fg_color="#1E1E1E", corner_radius=18)
+        content_panel = ctk.CTkScrollableFrame(parent, fg_color=Dark.SURFACE, corner_radius=Radius.LG)
         content_panel.pack(side="left", fill="both", expand=True)
 
         header = ctk.CTkFrame(content_panel, fg_color="transparent")
@@ -264,15 +313,16 @@ class WorkspacePage(ctk.CTkFrame):
         self.current_stage_title = ctk.CTkLabel(
             header,
             text="Research",
-            font=("Segoe UI", 22, "bold"),
+            font=Fonts.SECTION,
+            text_color=Dark.TEXT,
         )
         self.current_stage_title.pack(anchor="w")
 
         self.current_stage_description = ctk.CTkLabel(
             content_panel,
             text="No content has been created yet.",
-            text_color="#B7B7B7",
-            font=("Segoe UI", 13),
+            text_color=Dark.TEXT_SECONDARY,
+            font=Fonts.BODY,
         )
         self.current_stage_description.pack(anchor="w", padx=20, pady=(0, 12))
 
@@ -290,14 +340,20 @@ class WorkspacePage(ctk.CTkFrame):
             text="Start Stage",
             width=180,
             height=42,
-            corner_radius=12,
+            corner_radius=Radius.MD,
+            fg_color=Dark.PRIMARY,
+            hover_color=Dark.PRIMARY_HOVER,
+            text_color=Dark.TEXT,
+            font=Fonts.BUTTON,
         ).pack(anchor="e", padx=20, pady=(0, 16))
 
     def build_project_overview(self, parent: ctk.CTkFrame) -> None:
         self.project_overview_frame = ctk.CTkFrame(
             parent,
-            fg_color="#252525",
-            corner_radius=16,
+            fg_color=Dark.CARD,
+            corner_radius=Radius.LG,
+            border_width=1,
+            border_color=Dark.BORDER,
         )
         self.project_overview_frame.pack(fill="x", padx=20, pady=(0, 12))
 
@@ -307,28 +363,31 @@ class WorkspacePage(ctk.CTkFrame):
         ctk.CTkLabel(
             overview_content,
             text="Project Overview",
-            font=("Segoe UI", 16, "bold"),
+            font=Fonts.CARD_TITLE,
+            text_color=Dark.TEXT,
         ).pack(anchor="w")
 
-        self.project_overview_name_label = ctk.CTkLabel(overview_content, text="Project Name: -", font=("Segoe UI", 13))
+        label_style = {"font": Fonts.BODY, "text_color": Dark.TEXT_SECONDARY}
+
+        self.project_overview_name_label = ctk.CTkLabel(overview_content, text="Project Name: -", **label_style)
         self.project_overview_name_label.pack(anchor="w", pady=(10, 3))
 
-        self.project_overview_status_label = ctk.CTkLabel(overview_content, text="Status: -", font=("Segoe UI", 13))
+        self.project_overview_status_label = ctk.CTkLabel(overview_content, text="Status: -", **label_style)
         self.project_overview_status_label.pack(anchor="w", pady=3)
 
-        self.project_overview_progress_label = ctk.CTkLabel(overview_content, text="Overall Progress: 0%", font=("Segoe UI", 13))
+        self.project_overview_progress_label = ctk.CTkLabel(overview_content, text="Overall Progress: 0%", **label_style)
         self.project_overview_progress_label.pack(anchor="w", pady=3)
 
-        self.project_overview_completed_label = ctk.CTkLabel(overview_content, text="Completed Stages: -", font=("Segoe UI", 13))
+        self.project_overview_completed_label = ctk.CTkLabel(overview_content, text="Completed Stages: -", **label_style)
         self.project_overview_completed_label.pack(anchor="w", pady=3)
 
-        self.project_overview_current_label = ctk.CTkLabel(overview_content, text="Current Stage: -", font=("Segoe UI", 13))
+        self.project_overview_current_label = ctk.CTkLabel(overview_content, text="Current Stage: -", **label_style)
         self.project_overview_current_label.pack(anchor="w", pady=3)
 
-        self.project_overview_next_label = ctk.CTkLabel(overview_content, text="Next Stage: -", font=("Segoe UI", 13))
+        self.project_overview_next_label = ctk.CTkLabel(overview_content, text="Next Stage: -", **label_style)
         self.project_overview_next_label.pack(anchor="w", pady=3)
 
-        self.project_overview_modified_label = ctk.CTkLabel(overview_content, text="Last Modified: -", font=("Segoe UI", 13))
+        self.project_overview_modified_label = ctk.CTkLabel(overview_content, text="Last Modified: -", **label_style)
         self.project_overview_modified_label.pack(anchor="w", pady=3)
 
     def update_project_overview(self) -> None:
@@ -372,16 +431,18 @@ class WorkspacePage(ctk.CTkFrame):
     def build_placeholder(self, parent: ctk.CTkFrame) -> None:
         self.placeholder_frame = ctk.CTkFrame(
             parent,
-            fg_color="#252525",
-            corner_radius=16,
+            fg_color=Dark.CARD,
+            corner_radius=Radius.LG,
+            border_width=1,
+            border_color=Dark.BORDER,
         )
         self.placeholder_frame.pack(fill="both", expand=True, padx=24, pady=(0, 18))
 
         self.placeholder_label = ctk.CTkLabel(
             self.placeholder_frame,
             text="No content has been created yet.",
-            text_color="#8C8C8C",
-            font=("Segoe UI", 18),
+            text_color=Dark.TEXT_MUTED,
+            font=Fonts.CARD_TITLE,
         )
         self.placeholder_label.pack(expand=True)
 
@@ -398,13 +459,19 @@ class WorkspacePage(ctk.CTkFrame):
         ctk.CTkLabel(
             self.research_content,
             text="Topic",
-            font=("Segoe UI", 13, "bold"),
+            font=Fonts.SMALL_BOLD,
+            text_color=Dark.TEXT_SECONDARY,
         ).pack(anchor="w")
 
         self.topic_entry = ctk.CTkEntry(
             self.research_content,
             width=420,
             height=38,
+            fg_color=Dark.INPUT_BG,
+            border_color=Dark.INPUT_BORDER,
+            text_color=Dark.TEXT,
+            font=Fonts.INPUT,
+            corner_radius=Radius.SM,
         )
         self.topic_entry.pack(fill="x", pady=(6, 14))
         self.topic_entry.configure(state="readonly")
@@ -412,41 +479,53 @@ class WorkspacePage(ctk.CTkFrame):
         ctk.CTkLabel(
             self.research_content,
             text="Keywords",
-            font=("Segoe UI", 13, "bold"),
+            font=Fonts.SMALL_BOLD,
+            text_color=Dark.TEXT_SECONDARY,
         ).pack(anchor="w")
 
         self.keywords_box = ctk.CTkTextbox(
             self.research_content,
             height=80,
-            corner_radius=12,
+            corner_radius=Radius.SM,
+            fg_color=Dark.INPUT_BG,
+            text_color=Dark.TEXT,
         )
         self.keywords_box.pack(fill="x", pady=(6, 14))
+        self.keywords_box.bind("<KeyRelease>", self._mark_unsaved)
 
         ctk.CTkLabel(
             self.research_content,
             text="Research Goal",
-            font=("Segoe UI", 13, "bold"),
+            font=Fonts.SMALL_BOLD,
+            text_color=Dark.TEXT_SECONDARY,
         ).pack(anchor="w")
 
         self.goal_box = ctk.CTkTextbox(
             self.research_content,
             height=80,
-            corner_radius=12,
+            corner_radius=Radius.SM,
+            fg_color=Dark.INPUT_BG,
+            text_color=Dark.TEXT,
         )
         self.goal_box.pack(fill="x", pady=(6, 14))
+        self.goal_box.bind("<KeyRelease>", self._mark_unsaved)
 
         ctk.CTkLabel(
             self.research_content,
             text="Sources",
-            font=("Segoe UI", 13, "bold"),
+            font=Fonts.SMALL_BOLD,
+            text_color=Dark.TEXT_SECONDARY,
         ).pack(anchor="w")
 
         self.sources_box = ctk.CTkTextbox(
             self.research_content,
             height=80,
-            corner_radius=12,
+            corner_radius=Radius.SM,
+            fg_color=Dark.INPUT_BG,
+            text_color=Dark.TEXT,
         )
         self.sources_box.pack(fill="x", pady=(6, 14))
+        self.sources_box.bind("<KeyRelease>", self._mark_unsaved)
 
         research_actions = ctk.CTkFrame(self.research_content, fg_color="transparent")
         research_actions.pack(fill="x", pady=(4, 16))
@@ -456,7 +535,13 @@ class WorkspacePage(ctk.CTkFrame):
             text="Preview Prompt",
             width=160,
             height=42,
-            corner_radius=12,
+            corner_radius=Radius.MD,
+            fg_color="transparent",
+            hover_color=Dark.HOVER,
+            text_color=Dark.SECONDARY,
+            border_width=1,
+            border_color=Dark.SECONDARY,
+            font=Fonts.BUTTON,
             command=self.preview_research_prompt,
         ).pack(side="left")
 
@@ -465,7 +550,11 @@ class WorkspacePage(ctk.CTkFrame):
             text="Generate Research",
             width=200,
             height=42,
-            corner_radius=12,
+            corner_radius=Radius.MD,
+            fg_color=Dark.PRIMARY,
+            hover_color=Dark.PRIMARY_HOVER,
+            text_color=Dark.TEXT,
+            font=Fonts.BUTTON,
             command=self.generate_research,
         )
         self.generate_button.pack(side="left", padx=(10, 0))
@@ -475,20 +564,29 @@ class WorkspacePage(ctk.CTkFrame):
             text="Save Research",
             width=150,
             height=42,
-            corner_radius=12,
+            corner_radius=Radius.MD,
+            fg_color=Dark.CARD,
+            hover_color=Dark.HOVER,
+            text_color=Dark.TEXT_SECONDARY,
+            border_width=1,
+            border_color=Dark.BORDER,
+            font=Fonts.BUTTON,
             command=self.save_research,
         ).pack(side="left", padx=(10, 0))
 
         ctk.CTkLabel(
             self.research_content,
             text="Research Output",
-            font=("Segoe UI", 15, "bold"),
+            font=Fonts.CARD_TITLE,
+            text_color=Dark.TEXT,
         ).pack(anchor="w")
 
         self.research_output_box = ctk.CTkTextbox(
             self.research_content,
             height=180,
-            corner_radius=12,
+            corner_radius=Radius.SM,
+            fg_color=Dark.INPUT_BG,
+            text_color=Dark.TEXT,
         )
         self.research_output_box.pack(fill="both", expand=True, pady=(8, 0))
         self.research_output_box.insert("0.0", "No research generated.")
@@ -500,42 +598,53 @@ class WorkspacePage(ctk.CTkFrame):
         script_content = ctk.CTkFrame(self.script_frame, fg_color="transparent")
         script_content.pack(fill="both", expand=True, padx=20, pady=(0, 12))
 
-        ctk.CTkLabel(
-            script_content,
-            text="Script Style",
-            font=("Segoe UI", 13, "bold"),
-        ).pack(anchor="w")
+        label_style = {"font": Fonts.SMALL_BOLD, "text_color": Dark.TEXT_SECONDARY}
+
+        ctk.CTkLabel(script_content, text="Script Style", **label_style).pack(anchor="w")
 
         self.script_style_menu = ctk.CTkOptionMenu(
             script_content,
             values=["Educational", "Documentary", "Storytelling"],
             width=320,
+            fg_color=Dark.INPUT_BG,
+            button_color=Dark.PRIMARY,
+            button_hover_color=Dark.PRIMARY_HOVER,
+            dropdown_fg_color=Dark.CARD,
+            dropdown_hover_color=Dark.HOVER,
+            text_color=Dark.TEXT,
+            font=Fonts.BODY,
         )
         self.script_style_menu.pack(fill="x", pady=(6, 14))
 
-        ctk.CTkLabel(
-            script_content,
-            text="Script Length",
-            font=("Segoe UI", 13, "bold"),
-        ).pack(anchor="w")
+        ctk.CTkLabel(script_content, text="Script Length", **label_style).pack(anchor="w")
 
         self.script_length_menu = ctk.CTkOptionMenu(
             script_content,
             values=["Short", "Medium", "Long"],
             width=320,
+            fg_color=Dark.INPUT_BG,
+            button_color=Dark.PRIMARY,
+            button_hover_color=Dark.PRIMARY_HOVER,
+            dropdown_fg_color=Dark.CARD,
+            dropdown_hover_color=Dark.HOVER,
+            text_color=Dark.TEXT,
+            font=Fonts.BODY,
         )
         self.script_length_menu.pack(fill="x", pady=(6, 14))
 
-        ctk.CTkLabel(
-            script_content,
-            text="Tone",
-            font=("Segoe UI", 13, "bold"),
-        ).pack(anchor="w")
+        ctk.CTkLabel(script_content, text="Tone", **label_style).pack(anchor="w")
 
         self.script_tone_menu = ctk.CTkOptionMenu(
             script_content,
             values=["Friendly", "Funny", "Serious", "Dramatic"],
             width=320,
+            fg_color=Dark.INPUT_BG,
+            button_color=Dark.PRIMARY,
+            button_hover_color=Dark.PRIMARY_HOVER,
+            dropdown_fg_color=Dark.CARD,
+            dropdown_hover_color=Dark.HOVER,
+            text_color=Dark.TEXT,
+            font=Fonts.BODY,
         )
         self.script_tone_menu.pack(fill="x", pady=(6, 14))
 
@@ -547,7 +656,13 @@ class WorkspacePage(ctk.CTkFrame):
             text="Preview Prompt",
             width=160,
             height=42,
-            corner_radius=12,
+            corner_radius=Radius.MD,
+            fg_color="transparent",
+            hover_color=Dark.HOVER,
+            text_color=Dark.SECONDARY,
+            border_width=1,
+            border_color=Dark.SECONDARY,
+            font=Fonts.BUTTON,
             command=self.preview_script_prompt,
         ).pack(side="left")
 
@@ -556,7 +671,11 @@ class WorkspacePage(ctk.CTkFrame):
             text="Generate Script",
             width=180,
             height=42,
-            corner_radius=12,
+            corner_radius=Radius.MD,
+            fg_color=Dark.PRIMARY,
+            hover_color=Dark.PRIMARY_HOVER,
+            text_color=Dark.TEXT,
+            font=Fonts.BUTTON,
             command=self.generate_script,
         )
         self.script_generate_button.pack(side="left", padx=(10, 0))
@@ -566,20 +685,29 @@ class WorkspacePage(ctk.CTkFrame):
             text="Save Script",
             width=140,
             height=42,
-            corner_radius=12,
+            corner_radius=Radius.MD,
+            fg_color=Dark.CARD,
+            hover_color=Dark.HOVER,
+            text_color=Dark.TEXT_SECONDARY,
+            border_width=1,
+            border_color=Dark.BORDER,
+            font=Fonts.BUTTON,
             command=self.save_script,
         ).pack(side="left", padx=(10, 0))
 
         ctk.CTkLabel(
             script_content,
             text="Script Output",
-            font=("Segoe UI", 15, "bold"),
+            font=Fonts.CARD_TITLE,
+            text_color=Dark.TEXT,
         ).pack(anchor="w")
 
         self.script_output_box = ctk.CTkTextbox(
             script_content,
             height=280,
-            corner_radius=12,
+            corner_radius=Radius.SM,
+            fg_color=Dark.INPUT_BG,
+            text_color=Dark.TEXT,
         )
         self.script_output_box.pack(fill="both", expand=True, pady=(8, 0))
 
@@ -598,7 +726,11 @@ class WorkspacePage(ctk.CTkFrame):
             text="Generate Storyboard",
             width=200,
             height=42,
-            corner_radius=12,
+            corner_radius=Radius.MD,
+            fg_color=Dark.PRIMARY,
+            hover_color=Dark.PRIMARY_HOVER,
+            text_color=Dark.TEXT,
+            font=Fonts.BUTTON,
             command=self.generate_storyboard,
         )
         self.storyboard_generate_button.pack(side="left")
@@ -608,7 +740,13 @@ class WorkspacePage(ctk.CTkFrame):
             text="Save Storyboard",
             width=180,
             height=42,
-            corner_radius=12,
+            corner_radius=Radius.MD,
+            fg_color=Dark.CARD,
+            hover_color=Dark.HOVER,
+            text_color=Dark.TEXT_SECONDARY,
+            border_width=1,
+            border_color=Dark.BORDER,
+            font=Fonts.BUTTON,
             command=self.save_storyboard,
         ).pack(side="left", padx=(10, 0))
 
@@ -617,7 +755,13 @@ class WorkspacePage(ctk.CTkFrame):
             text="+ Add Scene",
             width=140,
             height=42,
-            corner_radius=12,
+            corner_radius=Radius.MD,
+            fg_color="transparent",
+            hover_color=Dark.HOVER,
+            text_color=Dark.PRIMARY,
+            border_width=1,
+            border_color=Dark.PRIMARY,
+            font=Fonts.BUTTON,
             command=self.add_scene,
         ).pack(side="left", padx=(10, 0))
 
@@ -642,7 +786,11 @@ class WorkspacePage(ctk.CTkFrame):
             text="Generate Prompts",
             width=200,
             height=42,
-            corner_radius=12,
+            corner_radius=Radius.MD,
+            fg_color=Dark.PRIMARY,
+            hover_color=Dark.PRIMARY_HOVER,
+            text_color=Dark.TEXT,
+            font=Fonts.BUTTON,
             command=self.generate_image_prompts,
         )
         self.image_prompt_generate_button.pack(side="left")
@@ -652,7 +800,13 @@ class WorkspacePage(ctk.CTkFrame):
             text="Save",
             width=120,
             height=42,
-            corner_radius=12,
+            corner_radius=Radius.MD,
+            fg_color=Dark.CARD,
+            hover_color=Dark.HOVER,
+            text_color=Dark.TEXT_SECONDARY,
+            border_width=1,
+            border_color=Dark.BORDER,
+            font=Fonts.BUTTON,
             command=self.save_image_prompts,
         ).pack(side="left", padx=(10, 0))
 
@@ -663,17 +817,23 @@ class WorkspacePage(ctk.CTkFrame):
         self.image_prompt_container.pack(fill="both", expand=True)
 
     def build_task_status_ui(self, parent: ctk.CTkFrame) -> None:
-        self.task_status_frame = ctk.CTkFrame(parent, fg_color="#252525", corner_radius=16)
+        self.task_status_frame = ctk.CTkFrame(
+            parent, fg_color=Dark.CARD, corner_radius=Radius.LG,
+            border_width=1, border_color=Dark.BORDER,
+        )
         self.task_status_frame.pack(fill="x", padx=20, pady=(0, 12))
 
         self.task_status_content = ctk.CTkFrame(self.task_status_frame, fg_color="transparent")
         self.task_status_content.pack(fill="x", padx=18, pady=16)
 
-        ctk.CTkLabel(self.task_status_content, text="Background Task", font=("Segoe UI", 15, "bold")).pack(anchor="w")
-        self.task_status_label = ctk.CTkLabel(self.task_status_content, text="Idle", font=("Segoe UI", 13))
+        ctk.CTkLabel(self.task_status_content, text="Background Task", font=Fonts.CARD_TITLE, text_color=Dark.TEXT).pack(anchor="w")
+        self.task_status_label = ctk.CTkLabel(self.task_status_content, text="Idle", font=Fonts.BODY, text_color=Dark.TEXT_SECONDARY)
         self.task_status_label.pack(anchor="w", pady=(8, 6))
 
-        self.task_progress_bar = ctk.CTkProgressBar(self.task_status_content, width=260, height=10)
+        self.task_progress_bar = ctk.CTkProgressBar(
+            self.task_status_content, width=260, height=10,
+            fg_color=Dark.SURFACE, progress_color=Dark.PRIMARY,
+        )
         self.task_progress_bar.pack(anchor="w", pady=(4, 8))
         self.task_progress_bar.set(0.0)
 
@@ -682,7 +842,11 @@ class WorkspacePage(ctk.CTkFrame):
             text="Cancel",
             width=140,
             height=36,
-            corner_radius=10,
+            corner_radius=Radius.SM,
+            fg_color="#2A1215",
+            hover_color="#3D1A1E",
+            text_color=Dark.ERROR,
+            font=Fonts.BUTTON,
             command=self.cancel_current_task,
             state="disabled",
         )
@@ -700,7 +864,11 @@ class WorkspacePage(ctk.CTkFrame):
             text="Export Project",
             width=220,
             height=42,
-            corner_radius=12,
+            corner_radius=Radius.MD,
+            fg_color=Dark.PRIMARY,
+            hover_color=Dark.PRIMARY_HOVER,
+            text_color=Dark.TEXT,
+            font=Fonts.BUTTON,
             command=self.export_project,
         )
         self.export_generate_button.pack(anchor="w")
@@ -710,7 +878,13 @@ class WorkspacePage(ctk.CTkFrame):
             text="Open Export Folder",
             width=220,
             height=42,
-            corner_radius=12,
+            corner_radius=Radius.MD,
+            fg_color=Dark.CARD,
+            hover_color=Dark.HOVER,
+            text_color=Dark.TEXT_SECONDARY,
+            border_width=1,
+            border_color=Dark.BORDER,
+            font=Fonts.BUTTON,
             command=self.open_export_folder,
         ).pack(anchor="w", pady=(10, 0))
 
@@ -718,87 +892,34 @@ class WorkspacePage(ctk.CTkFrame):
         if frame is None:
             return
         if self.task_status_frame is not None:
-            frame.pack(fill="both", expand=True, padx=20, pady=(0, 12), before=self.task_status_frame)
+            frame.pack(fill="x", padx=20, pady=(0, 12), before=self.task_status_frame)
         else:
-            frame.pack(fill="both", expand=True, padx=20, pady=(0, 12))
+            frame.pack(fill="x", padx=20, pady=(0, 12))
+
+    def _show_frame(self, target: ctk.CTkFrame | None) -> None:
+        self._pack_stage_frame(target)
+        for f in (self.placeholder_frame, self.research_frame, self.script_frame,
+                  self.storyboard_frame, self.image_prompt_frame, self.export_frame):
+            if f is not None and f is not target:
+                f.pack_forget()
 
     def show_placeholder(self) -> None:
-        self._pack_stage_frame(self.placeholder_frame)
-        if self.research_frame is not None:
-            self.research_frame.pack_forget()
-        if self.script_frame is not None:
-            self.script_frame.pack_forget()
-        if self.storyboard_frame is not None:
-            self.storyboard_frame.pack_forget()
-        if self.image_prompt_frame is not None:
-            self.image_prompt_frame.pack_forget()
-        if self.export_frame is not None:
-            self.export_frame.pack_forget()
+        self._show_frame(self.placeholder_frame)
 
     def show_research(self) -> None:
-        self._pack_stage_frame(self.research_frame)
-        if self.placeholder_frame is not None:
-            self.placeholder_frame.pack_forget()
-        if self.script_frame is not None:
-            self.script_frame.pack_forget()
-        if self.storyboard_frame is not None:
-            self.storyboard_frame.pack_forget()
-        if self.image_prompt_frame is not None:
-            self.image_prompt_frame.pack_forget()
-        if self.export_frame is not None:
-            self.export_frame.pack_forget()
+        self._show_frame(self.research_frame)
 
     def show_script(self) -> None:
-        self._pack_stage_frame(self.script_frame)
-        if self.placeholder_frame is not None:
-            self.placeholder_frame.pack_forget()
-        if self.research_frame is not None:
-            self.research_frame.pack_forget()
-        if self.storyboard_frame is not None:
-            self.storyboard_frame.pack_forget()
-        if self.image_prompt_frame is not None:
-            self.image_prompt_frame.pack_forget()
-        if self.export_frame is not None:
-            self.export_frame.pack_forget()
+        self._show_frame(self.script_frame)
 
     def show_storyboard(self) -> None:
-        self._pack_stage_frame(self.storyboard_frame)
-        if self.placeholder_frame is not None:
-            self.placeholder_frame.pack_forget()
-        if self.research_frame is not None:
-            self.research_frame.pack_forget()
-        if self.script_frame is not None:
-            self.script_frame.pack_forget()
-        if self.image_prompt_frame is not None:
-            self.image_prompt_frame.pack_forget()
-        if self.export_frame is not None:
-            self.export_frame.pack_forget()
+        self._show_frame(self.storyboard_frame)
 
     def show_image_prompts(self) -> None:
-        self._pack_stage_frame(self.image_prompt_frame)
-        if self.placeholder_frame is not None:
-            self.placeholder_frame.pack_forget()
-        if self.research_frame is not None:
-            self.research_frame.pack_forget()
-        if self.script_frame is not None:
-            self.script_frame.pack_forget()
-        if self.storyboard_frame is not None:
-            self.storyboard_frame.pack_forget()
-        if self.export_frame is not None:
-            self.export_frame.pack_forget()
+        self._show_frame(self.image_prompt_frame)
 
     def show_export(self) -> None:
-        self._pack_stage_frame(self.export_frame)
-        if self.placeholder_frame is not None:
-            self.placeholder_frame.pack_forget()
-        if self.research_frame is not None:
-            self.research_frame.pack_forget()
-        if self.script_frame is not None:
-            self.script_frame.pack_forget()
-        if self.storyboard_frame is not None:
-            self.storyboard_frame.pack_forget()
-        if self.image_prompt_frame is not None:
-            self.image_prompt_frame.pack_forget()
+        self._show_frame(self.export_frame)
 
     def select_stage(self, stage_name: str) -> None:
         if self.workflow_state.get(stage_name, "LOCKED") == "LOCKED":
@@ -807,30 +928,38 @@ class WorkspacePage(ctk.CTkFrame):
         self.selected_stage = stage_name
         self.refresh_stage_buttons()
         self.update_content(stage_name)
+        self._update_nav_buttons()
 
     def update_content(self, stage_name: str) -> None:
         if self.current_stage_title is not None:
             self.current_stage_title.configure(text=stage_name)
+
+        stage_state = self.workflow_state.get(stage_name, "LOCKED")
+        descriptions = {
+            "Research": "Define your research inputs and generate content.",
+            "Script": "Configure script parameters and generate a script.",
+            "Storyboard": "Generate and edit storyboard scenes.",
+            "Image Prompts": "Generate image prompts for each storyboard scene.",
+            "Export": "Export the project to a local folder.",
+        }
         if self.current_stage_description is not None:
-            if stage_name == "Research":
-                self.current_stage_description.configure(text="Define your research inputs and generate content.")
+            if stage_state == "COMPLETED":
+                self.current_stage_description.configure(text=f"{stage_name} — Completed.")
             else:
-                self.current_stage_description.configure(text="No content has been created yet.")
+                self.current_stage_description.configure(text=descriptions.get(stage_name, "No content has been created yet."))
+
         if self.placeholder_label is not None:
             self.placeholder_label.configure(text=f"{stage_name}\n\nNo content has been created yet.")
 
-        if stage_name == "Research":
-            self.show_research()
-        elif stage_name == "Script":
-            self.show_script()
-        elif stage_name == "Storyboard":
-            self.show_storyboard()
-        elif stage_name == "Image Prompts":
-            self.show_image_prompts()
-        elif stage_name == "Export":
-            self.show_export()
-        else:
-            self.show_placeholder()
+        stage_show = {
+            "Research": self.show_research,
+            "Script": self.show_script,
+            "Storyboard": self.show_storyboard,
+            "Image Prompts": self.show_image_prompts,
+            "Export": self.show_export,
+        }
+        show_fn = stage_show.get(stage_name, self.show_placeholder)
+        show_fn()
 
     def load_project(self, name: Optional[str]) -> None:
         self.selected_name = name if name not in (None, "No projects available") else None
@@ -913,6 +1042,10 @@ class WorkspacePage(ctk.CTkFrame):
                 self.select_stage("Research")
             else:
                 self.select_stage(self.selected_stage)
+
+        self._has_unsaved = False
+        self._update_save_indicator("Loaded")
+        self._update_nav_buttons()
 
     def collect_research_inputs(self) -> dict[str, str]:
         topic = ""
@@ -1071,8 +1204,10 @@ class WorkspacePage(ctk.CTkFrame):
             self.task_progress_bar.set(progress)
 
     def schedule_ui_update(self, callback, *args, **kwargs) -> None:
-        if self.winfo_exists():
-            self.after(0, lambda: callback(*args, **kwargs))
+        def _safe_call():
+            if self.winfo_exists():
+                callback(*args, **kwargs)
+        self.after(0, _safe_call)
 
     def cancel_current_task(self) -> None:
         self.task_manager.cancel()
@@ -1107,9 +1242,6 @@ class WorkspacePage(ctk.CTkFrame):
 
         def on_complete(result: tuple[str, str]) -> None:
             generated_research, prompt = result
-            if self.research_output_box is not None:
-                self.research_output_box.delete("0.0", "end")
-                self.research_output_box.insert("0.0", generated_research)
 
             if self.selected_name is not None:
                 self.research_storage.save(
@@ -1124,10 +1256,17 @@ class WorkspacePage(ctk.CTkFrame):
                 self.logger.info("Workspace", f"Research generation completed for project: {self.selected_name}")
                 self.workflow_state = advance_workflow_state(self.workflow_state, "Research")
                 self.save_workflow_state(self.selected_name)
-                self.refresh_stage_buttons()
 
-            self.schedule_ui_update(self.toggle_task_controls, False)
-            self.schedule_ui_update(self.update_task_status, "Research generation complete.", 1.0)
+            def _update_ui() -> None:
+                if self.research_output_box is not None:
+                    self.research_output_box.delete("0.0", "end")
+                    self.research_output_box.insert("0.0", generated_research)
+                self.refresh_stage_buttons()
+                self.update_content(self.selected_stage)
+                self.toggle_task_controls(False)
+                self.update_task_status("Research generation complete.", 1.0)
+
+            self.schedule_ui_update(_update_ui)
 
         def on_error(exc: Exception) -> None:
             self.schedule_ui_update(self.toggle_task_controls, False)
@@ -1172,10 +1311,6 @@ class WorkspacePage(ctk.CTkFrame):
             return generated_script
 
         def on_complete(generated_script: str) -> None:
-            if self.script_output_box is not None:
-                self.script_output_box.delete("0.0", "end")
-                self.script_output_box.insert("0.0", generated_script)
-
             self.script_storage.save(
                 project_name=self.selected_name,
                 style=style,
@@ -1186,9 +1321,17 @@ class WorkspacePage(ctk.CTkFrame):
             self.logger.info("Workspace", f"Script generation completed for project: {self.selected_name}")
             self.workflow_state = advance_workflow_state(self.workflow_state, "Script")
             self.save_workflow_state(self.selected_name)
-            self.refresh_stage_buttons()
-            self.schedule_ui_update(self.toggle_task_controls, False)
-            self.schedule_ui_update(self.update_task_status, "Script generation complete.", 1.0)
+
+            def _update_ui() -> None:
+                if self.script_output_box is not None:
+                    self.script_output_box.delete("0.0", "end")
+                    self.script_output_box.insert("0.0", generated_script)
+                self.refresh_stage_buttons()
+                self.update_content(self.selected_stage)
+                self.toggle_task_controls(False)
+                self.update_task_status("Script generation complete.", 1.0)
+
+            self.schedule_ui_update(_update_ui)
 
         def on_error(exc: Exception) -> None:
             self.schedule_ui_update(self.toggle_task_controls, False)
@@ -1212,21 +1355,25 @@ class WorkspacePage(ctk.CTkFrame):
             ctk.CTkLabel(
                 self.storyboard_scene_container,
                 text="No storyboard scenes yet.",
-                font=("Segoe UI", 13),
+                font=Fonts.BODY,
+                text_color=Dark.TEXT_MUTED,
             ).pack(anchor="w")
             return
 
         for index, scene in enumerate(self.storyboard_scenes):
             scene_number = scene.get("scene_number", index + 1)
             scene["scene_number"] = scene_number
-            card = ctk.CTkFrame(self.storyboard_scene_container, fg_color="#252525", corner_radius=16)
+            card = ctk.CTkFrame(
+                self.storyboard_scene_container, fg_color=Dark.CARD,
+                corner_radius=Radius.LG, border_width=1, border_color=Dark.BORDER,
+            )
             card.pack(fill="x", pady=(0, 12))
 
             card_content = ctk.CTkFrame(card, fg_color="transparent")
             card_content.pack(fill="x", padx=16, pady=16)
 
-            ctk.CTkLabel(card_content, text=f"Scene #{scene_number}", font=("Segoe UI", 14, "bold")).pack(anchor="w")
-            ctk.CTkLabel(card_content, text=f"Timestamp: {scene.get('timestamp', '-')}", font=("Segoe UI", 13)).pack(anchor="w", pady=(6, 0))
+            ctk.CTkLabel(card_content, text=f"Scene #{scene_number}", font=Fonts.CARD_TITLE, text_color=Dark.TEXT).pack(anchor="w")
+            ctk.CTkLabel(card_content, text=f"Timestamp: {scene.get('timestamp', '-')}", font=Fonts.BODY, text_color=Dark.TEXT_SECONDARY).pack(anchor="w", pady=(6, 0))
 
             textboxes: dict[str, ctk.CTkTextbox] = {}
             for field_name, label in [
@@ -1235,8 +1382,11 @@ class WorkspacePage(ctk.CTkFrame):
                 ("camera_direction", "Camera Direction"),
                 ("on_screen_text", "On-screen Text"),
             ]:
-                ctk.CTkLabel(card_content, text=label, font=("Segoe UI", 12, "bold")).pack(anchor="w", pady=(10, 2))
-                textbox = ctk.CTkTextbox(card_content, height=70, corner_radius=10)
+                ctk.CTkLabel(card_content, text=label, font=Fonts.SMALL_BOLD, text_color=Dark.TEXT_SECONDARY).pack(anchor="w", pady=(10, 2))
+                textbox = ctk.CTkTextbox(
+                    card_content, height=70, corner_radius=Radius.SM,
+                    fg_color=Dark.INPUT_BG, text_color=Dark.TEXT,
+                )
                 textbox.pack(fill="x", pady=(0, 6))
                 textbox.insert("0.0", scene.get(field_name, ""))
                 textboxes[field_name] = textbox
@@ -1245,9 +1395,27 @@ class WorkspacePage(ctk.CTkFrame):
 
             actions = ctk.CTkFrame(card_content, fg_color="transparent")
             actions.pack(fill="x", pady=(8, 0))
-            ctk.CTkButton(actions, text="Delete", width=100, command=lambda scene_copy=scene: self.delete_scene(scene_copy)).pack(side="left")
-            ctk.CTkButton(actions, text="Move Up", width=100, command=lambda scene_copy=scene: self.move_scene(scene_copy, -1)).pack(side="left", padx=(8, 0))
-            ctk.CTkButton(actions, text="Move Down", width=100, command=lambda scene_copy=scene: self.move_scene(scene_copy, 1)).pack(side="left", padx=(8, 0))
+            ctk.CTkButton(
+                actions, text="Delete", width=100,
+                fg_color="#2A1215", hover_color="#3D1A1E",
+                text_color=Dark.ERROR, font=Fonts.BUTTON,
+                corner_radius=Radius.SM,
+                command=lambda scene_copy=scene: self.delete_scene(scene_copy),
+            ).pack(side="left")
+            ctk.CTkButton(
+                actions, text="Move Up", width=100,
+                fg_color=Dark.CARD, hover_color=Dark.HOVER,
+                text_color=Dark.TEXT_SECONDARY, font=Fonts.BUTTON,
+                corner_radius=Radius.SM,
+                command=lambda scene_copy=scene: self.move_scene(scene_copy, -1),
+            ).pack(side="left", padx=(8, 0))
+            ctk.CTkButton(
+                actions, text="Move Down", width=100,
+                fg_color=Dark.CARD, hover_color=Dark.HOVER,
+                text_color=Dark.TEXT_SECONDARY, font=Fonts.BUTTON,
+                corner_radius=Radius.SM,
+                command=lambda scene_copy=scene: self.move_scene(scene_copy, 1),
+            ).pack(side="left", padx=(8, 0))
 
     def add_scene(self) -> None:
         next_number = len(self.storyboard_scenes) + 1
@@ -1310,14 +1478,19 @@ class WorkspacePage(ctk.CTkFrame):
 
         def on_complete(scenes: list[dict]) -> None:
             self.storyboard_scenes = scenes
-            self.render_storyboard_scenes()
             self.storyboard_storage.save(self.selected_name, scenes)
             self.logger.info("Workspace", f"Storyboard generation completed for project: {self.selected_name}")
             self.workflow_state = advance_workflow_state(self.workflow_state, "Storyboard")
             self.save_workflow_state(self.selected_name)
-            self.refresh_stage_buttons()
-            self.schedule_ui_update(self.toggle_task_controls, False)
-            self.schedule_ui_update(self.update_task_status, "Storyboard generation complete.", 1.0)
+
+            def _update_ui() -> None:
+                self.render_storyboard_scenes()
+                self.refresh_stage_buttons()
+                self.update_content(self.selected_stage)
+                self.toggle_task_controls(False)
+                self.update_task_status("Storyboard generation complete.", 1.0)
+
+            self.schedule_ui_update(_update_ui)
 
         def on_error(exc: Exception) -> None:
             self.schedule_ui_update(self.toggle_task_controls, False)
@@ -1368,29 +1541,54 @@ class WorkspacePage(ctk.CTkFrame):
             ctk.CTkLabel(
                 self.image_prompt_container,
                 text="No image prompts yet.",
-                font=("Segoe UI", 13),
+                font=Fonts.BODY,
+                text_color=Dark.TEXT_MUTED,
             ).pack(anchor="w")
             return
 
         for prompt in self.image_prompts:
-            card = ctk.CTkFrame(self.image_prompt_container, fg_color="#252525", corner_radius=16)
+            card = ctk.CTkFrame(
+                self.image_prompt_container, fg_color=Dark.CARD,
+                corner_radius=Radius.LG, border_width=1, border_color=Dark.BORDER,
+            )
             card.pack(fill="x", pady=(0, 12))
             card_content = ctk.CTkFrame(card, fg_color="transparent")
             card_content.pack(fill="x", padx=16, pady=16)
 
-            ctk.CTkLabel(card_content, text=f"Scene #{prompt.get('scene_number', 1)}", font=("Segoe UI", 14, "bold")).pack(anchor="w")
-            ctk.CTkLabel(card_content, text=f"Timestamp: {prompt.get('timestamp', '-')}", font=("Segoe UI", 13)).pack(anchor="w", pady=(6, 0))
-            ctk.CTkLabel(card_content, text=prompt.get("prompt_title", "Prompt"), font=("Segoe UI", 12, "bold")).pack(anchor="w", pady=(10, 2))
-            textbox = ctk.CTkTextbox(card_content, height=140, corner_radius=10)
+            ctk.CTkLabel(card_content, text=f"Scene #{prompt.get('scene_number', 1)}", font=Fonts.CARD_TITLE, text_color=Dark.TEXT).pack(anchor="w")
+            ctk.CTkLabel(card_content, text=f"Timestamp: {prompt.get('timestamp', '-')}", font=Fonts.BODY, text_color=Dark.TEXT_SECONDARY).pack(anchor="w", pady=(6, 0))
+            ctk.CTkLabel(card_content, text=prompt.get("prompt_title", "Prompt"), font=Fonts.SMALL_BOLD, text_color=Dark.TEXT_SECONDARY).pack(anchor="w", pady=(10, 2))
+            textbox = ctk.CTkTextbox(
+                card_content, height=140, corner_radius=Radius.SM,
+                fg_color=Dark.INPUT_BG, text_color=Dark.TEXT,
+            )
             textbox.pack(fill="x", pady=(0, 6))
             textbox.insert("0.0", prompt.get("full_image_prompt", ""))
             prompt["_textbox"] = textbox
 
             buttons = ctk.CTkFrame(card_content, fg_color="transparent")
             buttons.pack(fill="x", pady=(8, 0))
-            ctk.CTkButton(buttons, text="Copy Prompt", width=120, command=lambda prompt_copy=prompt: self.copy_prompt(prompt_copy)).pack(side="left")
-            ctk.CTkButton(buttons, text="Copy All", width=120, command=self.copy_all_prompts).pack(side="left", padx=(8, 0))
-            ctk.CTkButton(buttons, text="Export TXT", width=120, command=lambda prompt_copy=prompt: self.export_prompt(prompt_copy)).pack(side="left", padx=(8, 0))
+            ctk.CTkButton(
+                buttons, text="Copy Prompt", width=120,
+                fg_color=Dark.PRIMARY, hover_color=Dark.PRIMARY_HOVER,
+                text_color=Dark.TEXT, font=Fonts.BUTTON,
+                corner_radius=Radius.SM,
+                command=lambda prompt_copy=prompt: self.copy_prompt(prompt_copy),
+            ).pack(side="left")
+            ctk.CTkButton(
+                buttons, text="Copy All", width=120,
+                fg_color=Dark.CARD, hover_color=Dark.HOVER,
+                text_color=Dark.TEXT_SECONDARY, font=Fonts.BUTTON,
+                corner_radius=Radius.SM,
+                command=self.copy_all_prompts,
+            ).pack(side="left", padx=(8, 0))
+            ctk.CTkButton(
+                buttons, text="Export TXT", width=120,
+                fg_color=Dark.CARD, hover_color=Dark.HOVER,
+                text_color=Dark.TEXT_SECONDARY, font=Fonts.BUTTON,
+                corner_radius=Radius.SM,
+                command=lambda prompt_copy=prompt: self.export_prompt(prompt_copy),
+            ).pack(side="left", padx=(8, 0))
 
     def copy_prompt(self, prompt: dict) -> None:
         if prompt.get("_textbox") is not None:
@@ -1441,16 +1639,21 @@ class WorkspacePage(ctk.CTkFrame):
 
         def on_complete(prompts: list[dict]) -> None:
             self.image_prompts = prompts
-            self.render_image_prompts()
             self.image_prompt_storage.save(self.selected_name, prompts)
             self.logger.info("Workspace", f"Image prompts saved for project: {self.selected_name}")
             self.logger.info("Workspace", f"Image Prompt generation completed for project: {self.selected_name}")
             self.workflow_state = advance_workflow_state(self.workflow_state, "Image Prompts")
             self.workflow_state["Export"] = "AVAILABLE"
             self.save_workflow_state(self.selected_name)
-            self.refresh_stage_buttons()
-            self.schedule_ui_update(self.toggle_task_controls, False)
-            self.schedule_ui_update(self.update_task_status, "Image prompts generation complete.", 1.0)
+
+            def _update_ui() -> None:
+                self.render_image_prompts()
+                self.refresh_stage_buttons()
+                self.update_content(self.selected_stage)
+                self.toggle_task_controls(False)
+                self.update_task_status("Image prompts generation complete.", 1.0)
+
+            self.schedule_ui_update(_update_ui)
 
         def on_error(exc: Exception) -> None:
             self.schedule_ui_update(self.toggle_task_controls, False)
@@ -1508,11 +1711,15 @@ class WorkspacePage(ctk.CTkFrame):
             self.logger.info("Workspace", f"Export completed for project: {self.selected_name}")
             self.workflow_state = advance_workflow_state(self.workflow_state, "Export")
             self.save_workflow_state(self.selected_name)
-            self.refresh_stage_buttons()
-            self.schedule_ui_update(self.toggle_task_controls, False)
-            self.schedule_ui_update(self.update_task_status, "Project export complete.", 1.0)
-            if export_dir.exists() and self.current_stage_description is not None:
-                self.current_stage_description.configure(text=f"Export created at {export_dir}")
+
+            def _update_ui() -> None:
+                self.refresh_stage_buttons()
+                self.toggle_task_controls(False)
+                self.update_task_status("Project export complete.", 1.0)
+                if export_dir.exists() and self.current_stage_description is not None:
+                    self.current_stage_description.configure(text=f"Export created at {export_dir}")
+
+            self.schedule_ui_update(_update_ui)
 
         def on_error(exc: Exception) -> None:
             self.schedule_ui_update(self.toggle_task_controls, False)
@@ -1528,8 +1735,110 @@ class WorkspacePage(ctk.CTkFrame):
     def open_export_folder(self) -> None:
         if self.selected_name is None:
             return
-
         export_dir = self.manager.PROJECTS_DIR / self.selected_name / "exports" / self.selected_name
         export_dir.mkdir(parents=True, exist_ok=True)
         if hasattr(os, "startfile"):
             os.startfile(str(export_dir))
+
+    # ==========================================================
+    # AUTOSAVE
+    # ==========================================================
+
+    def _start_autosave(self):
+        self._schedule_autosave()
+
+    def _schedule_autosave(self):
+        if self._autosave_id is not None:
+            self.after_cancel(self._autosave_id)
+        self._autosave_id = self.after(30000, self._perform_autosave)
+
+    def _perform_autosave(self):
+        if self._has_unsaved and self.selected_name:
+            self._save_all_data(show_indicator=False)
+            self._has_unsaved = False
+            self._update_save_indicator("Autosaved")
+        self._schedule_autosave()
+
+    def _mark_unsaved(self, *args):
+        self._has_unsaved = True
+        if self._save_indicator:
+            self._save_indicator.configure(text="\u25CF Unsaved", text_color=Dark.WARNING)
+
+    def _update_save_indicator(self, text=""):
+        if self._save_indicator:
+            self._save_indicator.configure(text=text, text_color=Dark.TEXT_MUTED)
+        if self._last_saved_label and self.selected_name:
+            ts = self.manager.get_last_modified(self.selected_name)
+            self._last_saved_label.configure(text=f"Last saved: {ts}")
+
+    def _save_all_data(self, show_indicator=True):
+        if self.selected_name is None:
+            return
+        self.save_research()
+        self.save_script()
+        self.save_storyboard()
+        self.save_image_prompts()
+        self.manager.touch_modified(self.selected_name)
+        if show_indicator:
+            self._has_unsaved = False
+            self._update_save_indicator("Saved")
+            self._notifications.info("Project saved.")
+
+    def save_current(self):
+        self._save_all_data(show_indicator=True)
+
+    # ==========================================================
+    # STAGE NAVIGATION
+    # ==========================================================
+
+    def _prev_stage(self):
+        if not self.selected_stage or not self.workflow_state:
+            return
+        stages = [s for s in ["Research", "Script", "Storyboard", "Image Prompts", "Export"]
+                  if self.workflow_state.get(s) != "LOCKED"]
+        try:
+            idx = stages.index(self.selected_stage)
+            if idx > 0:
+                self.select_stage(stages[idx - 1])
+        except ValueError:
+            pass
+
+    def _next_stage(self):
+        if not self.selected_stage or not self.workflow_state:
+            return
+        stages = [s for s in ["Research", "Script", "Storyboard", "Image Prompts", "Export"]
+                  if self.workflow_state.get(s) != "LOCKED"]
+        try:
+            idx = stages.index(self.selected_stage)
+            if idx < len(stages) - 1:
+                self.select_stage(stages[idx + 1])
+        except ValueError:
+            pass
+
+    def _update_nav_buttons(self):
+        stages = [s for s in ["Research", "Script", "Storyboard", "Image Prompts", "Export"]
+                  if self.workflow_state.get(s) != "LOCKED"]
+        try:
+            idx = stages.index(self.selected_stage)
+        except ValueError:
+            idx = -1
+
+        if self._prev_btn:
+            if idx <= 0:
+                self._prev_btn.configure(state="disabled")
+            else:
+                self._prev_btn.configure(state="normal")
+
+        if self._next_btn:
+            if idx >= len(stages) - 1 or idx < 0:
+                self._next_btn.configure(state="disabled")
+            else:
+                self._next_btn.configure(state="normal")
+
+    def _open_history(self):
+        if not self.selected_name:
+            from core.notifications import NotificationService
+            NotificationService.get().warning("Select a project first.")
+            return
+        from ui.dialogs import VersionHistoryDialog
+        VersionHistoryDialog(self, self.selected_name)

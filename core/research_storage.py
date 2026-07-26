@@ -2,10 +2,12 @@ import json
 from pathlib import Path
 
 
+_PROJECTS_DIR = Path(__file__).resolve().parent.parent / "projects"
+
+
 class ResearchStorage:
     def load(self, project_name: str) -> dict:
-        project_path = Path(__file__).resolve().parent.parent / "projects" / project_name
-        research_file = project_path / "research.json"
+        research_file = _PROJECTS_DIR / project_name / "research.json"
 
         if not research_file.exists():
             return {}
@@ -26,7 +28,7 @@ class ResearchStorage:
         prompt_preview: str,
         generated_research: str | None = None,
     ) -> None:
-        project_path = Path(__file__).resolve().parent.parent / "projects" / project_name
+        project_path = _PROJECTS_DIR / project_name
         project_path.mkdir(exist_ok=True)
 
         research_file = project_path / "research.json"
@@ -39,5 +41,8 @@ class ResearchStorage:
             "generated_research": generated_research or "",
         }
 
-        with open(research_file, "w", encoding="utf-8") as handle:
-            json.dump(data, handle, indent=4)
+        try:
+            with open(research_file, "w", encoding="utf-8") as handle:
+                json.dump(data, handle, indent=4)
+        except OSError:
+            pass

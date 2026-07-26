@@ -1,6 +1,7 @@
 # Python
 __pycache__/
 *.pyc
+*.pyo
 
 # Virtual Environment
 venv/
@@ -8,15 +9,31 @@ venv/
 
 # Secrets
 secrets/
+config/providers.json
 
 # Environment
 .env
 
-# Local Config
-config/provider_keys.json
-
 # IDE
 .vscode/
+.idea/
+
 # OS
 Thumbs.db
 .DS_Store
+Desktop.ini
+
+# Logs (runtime-generated)
+logs/
+
+# Build artifacts
+dist/
+build/
+*.spec
+!generate_icon.py
+
+# Projects (user data)
+projects/
+
+# Exports (user data)
+exports/

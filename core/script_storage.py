@@ -2,10 +2,12 @@ import json
 from pathlib import Path
 
 
+_PROJECTS_DIR = Path(__file__).resolve().parent.parent / "projects"
+
+
 class ScriptStorage:
     def load(self, project_name: str) -> dict:
-        project_path = Path(__file__).resolve().parent.parent / "projects" / project_name
-        script_file = project_path / "script.json"
+        script_file = _PROJECTS_DIR / project_name / "script.json"
 
         if not script_file.exists():
             return {}
@@ -24,7 +26,7 @@ class ScriptStorage:
         tone: str,
         script_output: str,
     ) -> None:
-        project_path = Path(__file__).resolve().parent.parent / "projects" / project_name
+        project_path = _PROJECTS_DIR / project_name
         project_path.mkdir(exist_ok=True)
 
         script_file = project_path / "script.json"
@@ -35,5 +37,8 @@ class ScriptStorage:
             "script_output": script_output,
         }
 
-        with open(script_file, "w", encoding="utf-8") as handle:
-            json.dump(data, handle, indent=4)
+        try:
+            with open(script_file, "w", encoding="utf-8") as handle:
+                json.dump(data, handle, indent=4)
+        except OSError:
+            pass

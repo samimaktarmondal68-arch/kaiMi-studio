@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from operators.research.prompt_builder import ResearchPromptBuilder, ResearchRequest
-from providers.base_provider import BaseProvider
+from providers.exceptions import ProviderError, ProviderNotConfiguredError
+from providers.models import GenerationRequest
 from providers.provider_manager import ProviderManager
 
 
@@ -21,10 +22,10 @@ class ResearchOperator:
     """Orchestrates the research generation pipeline.
 
     Accepts a ResearchRequest, validates it, builds a prompt,
-    obtains the active AI provider, and returns generated research.
+    and returns generated research via ProviderManager.
 
     This class contains no AI logic, no UI code, no storage, and
-    no direct provider imports. It depends only on abstractions.
+    no direct provider imports. It depends only on ProviderManager.
     """
 
     def __init__(
@@ -53,10 +54,7 @@ class ResearchOperator:
 
         prompt = self._prompt_builder.build(request)
 
-        provider = self._obtain_provider()
-        self._validate_provider(provider)
-
-        return self._generate(provider, prompt)
+        return self._generate(prompt)
 
     def get_prompt_preview(self, request: ResearchRequest) -> str:
         """Return the research prompt without calling the AI provider.
@@ -78,38 +76,22 @@ class ResearchOperator:
                 "Research topic must not be empty."
             )
 
-    def _obtain_provider(self) -> BaseProvider:
+    def _generate(self, prompt: str) -> str:
         try:
-            return self._provider_manager.get_active_provider()
-        except ValueError as exc:
-            raise ProviderConfigurationError(
-                f"Failed to obtain active provider: {exc}"
-            ) from exc
-
-    def _validate_provider(self, provider: BaseProvider) -> None:
-        if not provider.validate_configuration():
-            name = provider.get_provider_name()
-            raise ProviderConfigurationError(
-                f"Provider '{name}' is not configured. "
-                "Please set a valid API key in Settings."
-            )
-
-    def _generate(self, provider: BaseProvider, prompt: str) -> str:
-        name = provider.get_provider_name()
-        try:
-            result = provider.generate(prompt)
-        except NotImplementedError as exc:
-            raise ProviderConfigurationError(
-                f"Provider '{name}' is not implemented: {exc}"
-            ) from exc
+            generation_request = GenerationRequest(prompt=prompt)
+            response = self._provider_manager.generate(generation_request)
+        except ProviderNotConfiguredError as exc:
+            raise ProviderConfigurationError(str(exc)) from exc
+        except ProviderError as exc:
+            raise ResearchGenerationError(str(exc)) from exc
         except Exception as exc:
             raise ResearchGenerationError(
-                f"Research generation failed with provider '{name}': {exc}"
+                f"Research generation failed: {exc}"
             ) from exc
 
-        if not result or not result.strip():
+        if not response.text or not response.text.strip():
             raise ResearchGenerationError(
-                f"Provider '{name}' returned empty content."
+                "Provider returned empty content."
             )
 
-        return result.strip()
+        return response.text.strip()

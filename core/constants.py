@@ -1,14 +1,17 @@
-WINDOW_WIDTH = 1400
-WINDOW_HEIGHT = 850
+"""Application constants — re-exported from core.version and core.theme.
 
-SIDEBAR_WIDTH = 240
+This module is deprecated. Import directly from core.version and core.theme.
+"""
 
-CARD_RADIUS = 18
+from core.version import APP_NAME, VERSION, AUTHOR, YEAR, BUILD, CODENAME
+from core.theme import Layout, Radius, Fonts
 
+WINDOW_WIDTH = Layout.WINDOW_WIDTH
+WINDOW_HEIGHT = Layout.WINDOW_HEIGHT
+SIDEBAR_WIDTH = Layout.SIDEBAR_WIDTH
+TOPBAR_HEIGHT = Layout.TOPBAR_HEIGHT
+CARD_RADIUS = Radius.LG
 BUTTON_HEIGHT = 42
-APP_NAME = "KaiMi Studio"
-VERSION = "0.3.0"
-
-DEFAULT_FONT = "Segoe UI"
-
-RADIUS = 18
+ENTRY_HEIGHT = 40
+RADIUS = Radius.LG
+DEFAULT_FONT = Fonts.FAMILY
