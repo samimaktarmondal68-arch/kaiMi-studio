@@ -1,6 +1,9 @@
+# Copyright 2026 KaiMi. All Rights Reserved.
+# This file is proprietary software. Unauthorized copying, modification
+# or redistribution is prohibited.
 """Build script for KaiMi Studio.
 
-Creates a Windows executable using PyInstaller.
+Creates a production-hardened Windows executable using PyInstaller.
 
 Usage:
     python build.py              # Build in dist/
@@ -8,9 +11,12 @@ Usage:
     python build.py --onefile    # Single-file executable
 """
 
+import compileall
+import os
+import re
+import shutil
 import subprocess
 import sys
-import shutil
 from pathlib import Path
 
 
@@ -31,8 +37,20 @@ def clean():
     print("Clean complete.")
 
 
+def compile_bytecode():
+    """Compile all .py files to .pyc bytecode before packaging."""
+    print("Compiling bytecode...")
+    count = compileall.compile_dir(
+        str(ROOT), quiet=1, force=True,
+        rx=re.compile(r'(__pycache__|\.venv|dist|build|\.git)'),
+    )
+    print(f"Compiled {count} files.")
+
+
 def build(onefile: bool = False):
-    """Run PyInstaller."""
+    """Run PyInstaller with production hardening."""
+    os.environ["PYTHONDONTWRITEBYTECODE"] = "0"
+
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--noconfirm",
@@ -40,8 +58,18 @@ def build(onefile: bool = False):
         "--name", "KaiMi Studio",
         "--windowed",
         "--icon", str(ROOT / "assets" / "icons" / "kaimi.ico"),
+        "--version", str(ROOT / "file_version_info.txt"),
         "--add-data", f"assets{os.pathsep}assets",
         "--add-data", f"config{os.pathsep}config",
+        "--strip",
+        "--exclude-module", "tkinter.test",
+        "--exclude-module", "unittest",
+        "--exclude-module", "test",
+        "--exclude-module", "distutils",
+        "--exclude-module", "setuptools",
+        "--exclude-module", "pip",
+        "--exclude-module", "pytest",
+        "--exclude-module", "_pytest",
         "--hidden-import", "core.theme",
         "--hidden-import", "core.version",
         "--hidden-import", "core.settings",
@@ -54,6 +82,10 @@ def build(onefile: bool = False):
         "--hidden-import", "core.shortcuts",
         "--hidden-import", "core.task_manager",
         "--hidden-import", "core.workflow",
+        "--hidden-import", "core.research_storage",
+        "--hidden-import", "core.script_storage",
+        "--hidden-import", "core.storyboard_storage",
+        "--hidden-import", "core.image_prompt_storage",
         "--hidden-import", "ui.home",
         "--hidden-import", "ui.sidebar",
         "--hidden-import", "ui.dashboard",
@@ -65,7 +97,6 @@ def build(onefile: bool = False):
         "--hidden-import", "ui.about",
         "--hidden-import", "ui.whats_new",
         "--hidden-import", "ui.dialogs",
-        "--hidden-import", "ui.assets",
         "--hidden-import", "ui.global_search",
         "--hidden-import", "providers.provider_manager",
         "--hidden-import", "providers.registry",
@@ -74,17 +105,27 @@ def build(onefile: bool = False):
         "--hidden-import", "providers.models",
         "--hidden-import", "providers.gemini_provider",
         "--hidden-import", "providers.opencode_provider",
-        "--hidden-import", "operators.research",
-        "--hidden-import", "operators.script",
-        "--hidden-import", "operators.storyboard",
-        "--hidden-import", "operators.image_prompt",
+        "--hidden-import", "operators.research.operator",
+        "--hidden-import", "operators.research.prompt_builder",
+        "--hidden-import", "operators.research.critic",
+        "--hidden-import", "operators.script.operator",
+        "--hidden-import", "operators.script.prompt_builder",
+        "--hidden-import", "operators.script.models",
+        "--hidden-import", "operators.storyboard.operator",
+        "--hidden-import", "operators.storyboard.prompt_builder",
+        "--hidden-import", "operators.storyboard.parser",
+        "--hidden-import", "operators.storyboard.models",
+        "--hidden-import", "operators.image_prompt.operator",
+        "--hidden-import", "operators.image_prompt.prompt_builder",
+        "--hidden-import", "operators.image_prompt.parser",
+        "--hidden-import", "operators.image_prompt.models",
         "main.py",
     ]
 
     if onefile:
         cmd.insert(cmd.index("main.py"), "--onefile")
 
-    print(f"Building KaiMi Studio...")
+    print(f"Building KaiMi Studio (production)...")
     print(f"Command: {' '.join(cmd[-5:])}")
     result = subprocess.run(cmd, cwd=str(ROOT))
 
@@ -94,17 +135,20 @@ def build(onefile: bool = False):
             exe_path = DIST / "KaiMi Studio.exe"
         print(f"\nBuild successful!")
         print(f"Output: {exe_path}")
+        print(f"Build is production-hardened with bytecode compilation and symbol stripping.")
     else:
         print(f"\nBuild failed with exit code {result.returncode}")
         sys.exit(1)
 
 
 if __name__ == "__main__":
-    import os
     args = sys.argv[1:]
 
     if "--clean" in args:
         clean()
+
+    if "--compile" in args:
+        compile_bytecode()
 
     onefile = "--onefile" in args
     build(onefile=onefile)

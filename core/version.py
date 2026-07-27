@@ -1,3 +1,6 @@
+# Copyright 2026 KaiMi. All Rights Reserved.
+# This file is proprietary software. Unauthorized copying, modification
+# or redistribution is prohibited.
 """Application version and branding metadata.
 
 Single source of truth for all version, branding, and copyright strings.

@@ -1,3 +1,6 @@
+# Copyright 2026 KaiMi. All Rights Reserved.
+# This file is proprietary software. Unauthorized copying, modification
+# or redistribution is prohibited.
 import json
 from pathlib import Path
 
@@ -5,9 +8,19 @@ from pathlib import Path
 _PROJECTS_DIR = Path(__file__).resolve().parent.parent / "projects"
 
 
+def _validated_project_path(project_name: str) -> Path:
+    """Return the validated project path or raise ValueError on traversal."""
+    from core.project_manager import resolve_project_dir
+    return resolve_project_dir(_PROJECTS_DIR, project_name)
+
+
 class ScriptStorage:
     def load(self, project_name: str) -> dict:
-        script_file = _PROJECTS_DIR / project_name / "script.json"
+        try:
+            project_path = _validated_project_path(project_name)
+        except ValueError:
+            return {}
+        script_file = project_path / "script.json"
 
         if not script_file.exists():
             return {}
@@ -26,7 +39,10 @@ class ScriptStorage:
         tone: str,
         script_output: str,
     ) -> None:
-        project_path = _PROJECTS_DIR / project_name
+        try:
+            project_path = _validated_project_path(project_name)
+        except ValueError:
+            return
         project_path.mkdir(exist_ok=True)
 
         script_file = project_path / "script.json"

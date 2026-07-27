@@ -1,3 +1,6 @@
+# Copyright 2026 KaiMi. All Rights Reserved.
+# This file is proprietary software. Unauthorized copying, modification
+# or redistribution is prohibited.
 """Enhanced export service supporting TXT, Markdown, DOCX, PDF, JSON, ZIP."""
 
 from __future__ import annotations
@@ -6,7 +9,7 @@ import json
 import zipfile
 from pathlib import Path
 
-from core.project_manager import ProjectManager
+from core.project_manager import ProjectManager, _validate_project_path, _sanitize_project_name
 from core.logger import get_logger
 
 
@@ -39,7 +42,12 @@ class ExportService:
             return {}
 
     def export_project(self, project: dict, fmt: str = "zip") -> Path:
-        project_name = project.get("name") or "project"
+        project_name = _sanitize_project_name(project.get("name") or "project")
+        if not _validate_project_path(
+            self.project_manager.PROJECTS_DIR / project_name,
+            self.project_manager.PROJECTS_DIR,
+        ):
+            raise ValueError("Invalid project name for export.")
         self._log.info("Export", f"Exporting '{project_name}' as {fmt}")
         export_root = self.project_manager.PROJECTS_DIR / project_name / "exports" / project_name
         export_root.mkdir(parents=True, exist_ok=True)
@@ -184,6 +192,14 @@ class ExportService:
         return zip_path
 
     def export_stage(self, project_name: str, stage: str, fmt: str = "txt") -> Path | None:
+        project_name = _sanitize_project_name(project_name)
+        if not project_name:
+            return None
+        if not _validate_project_path(
+            self.project_manager.PROJECTS_DIR / project_name,
+            self.project_manager.PROJECTS_DIR,
+        ):
+            return None
         data = self._load_stage_data(project_name, stage)
         if not data:
             return None

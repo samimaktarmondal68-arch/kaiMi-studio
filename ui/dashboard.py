@@ -1,3 +1,6 @@
+# Copyright 2026 KaiMi. All Rights Reserved.
+# This file is proprietary software. Unauthorized copying, modification
+# or redistribution is prohibited.
 """Premium dashboard page for KaiMi Studio.
 
 Design:
@@ -13,10 +16,9 @@ Design:
 import customtkinter as ctk
 from tkinter import Canvas
 from datetime import datetime
-import math
 
-from core.theme import Dark, Fonts, Radius, Spacing, Layout
-from core.version import VERSION, APP_NAME
+from core.theme import Dark, Fonts, Radius, Spacing
+from core.version import APP_NAME
 from core.project_manager import ProjectManager
 from core.workflow import WORKFLOW_STAGES
 from providers.provider_manager import ProviderManager
@@ -377,20 +379,22 @@ class WorkflowOverview(ctk.CTkFrame):
 # -- Provider Status Panel -------------------------------------------
 
 class ProviderCard(ctk.CTkFrame):
-    """Single provider status card with smooth hover."""
+    """Single provider status card with smooth hover and click to open settings."""
 
-    def __init__(self, master, name, model="", is_active=False, is_configured=False, **kwargs):
+    def __init__(self, master, name, model="", is_active=False, is_configured=False, on_click=None, **kwargs):
         super().__init__(
             master, fg_color=Dark.SURFACE, corner_radius=Radius.MD,
             border_width=1, border_color=Dark.PRIMARY if is_active else Dark.BORDER,
-            height=76, **kwargs,
+            height=76, cursor="hand2", **kwargs,
         )
         self.pack_propagate(False)
         self._base_bg = Dark.SURFACE
         self._hover_bg = Dark.CARD
         self._base_border = Dark.PRIMARY if is_active else Dark.BORDER
         self._hover_border = Dark.PRIMARY
+        self._on_click = on_click
 
+        self.bind("<Button-1>", self._click)
         self.bind("<Enter>", self._on_enter)
         self.bind("<Leave>", self._on_leave)
 
@@ -429,6 +433,22 @@ class ProviderCard(ctk.CTkFrame):
         status_color = Dark.SUCCESS if is_configured else Dark.TEXT_MUTED
         status_text = "Configured" if is_configured else "Not Set"
         ctk.CTkLabel(inner, text=status_text, font=Fonts.SMALL_BOLD, text_color=status_color).pack(side="right")
+
+        # Bind click to all child widgets
+        for child in self._all_children(self):
+            child.bind("<Button-1>", self._click)
+
+    def _all_children(self, widget):
+        """Recursively collect all descendant widgets."""
+        children = []
+        for child in widget.winfo_children():
+            children.append(child)
+            children.extend(self._all_children(child))
+        return children
+
+    def _click(self, event=None):
+        if self._on_click:
+            self._on_click()
 
     def _on_enter(self, e=None):
         self.configure(fg_color=self._hover_bg, border_color=self._hover_border)
@@ -477,6 +497,7 @@ class ProviderStatus(ctk.CTkFrame):
             ProviderCard(
                 cards_frame, name=name, model=model,
                 is_active=is_active, is_configured=configured,
+                on_click=self._open_settings,
             ).pack(fill="x", pady=(0, Spacing.X2))
 
         # Add Provider button
@@ -491,10 +512,13 @@ class ProviderStatus(ctk.CTkFrame):
 
     def _open_settings(self):
         try:
-            from ui.settings_page import SettingsPage
-            self.winfo_toplevel()._show_page(SettingsPage, "Settings")
-        except Exception:
-            pass
+            root = self.winfo_toplevel()
+            if hasattr(root, "_show_page"):
+                from ui.settings_page import SettingsPage
+                root._show_page(SettingsPage, "Settings")
+        except Exception as e:
+            from core.logger import get_logger
+            get_logger().error("ProviderStatus", f"_open_settings failed: {e}")
 
 
 # -- Dashboard ------------------------------------------------------

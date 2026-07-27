@@ -1,3 +1,6 @@
+# Copyright 2026 KaiMi. All Rights Reserved.
+# This file is proprietary software. Unauthorized copying, modification
+# or redistribution is prohibited.
 """KaiMi Studio — Integration Test Suite.
 
 Tests the complete production workflow without GUI:
@@ -148,20 +151,6 @@ def _fill_image_prompts(pm, name):
         },
     ]}
     _write_json(_proj_path(pm, name) / "image_prompts.json", data)
-
-
-@pytest.fixture
-def hm(pm, monkeypatch):
-    """HistoryManager sharing the same temp root."""
-    h = HistoryManager()
-    monkeypatch.setattr(h, "pm", pm)
-    return h
-
-
-@pytest.fixture
-def es(pm):
-    """ExportService sharing the same ProjectManager."""
-    return ExportService(pm)
 
 
 # =====================================================================

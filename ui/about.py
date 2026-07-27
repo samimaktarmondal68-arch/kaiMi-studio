@@ -1,3 +1,6 @@
+# Copyright 2026 KaiMi. All Rights Reserved.
+# This file is proprietary software. Unauthorized copying, modification
+# or redistribution is prohibited.
 """About page for KaiMi Studio.
 
 Design:
@@ -10,7 +13,7 @@ import customtkinter as ctk
 
 from core.theme import Dark, Fonts, Radius, Spacing
 from core.version import (
-    APP_NAME, VERSION, AUTHOR, YEAR, BUILD, CODENAME,
+    APP_NAME, VERSION, AUTHOR, BUILD, CODENAME,
     COPYRIGHT, APP_DESCRIPTION,
 )
 

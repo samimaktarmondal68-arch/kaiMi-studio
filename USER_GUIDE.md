@@ -14,7 +14,7 @@ When you first open KaiMi Studio, you'll see a welcome dialog explaining the wor
 
 Before generating content, configure your AI provider:
 
-1. Click **Provider Settings** in the sidebar
+1. Click **Settings** in the sidebar
 2. Select your provider from the dropdown
 3. Enter your API key
 4. Click **Test Connection** to verify
@@ -206,7 +206,7 @@ Access settings from the sidebar:
 - Check logs in the `logs/` folder
 
 ### AI generation fails
-- Verify your API key in Provider Settings
+- Verify your API key in Settings
 - Check your internet connection
 - Ensure your API quota isn't exhausted
 

@@ -1,3 +1,6 @@
+# Copyright 2026 KaiMi. All Rights Reserved.
+# This file is proprietary software. Unauthorized copying, modification
+# or redistribution is prohibited.
 """Main application window for KaiMi Studio.
 
 Design:
@@ -6,12 +9,11 @@ Design:
     - Smooth page transitions
 """
 
-import os
 import sys
 import customtkinter as ctk
 from pathlib import Path
 
-from core.theme import Dark, Layout
+from core.theme import Dark
 from core.settings import AppSettings
 from core.shortcuts import KeyboardShortcuts
 from core.notifications import NotificationService

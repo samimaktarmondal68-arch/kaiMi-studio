@@ -2,10 +2,37 @@
 
 ---
 
+## v1.0.0 — Aurora
+
+Status: Production Release
+
+Completed:
+
+✔ Complete 5-stage workflow (Research → Script → Storyboard → Image Prompts → Export)
+
+✔ Multi-provider AI architecture (Gemini, OpenAI, custom)
+
+✔ Project management with search, sort, filter, archive, favorites
+
+✔ Export to TXT, PDF, DOCX, ZIP
+
+✔ Version history with snapshots
+
+✔ Keyboard shortcuts
+
+✔ Global search
+
+✔ Professional dark UI
+
+✔ Production security hardening
+
+✔ Build system with PyInstaller
+
+---
+
 ## v0.1.1-A
 
-Status:
-Foundation
+Status: Foundation
 
 Completed:
 
@@ -19,30 +46,14 @@ Completed:
 
 ✔ Project Manager Integration
 
-Notes:
-
-Foundation release for KaiMi Studio.
+Notes: Foundation release for KaiMi Studio.
 
 ---
 
 Future Releases
 
-v0.1.2
+v1.1.0 — Installer + Code Signing
 
-UI Polish
+v1.2.0 — License Key System
 
-v0.1.3
-
-Component Library
-
-v0.2.0
-
-AI Workspace
-
-v0.3.0
-
-Production Beta
-
-v1.0.0
-
-Public Release
+v2.0.0 — Additional Features

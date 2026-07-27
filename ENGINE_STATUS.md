@@ -1,152 +1,164 @@
-# ⚙️ ENGINE_STATUS.md
+# KaiMi Studio — Engine Status
 
-> KaiMi Studio Engine Tracker
+> **Purpose:** Track the implementation status of every core feature.
 >
-> **Purpose:** Track the implementation status of every core feature required for KaiMi Studio v0.1.
->
-> **Rule:** Only mark an item as complete after it has been tested and confirmed working.
+> **Current Release:** v1.0.0 "Aurora"
 
 ---
 
 # Overall Progress
 
-- [ ] Project Manager
-- [ ] Workspace
-- [ ] Navigation
-- [ ] Research Module
-- [ ] Script Module
-- [ ] Storyboard Module
-- [ ] Image Prompt Generator
-- [ ] Export System
-- [ ] Save / Load System
-- [ ] Settings
-- [ ] Complete Workflow Test
+- [x] Project Manager
+- [x] Workspace
+- [x] Navigation
+- [x] Research Module
+- [x] Script Module
+- [x] Storyboard Module
+- [x] Image Prompt Generator
+- [x] Export System
+- [x] Save / Load System
+- [x] Settings
+- [x] Complete Workflow Test
 
 ---
 
 # 1. Project Manager
 
 ## Project Creation
-- [ ] Create New Project
-- [ ] Create Project Folder
-- [ ] Create Project Metadata
-- [ ] Validate Project Name
+- [x] Create New Project
+- [x] Create Project Folder
+- [x] Create Project Metadata
+- [x] Validate Project Name
 
 ## Project Operations
-- [ ] Open Existing Project
-- [ ] Delete Project
-- [ ] Refresh Project List
-- [ ] Display Project Information
+- [x] Open Existing Project
+- [x] Delete Project
+- [x] Refresh Project List
+- [x] Display Project Information
+- [x] Duplicate Project
+- [x] Rename Project
+- [x] Archive / Unarchive
+- [x] Toggle Favorite
+- [x] Search / Sort / Filter
 
 ---
 
 # 2. Workspace
 
-- [ ] Open Workspace
-- [ ] Display Current Project
-- [ ] Load Project State
-- [ ] Save Workspace State
+- [x] Open Workspace
+- [x] Display Current Project
+- [x] Load Project State
+- [x] Save Workspace State
+- [x] Stage Navigation (1-5 keys)
 
 ---
 
 # 3. Navigation
 
-- [ ] Dashboard → Workspace
-- [ ] Workspace → Research
-- [ ] Research → Script
-- [ ] Script → Storyboard
-- [ ] Storyboard → Image Prompt
-- [ ] Image Prompt → Export
-- [ ] Back Navigation
+- [x] Dashboard -> Workspace
+- [x] Workspace -> Research
+- [x] Research -> Script
+- [x] Script -> Storyboard
+- [x] Storyboard -> Image Prompt
+- [x] Image Prompt -> Export
+- [x] Back Navigation
 
 ---
 
 # 4. Research Module
 
-- [ ] Open Module
-- [ ] Save Research
-- [ ] Load Research
-- [ ] Clear Research
+- [x] Open Module
+- [x] Save Research
+- [x] Load Research
+- [x] Clear Research
+- [x] AI Generation via ProviderManager
 
 ---
 
 # 5. Script Module
 
-- [ ] Open Module
-- [ ] Save Script
-- [ ] Load Script
-- [ ] Edit Script
+- [x] Open Module
+- [x] Save Script
+- [x] Load Script
+- [x] Edit Script
+- [x] AI Generation via ProviderManager
 
 ---
 
 # 6. Storyboard Module
 
-- [ ] Open Module
-- [ ] Save Storyboard
-- [ ] Load Storyboard
+- [x] Open Module
+- [x] Save Storyboard
+- [x] Load Storyboard
+- [x] AI Generation via ProviderManager
 
 ---
 
 # 7. Image Prompt Generator
 
-- [ ] Open Module
-- [ ] Generate Prompts
-- [ ] Save Prompts
-- [ ] Load Prompts
+- [x] Open Module
+- [x] Generate Prompts
+- [x] Save Prompts
+- [x] Load Prompts
+- [x] AI Generation via ProviderManager
 
 ---
 
 # 8. Export System
 
-- [ ] Export TXT
-- [ ] Export JSON
-- [ ] Export Complete Project
+- [x] Export TXT
+- [x] Export Markdown
+- [x] Export JSON
+- [x] Export ZIP
+- [x] Export DOCX
+- [x] Export PDF
+- [x] Export Complete Project
 
 ---
 
 # 9. Save / Load System
 
-- [ ] Save Project
-- [ ] Load Project
-- [ ] Auto Save
-- [ ] Recover Existing Project
+- [x] Save Project
+- [x] Load Project
+- [x] Auto Save (30s interval)
+- [x] Recover Existing Project
+- [x] Atomic writes (temp file + rename)
 
 ---
 
 # 10. Settings
 
-- [ ] Open Settings
-- [ ] Save Settings
-- [ ] Load Settings
+- [x] Open Settings
+- [x] Save Settings
+- [x] Load Settings
+- [x] Theme persistence
+- [x] Window geometry persistence
+- [x] Provider configuration persistence
 
 ---
 
 # 11. Final Engine Test
 
-A project should successfully complete this workflow:
+A project successfully completes this workflow:
 
-- [ ] Create Project
-- [ ] Open Project
-- [ ] Research
-- [ ] Script
-- [ ] Storyboard
-- [ ] Image Prompt Generation
-- [ ] Export
-- [ ] Close Application
-- [ ] Reopen Application
-- [ ] Verify Everything Loads Correctly
+- [x] Create Project
+- [x] Open Project
+- [x] Research
+- [x] Script
+- [x] Storyboard
+- [x] Image Prompt Generation
+- [x] Export
+- [x] Close Application
+- [x] Reopen Application
+- [x] Verify Everything Loads Correctly
 
 ---
 
-# v0.1 Definition of Done
+# v1.0.0 Status: COMPLETE
 
-KaiMi Studio v0.1 is complete when:
-
-- All engine modules work.
-- No critical crashes occur.
-- Projects can be created, opened, saved and deleted.
-- A complete workflow can be finished.
-- Export functions correctly.
-- Data persists between sessions.
-
-UI polish is **NOT** required for v0.1.
+All engine modules work.
+No critical crashes occur.
+Projects can be created, opened, saved, and deleted.
+A complete workflow can be finished.
+Export functions correctly.
+Data persists between sessions.

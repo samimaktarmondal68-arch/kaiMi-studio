@@ -2,21 +2,25 @@
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
+*.so
 
 # Virtual Environment
 venv/
 .venv/
+env/
 
 # Secrets
 secrets/
 config/providers.json
-
-# Environment
 .env
+.env.*
 
 # IDE
 .vscode/
 .idea/
+*.swp
+*.swo
 
 # OS
 Thumbs.db
@@ -37,3 +41,20 @@ projects/
 
 # Exports (user data)
 exports/
+
+# Development tools
+.agents/
+.codex/
+.continue/
+.roomodes
+.pytest_cache/
+__pycache__/
+
+# Performance reports
+logs/performance_report.json
+
+# Documentation (not needed in release)
+docs/SECURITY_REMEDIATION.md
+docs/BUILD_EVALUATION.md
+docs/CODE_SIGNING.md
+docs/DEPENDENCY_AUDIT.md

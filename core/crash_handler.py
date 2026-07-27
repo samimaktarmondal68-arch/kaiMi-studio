@@ -1,21 +1,24 @@
+# Copyright 2026 KaiMi. All Rights Reserved.
+# This file is proprietary software. Unauthorized copying, modification
+# or redistribution is prohibited.
 """Global crash handler for KaiMi Studio.
 
 Catches unhandled exceptions, logs them with full tracebacks,
 and shows a user-friendly error dialog instead of a raw Python
 traceback window.
+
+Crash logs are sanitized to prevent secret leakage.
 """
 
 from __future__ import annotations
 
 import os
 import sys
-import time
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
-from core.logger import get_logger
+from core.logger import get_logger, mask_secrets
 
 
 def _get_log_path() -> str:
@@ -36,11 +39,12 @@ def _write_crash_log(exc_type, exc_value, exc_tb) -> str:
         f"CRASH — {timestamp}\n"
         f"Python {sys.version}\n"
         f"Platform: {sys.platform}\n"
-        f"Executable: {sys.executable}\n"
         f"CWD: {os.getcwd()}\n"
         f"{'=' * 72}\n"
         f"{tb_text}\n"
     )
+
+    entry = mask_secrets(entry)
 
     try:
         with open(log_path, "a", encoding="utf-8") as f:

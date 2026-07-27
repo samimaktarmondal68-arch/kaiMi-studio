@@ -1,3 +1,6 @@
+# Copyright 2026 KaiMi. All Rights Reserved.
+# This file is proprietary software. Unauthorized copying, modification
+# or redistribution is prohibited.
 """Google Gemini provider implementation.
 
 Uses the google-genai SDK for text generation.
@@ -7,6 +10,7 @@ while conforming to the new BaseProvider interface.
 
 from __future__ import annotations
 
+import logging
 import os
 
 from providers.base_provider import BaseProvider
@@ -26,6 +30,8 @@ from providers.models import (
     ProviderConfig,
     TokenUsage,
 )
+
+logger = logging.getLogger("kaimi_studio.providers.gemini")
 
 DEFAULT_MODEL = "gemini-2.0-flash"
 
@@ -64,8 +70,11 @@ class GeminiProvider(BaseProvider):
             ) from exc
 
         try:
+            logger.info("[Gemini] Initializing client with google-genai SDK")
             self._client = genai.Client(api_key=api_key)
+            logger.info("[Gemini] Client created successfully")
         except Exception as exc:
+            logger.error("[Gemini] Failed to initialize client: %s: %s", type(exc).__name__, exc, exc_info=True)
             raise ProviderError(
                 f"Failed to initialize Gemini client: {exc}",
                 provider="gemini",
@@ -127,13 +136,23 @@ class GeminiProvider(BaseProvider):
             self.initialize()
 
         try:
+            logger.info("[Gemini] Listing models via SDK models.list()")
+            response = self._client.models.list()
+            logger.info("[Gemini] Response type: %s", type(response).__name__)
+
             models = []
-            for model in self._client.models.list():
+            for model in response:
                 name = getattr(model, "name", None)
+                display_name = getattr(model, "display_name", None)
                 if name:
-                    models.append(str(name).split("/")[-1])
+                    short_name = str(name).split("/")[-1]
+                    models.append(short_name)
+                    logger.debug("[Gemini] Model: name=%s -> %s, display=%s", name, short_name, display_name)
+
+            logger.info("[Gemini] Found %d models", len(models))
             return sorted(models)
-        except Exception:
+        except Exception as exc:
+            logger.error("[Gemini] list_models failed: %s: %s", type(exc).__name__, exc, exc_info=True)
             return [DEFAULT_MODEL]
 
     def get_capabilities(self) -> ProviderCapabilities:

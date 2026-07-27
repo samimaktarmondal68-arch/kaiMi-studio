@@ -1,0 +1,16 @@
+{
+    "active_provider": "gemini",
+    "providers": {
+        "gemini": {
+            "enabled": true,
+            "api_key": "",
+            "model": "gemini-2.0-flash"
+        },
+        "opencode": {
+            "enabled": false,
+            "api_key": "",
+            "base_url": "https://opencode.ai/zen",
+            "model": ""
+        }
+    }
+}

@@ -1,12 +1,65 @@
-from pathlib import Path
-from datetime import datetime
+# Copyright 2026 KaiMi. All Rights Reserved.
+# This file is proprietary software. Unauthorized copying, modification
+# or redistribution is prohibited.
 import json
 import os
+import re
 import shutil
 import tempfile
+from datetime import datetime
+from pathlib import Path
 
 from core.workflow import build_initial_workflow_state
 from core.logger import get_logger
+
+_INVALID_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+
+
+def _sanitize_project_name(name: str) -> str:
+    """Sanitize a project name to prevent path traversal and invalid filesystem names.
+
+    Raises ValueError if the name contains invalid characters or path traversal.
+    """
+    name = name.strip()
+    if not name:
+        raise ValueError("Project name cannot be empty.")
+    if _INVALID_CHARS.search(name):
+        raise ValueError("Project name contains invalid characters.")
+    if ".." in name:
+        raise ValueError("Project name cannot contain '..'.")
+    name = name.strip(". ")
+    if not name:
+        raise ValueError("Project name cannot be only dots or spaces.")
+    if len(name) > 200:
+        name = name[:200]
+    return name
+
+
+def _validate_project_path(project_path: Path, base_dir: Path) -> bool:
+    """Ensure project_path is strictly within base_dir (no traversal)."""
+    try:
+        resolved = project_path.resolve()
+        base_resolved = base_dir.resolve()
+        return str(resolved).startswith(str(base_resolved))
+    except (OSError, ValueError):
+        return False
+
+
+def resolve_project_dir(base_dir: Path, project_name: str) -> Path:
+    """Sanitize name, validate path, return the project directory.
+
+    Raises ValueError if the name is invalid or path traversal is detected.
+    """
+    name = _sanitize_project_name(project_name)
+    path = base_dir / name
+    if not _validate_project_path(path, base_dir):
+        raise ValueError("Invalid project path.")
+    return path
 
 
 class ProjectManager:
@@ -22,13 +75,19 @@ class ProjectManager:
     # ==========================================================
 
     def create_project(self, name, topic, language, style):
-        name = name.strip()
+        name = _sanitize_project_name(name)
         if not name:
             raise ValueError("Project name cannot be empty.")
-        if Path(name).name != name or name in {".", ".."}:
-            raise ValueError("Project name cannot contain folder separators.")
+        if len(name) > 200:
+            raise ValueError("Project name is too long (max 200 characters).")
+        if name in _RESERVED_NAMES:
+            raise ValueError(f'"{name}" is a reserved system name.')
+        if name.startswith(".") or name.endswith("."):
+            raise ValueError("Project name cannot start or end with a period.")
 
         project_path = self.PROJECTS_DIR / name
+        if not _validate_project_path(project_path, self.PROJECTS_DIR):
+            raise ValueError("Invalid project name (path traversal detected).")
         if project_path.exists():
             raise FileExistsError(f'Project "{name}" already exists.')
 
@@ -143,13 +202,17 @@ class ProjectManager:
     # ==========================================================
 
     def duplicate_project(self, original_name: str, new_name: str):
-        new_name = new_name.strip()
+        new_name = _sanitize_project_name(new_name)
         if not new_name:
             raise ValueError("New project name cannot be empty.")
 
         src = self.PROJECTS_DIR / original_name
         dst = self.PROJECTS_DIR / new_name
 
+        if not _validate_project_path(src, self.PROJECTS_DIR):
+            raise FileNotFoundError(f'Project "{original_name}" not found.')
+        if not _validate_project_path(dst, self.PROJECTS_DIR):
+            raise ValueError("Invalid project name (path traversal detected).")
         if not src.exists():
             raise FileNotFoundError(f'Project "{original_name}" not found.')
         if dst.exists():
@@ -174,13 +237,17 @@ class ProjectManager:
     # ==========================================================
 
     def rename_project(self, old_name: str, new_name: str):
-        new_name = new_name.strip()
+        new_name = _sanitize_project_name(new_name)
         if not new_name:
             raise ValueError("New project name cannot be empty.")
 
         src = self.PROJECTS_DIR / old_name
         dst = self.PROJECTS_DIR / new_name
 
+        if not _validate_project_path(src, self.PROJECTS_DIR):
+            raise FileNotFoundError(f'Project "{old_name}" not found.')
+        if not _validate_project_path(dst, self.PROJECTS_DIR):
+            raise ValueError("Invalid project name (path traversal detected).")
         if not src.exists():
             raise FileNotFoundError(f'Project "{old_name}" not found.')
         if dst.exists():
@@ -236,7 +303,12 @@ class ProjectManager:
     # ==========================================================
 
     def delete_project(self, project_name):
+        project_name = _sanitize_project_name(project_name)
+        if not project_name:
+            return False
         project_path = self.PROJECTS_DIR / project_name
+        if not _validate_project_path(project_path, self.PROJECTS_DIR):
+            return False
         if project_path.exists():
             shutil.rmtree(project_path)
             self._log.info("ProjectManager", f"Deleted project: {project_name}")
@@ -248,7 +320,13 @@ class ProjectManager:
     # ==========================================================
 
     def load_project(self, project_name):
-        json_file = self.PROJECTS_DIR / project_name / "project.json"
+        project_name = _sanitize_project_name(project_name)
+        if not project_name:
+            return None
+        project_path = self.PROJECTS_DIR / project_name
+        if not _validate_project_path(project_path, self.PROJECTS_DIR):
+            return None
+        json_file = project_path / "project.json"
         if not json_file.exists():
             return None
         try:
@@ -290,7 +368,13 @@ class ProjectManager:
     # ==========================================================
 
     def update_project(self, project_name, data):
-        json_file = self.PROJECTS_DIR / project_name / "project.json"
+        project_name = _sanitize_project_name(project_name)
+        if not project_name:
+            return False
+        project_path = self.PROJECTS_DIR / project_name
+        if not _validate_project_path(project_path, self.PROJECTS_DIR):
+            return False
+        json_file = project_path / "project.json"
         if not json_file.exists():
             return False
 

@@ -1,3 +1,6 @@
+# Copyright 2026 KaiMi. All Rights Reserved.
+# This file is proprietary software. Unauthorized copying, modification
+# or redistribution is prohibited.
 """OpenAI-compatible provider implementation.
 
 Supports any OpenAI-compatible API endpoint including:
@@ -10,6 +13,8 @@ Uses the openai SDK which is already in requirements.txt.
 """
 
 from __future__ import annotations
+
+import logging
 
 from providers.base_provider import BaseProvider
 from providers.exceptions import (
@@ -28,6 +33,8 @@ from providers.models import (
     ProviderConfig,
     TokenUsage,
 )
+
+logger = logging.getLogger("kaimi_studio.providers.opencode")
 
 
 class OpenAICompatibleProvider(BaseProvider):
@@ -70,8 +77,12 @@ class OpenAICompatibleProvider(BaseProvider):
             if base_url:
                 kwargs["base_url"] = base_url
 
+            logger.info("[OpenAI-Compatible] Initializing client: base_url=%s", base_url or "(default)")
             self._client = OpenAI(**kwargs)
+            actual_base = getattr(self._client, "base_url", None)
+            logger.info("[OpenAI-Compatible] Client base_url: %s", actual_base)
         except Exception as exc:
+            logger.error("[OpenAI-Compatible] Failed to initialize: %s: %s", type(exc).__name__, exc, exc_info=True)
             raise ProviderError(
                 f"Failed to initialize OpenAI client: {exc}",
                 provider=self._config.name,
@@ -142,15 +153,49 @@ class OpenAICompatibleProvider(BaseProvider):
         if not self._initialized:
             self.initialize()
 
+        base_url = self._config.base_url.strip() or "(default OpenAI)"
+        logger.info(
+            "[OpenAI-Compatible] Listing models: provider=%s, base_url=%s",
+            self._config.name, base_url,
+        )
+
         try:
+            logger.info("[OpenAI-Compatible] Sending GET %s/v1/models", base_url)
             response = self._client.models.list()
+            logger.info(
+                "[OpenAI-Compatible] Response type: %s, has_data: %s",
+                type(response).__name__,
+                hasattr(response, "data"),
+            )
+
             models = []
-            for model in response:
+
+            if hasattr(response, "data"):
+                items = response.data
+            else:
+                items = response
+
+            for model in items:
                 model_id = getattr(model, "id", None)
+                owned_by = getattr(model, "owned_by", None)
+                created = getattr(model, "created", None)
                 if model_id:
                     models.append(str(model_id))
+                    logger.debug(
+                        "[OpenAI-Compatible] Model: id=%s, owned_by=%s, created=%s",
+                        model_id, owned_by, created,
+                    )
+
+            logger.info("[OpenAI-Compatible] Found %d models", len(models))
             return sorted(models)
-        except Exception:
+        except Exception as exc:
+            status_code = getattr(exc, "status_code", None)
+            response_body = getattr(exc, "response", None)
+            logger.error(
+                "[OpenAI-Compatible] list_models failed: %s: %s (status=%s, response=%s)",
+                type(exc).__name__, exc, status_code, response_body,
+                exc_info=True,
+            )
             return [self._resolved_model] if self._resolved_model else []
 
     def get_capabilities(self) -> ProviderCapabilities:

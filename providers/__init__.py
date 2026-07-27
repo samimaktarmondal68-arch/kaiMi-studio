@@ -1,3 +1,6 @@
+# Copyright 2026 KaiMi. All Rights Reserved.
+# This file is proprietary software. Unauthorized copying, modification
+# or redistribution is prohibited.
 """Provider abstraction layer for KaiMi Studio.
 
 This package provides the multi-provider AI architecture:

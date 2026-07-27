@@ -1,6 +1,8 @@
+# Copyright 2026 KaiMi. All Rights Reserved.
+# This file is proprietary software. Unauthorized copying, modification
+# or redistribution is prohibited.
 """Keyboard shortcuts manager for KaiMi Studio."""
 
-import customtkinter as ctk
 from ui.global_search import GlobalSearchDialog
 
 

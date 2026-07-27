@@ -1,26 +1,30 @@
-"""Premium settings page for KaiMi Studio.
+# Copyright 2026 KaiMi. All Rights Reserved.
+# This file is proprietary software. Unauthorized copying, modification
+# or redistribution is prohibited.
+"""Settings page for KaiMi Studio.
 
-Design:
-    - Clean card-based layout
-    - Provider selector with status indicator
-    - Form fields with consistent styling
-    - Test connection with loading state
-    - All using design system colors
+Provides:
+    - Appearance (theme persistence)
+    - AI Provider configuration
+    - Application settings (autosave, recent projects)
+    - Export preferences
 """
 
 import customtkinter as ctk
 
 from core.theme import Dark, Fonts, Radius, Spacing
 from core.version import VERSION
+from core.settings import AppSettings
 from providers.provider_manager import ProviderManager
 
 
 class SettingsPage(ctk.CTkFrame):
-    """Provider settings page with provider selection, API key, base URL, model, and test connection."""
+    """Settings page with appearance, provider, and general settings."""
 
     def __init__(self, master):
         super().__init__(master, fg_color=Dark.BG)
         self._provider_manager = ProviderManager()
+        self._app_settings = AppSettings()
         self._key_visible = False
         self._model_options: list[str] = []
 
@@ -44,8 +48,17 @@ class SettingsPage(ctk.CTkFrame):
         # Appearance card
         self._build_appearance_card(scroll)
 
+        # Application card
+        self._build_application_card(scroll)
+
+        # Export card
+        self._build_export_card(scroll)
+
         # Provider card
         self._build_provider_card(scroll)
+
+        # Save All button
+        self._build_save_all(scroll)
 
         # Footer
         ctk.CTkLabel(
@@ -84,10 +97,14 @@ class SettingsPage(ctk.CTkFrame):
             text_color=Dark.TEXT_SECONDARY,
         ).pack(side="left")
 
+        current_theme = self._app_settings.get_theme().title()
+        self._theme_var = ctk.StringVar(value=current_theme)
+
         mode = ctk.CTkOptionMenu(
             row,
             values=["Dark", "Light", "System"],
-            command=lambda value: ctk.set_appearance_mode(value.lower()),
+            variable=self._theme_var,
+            command=self._on_theme_changed,
             fg_color=Dark.INPUT_BG,
             button_color=Dark.PRIMARY,
             button_hover_color=Dark.PRIMARY_HOVER,
@@ -97,8 +114,131 @@ class SettingsPage(ctk.CTkFrame):
             height=36,
             font=Fonts.BODY,
         )
-        mode.set("Dark")
         mode.pack(side="right")
+
+    def _on_theme_changed(self, value: str) -> None:
+        ctk.set_appearance_mode(value.lower())
+        self._app_settings.set_theme(value.lower())
+
+    # ── Application Card ─────────────────────────────────────────────
+
+    def _build_application_card(self, parent) -> None:
+        card = ctk.CTkFrame(
+            parent,
+            fg_color=Dark.CARD,
+            corner_radius=Radius.LG,
+            border_width=1,
+            border_color=Dark.BORDER,
+        )
+        card.pack(fill="x", padx=Spacing.X12, pady=(0, Spacing.X4))
+
+        ctk.CTkLabel(
+            card,
+            text="Application",
+            font=Fonts.SECTION,
+            text_color=Dark.TEXT,
+        ).pack(anchor="w", padx=Spacing.X6, pady=(Spacing.X5, Spacing.X3))
+
+        # Autosave row
+        row = ctk.CTkFrame(card, fg_color="transparent")
+        row.pack(fill="x", padx=Spacing.X6, pady=(0, Spacing.X3))
+
+        ctk.CTkLabel(
+            row,
+            text="Autosave",
+            font=Fonts.BODY,
+            text_color=Dark.TEXT_SECONDARY,
+        ).pack(side="left")
+
+        self._autosave_var = ctk.StringVar(value="On" if self._app_settings.get("autosave_enabled", True) else "Off")
+        autosave_menu = ctk.CTkOptionMenu(
+            row,
+            values=["On", "Off"],
+            variable=self._autosave_var,
+            fg_color=Dark.INPUT_BG,
+            button_color=Dark.PRIMARY,
+            button_hover_color=Dark.PRIMARY_HOVER,
+            dropdown_fg_color=Dark.CARD,
+            dropdown_hover_color=Dark.HOVER,
+            width=160,
+            height=36,
+            font=Fonts.BODY,
+        )
+        autosave_menu.pack(side="right")
+
+        # Autosave interval row
+        row2 = ctk.CTkFrame(card, fg_color="transparent")
+        row2.pack(fill="x", padx=Spacing.X6, pady=(0, Spacing.X3))
+
+        ctk.CTkLabel(
+            row2,
+            text="Autosave Interval (seconds)",
+            font=Fonts.BODY,
+            text_color=Dark.TEXT_SECONDARY,
+        ).pack(side="left")
+
+        current_interval = str(self._app_settings.get("autosave_interval", 30))
+        self._interval_var = ctk.StringVar(value=current_interval)
+        interval_menu = ctk.CTkOptionMenu(
+            row2,
+            values=["15", "30", "60", "120"],
+            variable=self._interval_var,
+            fg_color=Dark.INPUT_BG,
+            button_color=Dark.PRIMARY,
+            button_hover_color=Dark.PRIMARY_HOVER,
+            dropdown_fg_color=Dark.CARD,
+            dropdown_hover_color=Dark.HOVER,
+            width=160,
+            height=36,
+            font=Fonts.BODY,
+        )
+        interval_menu.pack(side="right")
+
+    # ── Export Card ───────────────────────────────────────────────────
+
+    def _build_export_card(self, parent) -> None:
+        card = ctk.CTkFrame(
+            parent,
+            fg_color=Dark.CARD,
+            corner_radius=Radius.LG,
+            border_width=1,
+            border_color=Dark.BORDER,
+        )
+        card.pack(fill="x", padx=Spacing.X12, pady=(0, Spacing.X4))
+
+        ctk.CTkLabel(
+            card,
+            text="Export",
+            font=Fonts.SECTION,
+            text_color=Dark.TEXT,
+        ).pack(anchor="w", padx=Spacing.X6, pady=(Spacing.X5, Spacing.X3))
+
+        row = ctk.CTkFrame(card, fg_color="transparent")
+        row.pack(fill="x", padx=Spacing.X6, pady=(0, Spacing.X5))
+
+        ctk.CTkLabel(
+            row,
+            text="Default Export Format",
+            font=Fonts.BODY,
+            text_color=Dark.TEXT_SECONDARY,
+        ).pack(side="left")
+
+        current_fmt = self._app_settings.get("export_format", "zip").title()
+        self._export_fmt_var = ctk.StringVar(value=current_fmt)
+        fmt_menu = ctk.CTkOptionMenu(
+            row,
+            values=["Zip", "Markdown", "Txt", "Json", "Docx", "Pdf"],
+            variable=self._export_fmt_var,
+            fg_color=Dark.INPUT_BG,
+            button_color=Dark.PRIMARY,
+            button_hover_color=Dark.PRIMARY_HOVER,
+            dropdown_fg_color=Dark.CARD,
+            dropdown_hover_color=Dark.HOVER,
+            width=160,
+            height=36,
+            font=Fonts.BODY,
+        )
+        fmt_menu.pack(side="right")
 
     # ── Provider Card ────────────────────────────────────────────────
 
@@ -259,7 +399,7 @@ class SettingsPage(ctk.CTkFrame):
         self._model_var = ctk.StringVar(value="")
         self._model_menu = ctk.CTkOptionMenu(
             model_controls,
-            values=["Loading..."],
+            values=["Click Load or enter model manually"],
             variable=self._model_var,
             fg_color=Dark.INPUT_BG,
             button_color=Dark.PRIMARY,
@@ -341,6 +481,69 @@ class SettingsPage(ctk.CTkFrame):
         )
         self._feedback_label.pack(side="left", padx=Spacing.X3)
 
+    # ── Save All ─────────────────────────────────────────────────────
+
+    def _build_save_all(self, parent) -> None:
+        card = ctk.CTkFrame(
+            parent,
+            fg_color=Dark.CARD,
+            corner_radius=Radius.LG,
+            border_width=1,
+            border_color=Dark.BORDER,
+        )
+        card.pack(fill="x", padx=Spacing.X12, pady=(0, Spacing.X4))
+
+        row = ctk.CTkFrame(card, fg_color="transparent")
+        row.pack(fill="x", padx=Spacing.X6, pady=Spacing.X5)
+
+        self._save_all_btn = ctk.CTkButton(
+            row,
+            text="Save All Settings",
+            width=200,
+            height=44,
+            fg_color=Dark.PRIMARY,
+            hover_color=Dark.PRIMARY_HOVER,
+            text_color=Dark.TEXT,
+            font=Fonts.BUTTON,
+            corner_radius=Radius.MD,
+            command=self._save_all_settings,
+        )
+        self._save_all_btn.pack(side="left")
+
+        self._save_all_feedback = ctk.CTkLabel(
+            row,
+            text="",
+            font=Fonts.SMALL,
+            text_color=Dark.TEXT_SECONDARY,
+        )
+        self._save_all_feedback.pack(side="left", padx=Spacing.X4)
+
+    def _save_all_settings(self) -> None:
+        """Save all settings (appearance, application, export, provider)."""
+        try:
+            # Save appearance
+            theme = self._theme_var.get().lower()
+            self._app_settings.set_theme(theme)
+            ctk.set_appearance_mode(theme)
+
+            # Save application settings
+            self._app_settings.set("autosave_enabled", self._autosave_var.get() == "On")
+            self._app_settings.set("autosave_interval", int(self._interval_var.get()))
+
+            # Save export settings
+            self._app_settings.set("export_format", self._export_fmt_var.get().lower())
+
+            # Save provider settings
+            self._save_config()
+
+            self._save_all_feedback.configure(
+                text="All settings saved.", text_color=Dark.SUCCESS
+            )
+        except Exception as e:
+            self._save_all_feedback.configure(
+                text=f"Error: {e}", text_color=Dark.ERROR
+            )
+
     # ── Helpers ──────────────────────────────────────────────────────
 
     def _get_active_name(self) -> str:
@@ -355,7 +558,10 @@ class SettingsPage(ctk.CTkFrame):
         return active.title() if active else self._provider_names[0].title()
 
     def _show_base_url(self, provider_name: str) -> bool:
-        return provider_name in ("opencode",)
+        return self._provider_manager.show_base_url(provider_name)
+
+    def _requires_key(self, provider_name: str) -> bool:
+        return self._provider_manager.provider_requires_key(provider_name)
 
     # ── Events ───────────────────────────────────────────────────────
 
@@ -385,8 +591,16 @@ class SettingsPage(ctk.CTkFrame):
         else:
             self._base_url_frame.pack_forget()
 
+        if self._requires_key(name):
+            self._api_key_entry.master.pack(fill="x", padx=Spacing.X6, pady=(0, Spacing.X3))
+        else:
+            self._api_key_entry.master.pack_forget()
+
         self._refresh_status()
         self._feedback_label.configure(text="")
+
+        if key or not self._requires_key(name):
+            self._load_models()
 
     def _load_current_config(self) -> None:
         name = self._get_active_name()
@@ -407,7 +621,13 @@ class SettingsPage(ctk.CTkFrame):
         if not self._show_base_url(name):
             self._base_url_frame.pack_forget()
 
+        if not self._requires_key(name):
+            self._api_key_entry.master.pack_forget()
+
         self._refresh_status()
+
+        if key or not self._requires_key(name):
+            self._load_models()
 
     def _refresh_status(self) -> None:
         name = self._get_active_name()
@@ -432,11 +652,11 @@ class SettingsPage(ctk.CTkFrame):
 
     def _save_config(self) -> None:
         name = self._get_active_name()
-        api_key = self._api_key_entry.get().strip()
+        api_key = self._api_key_entry.get().strip() if self._requires_key(name) else ""
         base_url = self._base_url_entry.get().strip() if self._show_base_url(name) else ""
         model = self._model_entry.get().strip() or self._model_var.get().strip()
 
-        if not api_key:
+        if self._requires_key(name) and not api_key:
             self._feedback_label.configure(text="API key cannot be empty.", text_color=Dark.ERROR)
             return
 
@@ -450,11 +670,13 @@ class SettingsPage(ctk.CTkFrame):
         self._refresh_status()
         self._feedback_label.configure(text="Saved.", text_color=Dark.SUCCESS)
 
+        self._load_models()
+
     def _test_connection(self) -> None:
         name = self._get_active_name()
-        api_key = self._api_key_entry.get().strip()
+        api_key = self._api_key_entry.get().strip() if self._requires_key(name) else "local"
 
-        if not api_key:
+        if self._requires_key(name) and not api_key:
             self._feedback_label.configure(text="Enter an API key first.", text_color=Dark.ERROR)
             return
 
@@ -479,6 +701,9 @@ class SettingsPage(ctk.CTkFrame):
                 self._feedback_label.configure(text=message, text_color=color)
                 self._refresh_status()
 
+                if success:
+                    self._load_models()
+
             self.after(0, update_ui)
 
         import threading
@@ -486,11 +711,23 @@ class SettingsPage(ctk.CTkFrame):
 
     def _load_models(self) -> None:
         name = self._get_active_name()
+        api_key = self._provider_manager.get_provider_api_key(name)
+
+        if self._requires_key(name) and not api_key:
+            self._feedback_label.configure(text="Set an API key first.", text_color=Dark.ERROR)
+            return
+
         self._feedback_label.configure(text="Loading models...", text_color=Dark.TEXT_MUTED)
         self._load_models_btn.configure(state="disabled")
 
         def run_load():
-            models = self._provider_manager.list_models(name)
+            error_message = None
+            models = []
+
+            try:
+                models = self._provider_manager.list_models(name)
+            except Exception as exc:
+                error_message = f"{type(exc).__name__}: {exc}"
 
             def update_ui():
                 self._load_models_btn.configure(state="normal")
@@ -501,8 +738,16 @@ class SettingsPage(ctk.CTkFrame):
                     if current not in models:
                         self._model_var.set(models[0])
                     self._feedback_label.configure(text=f"Loaded {len(models)} models.", text_color=Dark.SUCCESS)
+                elif error_message:
+                    self._feedback_label.configure(
+                        text=f"Failed: {error_message[:80]}",
+                        text_color=Dark.ERROR,
+                    )
                 else:
-                    self._feedback_label.configure(text="No models found. Enter model manually.", text_color=Dark.TEXT_MUTED)
+                    self._feedback_label.configure(
+                        text="No models found. Enter model manually.",
+                        text_color=Dark.TEXT_MUTED,
+                    )
 
             self.after(0, update_ui)
 

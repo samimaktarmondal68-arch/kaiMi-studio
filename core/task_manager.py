@@ -1,10 +1,13 @@
+# Copyright 2026 KaiMi. All Rights Reserved.
+# This file is proprietary software. Unauthorized copying, modification
+# or redistribution is prohibited.
 """Enhanced TaskManager with queue, retry, and task history."""
 
 from __future__ import annotations
 
 import threading
 import queue
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Optional
 from datetime import datetime
 

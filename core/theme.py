@@ -1,3 +1,6 @@
+# Copyright 2026 KaiMi. All Rights Reserved.
+# This file is proprietary software. Unauthorized copying, modification
+# or redistribution is prohibited.
 """Master Design System for KaiMi Studio.
 
 This module defines the permanent visual language for the entire application.
@@ -21,19 +24,19 @@ class Dark:
 
     PRIMARY = "#6D4AFF"
     PRIMARY_HOVER = "#7E5EFF"
-    PRIMARY_LIGHT = "#6D4AFF20"
+    PRIMARY_LIGHT = "#1A1333"
 
     SECONDARY = "#4DA8FF"
-    SECONDARY_LIGHT = "#4DA8FF20"
+    SECONDARY_LIGHT = "#101E33"
 
     SUCCESS = "#22C55E"
-    SUCCESS_LIGHT = "#22C55E20"
+    SUCCESS_LIGHT = "#0D231A"
 
     WARNING = "#F59E0B"
-    WARNING_LIGHT = "#F59E0B20"
+    WARNING_LIGHT = "#251E15"
 
     ERROR = "#EF4444"
-    ERROR_LIGHT = "#EF444420"
+    ERROR_LIGHT = "#251212"
 
     TEXT = "#F8FAFC"
     TEXT_SECONDARY = "#94A3B8"
@@ -44,7 +47,7 @@ class Dark:
     INPUT_FOCUS = "#6D4AFF"
 
     HOVER = "#1A2332"
-    ACTIVE_ITEM = "#6D4AFF18"
+    ACTIVE_ITEM = "#111128"
 
     GRADIENT_START = "#6D4AFF"
     GRADIENT_MID = "#8B5CF6"
@@ -62,19 +65,19 @@ class Light:
 
     PRIMARY = "#6D4AFF"
     PRIMARY_HOVER = "#5A3AE0"
-    PRIMARY_LIGHT = "#6D4AFF12"
+    PRIMARY_LIGHT = "#EDE8FF"
 
     SECONDARY = "#4DA8FF"
-    SECONDARY_LIGHT = "#4DA8FF12"
+    SECONDARY_LIGHT = "#E8F2FF"
 
     SUCCESS = "#16A34A"
-    SUCCESS_LIGHT = "#16A34A12"
+    SUCCESS_LIGHT = "#E8F5ED"
 
     WARNING = "#D97706"
-    WARNING_LIGHT = "#D9770612"
+    WARNING_LIGHT = "#FDF3E5"
 
     ERROR = "#DC2626"
-    ERROR_LIGHT = "#DC262612"
+    ERROR_LIGHT = "#FDE8E8"
 
     TEXT = "#0F172A"
     TEXT_SECONDARY = "#64748B"
@@ -85,7 +88,7 @@ class Light:
     INPUT_FOCUS = "#6D4AFF"
 
     HOVER = "#F1F5F9"
-    ACTIVE_ITEM = "#6D4AFF10"
+    ACTIVE_ITEM = "#F0ECFF"
 
     GRADIENT_START = "#6D4AFF"
     GRADIENT_MID = "#8B5CF6"
@@ -108,6 +111,7 @@ class Fonts:
     TINY = (FAMILY, 11)
     BUTTON = (FAMILY, 14, "bold")
     INPUT = (FAMILY, 14)
+    HEADING = (FAMILY, 22, "bold")
 
 
 class Spacing:

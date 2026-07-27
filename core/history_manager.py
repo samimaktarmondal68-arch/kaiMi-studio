@@ -1,13 +1,32 @@
+# Copyright 2026 KaiMi. All Rights Reserved.
+# This file is proprietary software. Unauthorized copying, modification
+# or redistribution is prohibited.
 """Version history manager for all stage outputs.
 
 Creates timestamped snapshots in <project>/history/<stage>/.
 Allows restore, compare, and delete operations.
+
+Paths are validated to prevent directory traversal.
 """
 
 import json
+import re
 from pathlib import Path
 from datetime import datetime
 from core.logger import get_logger
+
+
+_VALID_STAGES = {"Research", "Script", "Storyboard", "Image Prompts"}
+_SNAPSHOT_PATTERN = re.compile(r'^[\d_\-]+\.json$')
+
+
+def _validate_snapshot_name(filename: str) -> bool:
+    """Validate a snapshot filename to prevent path traversal."""
+    if not filename or "/" in filename or "\\" in filename:
+        return False
+    if ".." in filename:
+        return False
+    return bool(_SNAPSHOT_PATTERN.match(filename))
 
 
 class HistoryManager:
@@ -52,6 +71,8 @@ class HistoryManager:
         return snapshots
 
     def load_snapshot(self, project_name: str, stage: str, filename: str) -> dict:
+        if not _validate_snapshot_name(filename):
+            return {}
         d = self._history_dir(project_name, stage)
         f = d / filename
         if not f.exists():
@@ -63,6 +84,8 @@ class HistoryManager:
             return {}
 
     def delete_snapshot(self, project_name: str, stage: str, filename: str) -> bool:
+        if not _validate_snapshot_name(filename):
+            return False
         d = self._history_dir(project_name, stage)
         f = d / filename
         if f.exists():
@@ -71,6 +94,8 @@ class HistoryManager:
         return False
 
     def restore_snapshot(self, project_name: str, stage: str, filename: str) -> dict:
+        if not _validate_snapshot_name(filename):
+            return {}
         data = self.load_snapshot(project_name, stage, filename)
         if not data:
             return {}
@@ -108,6 +133,8 @@ class HistoryManager:
             ImagePromptStorage().save(project_name, data.get("prompts", []))
 
     def compare_snapshots(self, project_name: str, stage: str, file1: str, file2: str) -> dict:
+        if not _validate_snapshot_name(file1) or not _validate_snapshot_name(file2):
+            return {}
         data1 = self.load_snapshot(project_name, stage, file1)
         data2 = self.load_snapshot(project_name, stage, file2)
 

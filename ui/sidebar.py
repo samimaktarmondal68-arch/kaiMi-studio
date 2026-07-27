@@ -1,3 +1,6 @@
+# Copyright 2026 KaiMi. All Rights Reserved.
+# This file is proprietary software. Unauthorized copying, modification
+# or redistribution is prohibited.
 """Premium sidebar navigation for KaiMi Studio.
 
 Design:
@@ -337,14 +340,8 @@ class Sidebar(ctk.CTkFrame):
 
         self._section_label(nav, "SYSTEM")
 
-        # Provider Settings separate
-        item = NavItem(nav, "provider", "Provider Settings",
-                       on_click=lambda: self.navigate(SettingsPage, "Provider Settings"))
-        item.pack(fill="x", padx=Spacing.X2, pady=1)
-        self._nav_items["Provider Settings"] = item
-
         item = NavItem(nav, "settings", "Settings",
-                       on_click=lambda: self.navigate(SettingsPage, "Settings"))
+                       on_click=lambda label="Settings": self.navigate(SettingsPage, "Settings"))
         item.pack(fill="x", padx=Spacing.X2, pady=1)
         self._nav_items["Settings"] = item
 

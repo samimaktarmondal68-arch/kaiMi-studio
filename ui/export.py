@@ -1,3 +1,6 @@
+# Copyright 2026 KaiMi. All Rights Reserved.
+# This file is proprietary software. Unauthorized copying, modification
+# or redistribution is prohibited.
 """Export page for KaiMi Studio.
 
 Multi-format export: TXT, Markdown, DOCX, PDF, JSON, ZIP.

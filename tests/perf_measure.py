@@ -1,3 +1,6 @@
+# Copyright 2026 KaiMi. All Rights Reserved.
+# This file is proprietary software. Unauthorized copying, modification
+# or redistribution is prohibited.
 """Performance measurement script for KaiMi Studio.
 
 Measures startup time, project operations, search, and export performance.

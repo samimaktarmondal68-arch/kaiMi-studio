@@ -1,3 +1,6 @@
+# Copyright 2026 KaiMi. All Rights Reserved.
+# This file is proprietary software. Unauthorized copying, modification
+# or redistribution is prohibited.
 """Global search dialog for KaiMi Studio (Ctrl+K).
 
 Searches projects, research, scripts, storyboards, image prompts, and templates.
@@ -7,7 +10,7 @@ Results open directly in the workspace.
 import customtkinter as ctk
 from tkinter import Canvas
 
-from core.theme import Dark, Fonts, Radius, Spacing, Layout
+from core.theme import Dark, Fonts, Radius, Spacing
 from core.project_manager import ProjectManager
 from core.research_storage import ResearchStorage
 from core.script_storage import ScriptStorage

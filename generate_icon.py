@@ -1,3 +1,6 @@
+# Copyright 2026 KaiMi. All Rights Reserved.
+# This file is proprietary software. Unauthorized copying, modification
+# or redistribution is prohibited.
 """Generate the KaiMi Studio application icon (.ico).
 
 Run this script to produce assets/icons/kaimi.ico from the same

@@ -1,3 +1,6 @@
+# Copyright 2026 KaiMi. All Rights Reserved.
+# This file is proprietary software. Unauthorized copying, modification
+# or redistribution is prohibited.
 """Production logging system for KaiMi Studio.
 
 Provides structured logging with separate files for:
@@ -5,23 +8,38 @@ Provides structured logging with separate files for:
     - errors.log       (ERROR+ only, with full tracebacks)
     - startup.log      (startup/shutdown lifecycle)
 
-Usage:
-    from core.logger import get_logger
-    log = get_logger()
-    log.info("App", "Application started")
-    log.error("Export", "Failed to export", exc=e)
+Secrets are automatically masked in log output.
 """
 
 from __future__ import annotations
 
 import logging
 import logging.handlers
-import os
+import re
 import sys
-import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+
+_SECRET_PATTERNS = [
+    re.compile(r'(api[_-]?key|token|secret|password|credential)\s*[=:]\s*["\']?([^\s"\']{8})[^\s"\']*', re.IGNORECASE),
+    re.compile(r'(sk-[a-zA-Z0-9]{4})[a-zA-Z0-9]+', re.IGNORECASE),
+    re.compile(r'(AQ\.[a-zA-Z0-9]{4})[a-zA-Z0-9]+'),
+]
+
+_MASK = "********************************"
+
+
+def mask_secrets(text: str) -> str:
+    """Mask sensitive values (API keys, tokens) in log output."""
+    masked = text
+    for pattern in _SECRET_PATTERNS:
+        masked = pattern.sub(
+            lambda m: m.group(1) + "=" + _MASK if "=" in m.group(0) or ":" in m.group(0) else m.group(1) + _MASK,
+            masked,
+        )
+    return masked
 
 
 class AppLogger:
@@ -97,6 +115,7 @@ class AppLogger:
 
     def _log(self, level: int, component: str, message: str,
              exc: Optional[BaseException] = None) -> None:
+        message = mask_secrets(message)
         if exc is not None:
             self.logger.log(level, f"[{component}] {message}",
                             exc_info=(type(exc), exc, exc.__traceback__))

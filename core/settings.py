@@ -1,3 +1,6 @@
+# Copyright 2026 KaiMi. All Rights Reserved.
+# This file is proprietary software. Unauthorized copying, modification
+# or redistribution is prohibited.
 """Application settings with persistent storage.
 
 Handles app-level settings (theme, window size, recent projects, preferences).
