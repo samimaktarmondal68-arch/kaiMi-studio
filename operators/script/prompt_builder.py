@@ -1,51 +1,52 @@
-# Copyright 2026 KaiMi. All Rights Reserved.
-# This file is proprietary software. Unauthorized copying, modification
-# or redistribution is prohibited.
 from __future__ import annotations
 
 from operators.script.models import ScriptRequest
+from core.prompts import load_all_system_prompts
 
 
 class ScriptPromptBuilder:
-    """Builds deterministic script prompts from structured request data."""
 
-    LENGTH_HINTS: dict[str, str] = {
-        "Short": "a concise script",
-        "Medium": "a balanced script",
-        "Long": "a detailed script",
-    }
+    def build(self, request: ScriptRequest) -> tuple[str, str]:
+        system = load_all_system_prompts()
 
-    def build(self, request: ScriptRequest) -> str:
         topic = self._normalize_text(request.topic)
-        style = self._normalize_text(request.style) or "Educational"
-        length = self._normalize_text(request.length) or "Medium"
-        tone = self._normalize_text(request.tone) or "Friendly"
-        keywords = self._normalize_text(request.keywords) or "the key themes"
-        goal = self._normalize_text(request.goal) or "the project goal"
+        platform = self._normalize_text(request.platform) or "Long Form"
+        video_type = self._normalize_text(request.video_type) or "Educational"
         language = self._normalize_text(request.language) or "English"
-        length_hint = self.LENGTH_HINTS.get(length, "a script")
+        sources = self._normalize_text(request.research_sources)
+        keywords = self._normalize_text(request.keywords)
 
-        return (
-            "Script Generation Request\n\n"
-            f"Title:\n{topic}\n\n"
-            f"Style:\n{style}\n\n"
-            f"Length:\n{length}\n\n"
-            f"Tone:\n{tone}\n\n"
-            f"Language:\n{language}\n\n"
-            f"Opening:\n"
-            f"Introduce {topic} in a {tone.lower()} and engaging way.\n\n"
-            f"Body:\n"
-            f"Use {keywords} to support the message "
-            f"and connect it to {goal}.\n\n"
-            f"Conclusion:\n"
-            f"Close with a strong call to action "
-            f"and a clear takeaway for the audience.\n\n"
-            f"Generate {length_hint} for {topic}."
+        target_instruction = ""
+        if request.script_mode == "characters":
+            target_instruction = (
+                f"The final script MUST be between {request.script_min} and {request.script_max} characters. "
+                f"Count the characters precisely. If needed, expand or compress the script "
+                f"until it falls within this range."
+            )
+        else:
+            dur = request.duration_preset
+            if dur:
+                target_instruction = (
+                    f"The script must fit a target duration of {dur}. "
+                    f"Estimate the character count based on speaking rate (~900 characters per minute). "
+                    f"Generate the script to match this duration."
+                )
+
+        user = (
+            f"Generate a {video_type.lower()} script in {language}.\n\n"
+            f"Topic: {topic}\n"
+            f"Platform: {platform}\n"
+            f"Video Type: {video_type}\n\n"
+            f"{'Research Sources: ' + sources if sources else ''}\n"
+            f"{'Keywords: ' + keywords if keywords else ''}\n\n"
+            f"{target_instruction}\n\n"
+            f"Return ONLY the script text. No commentary, no explanation, no markdown formatting."
         )
+
+        return system, user
 
     @staticmethod
     def _normalize_text(value: object) -> str:
         if value is None:
             return ""
-        text = str(value).strip()
-        return text
+        return str(value).strip()

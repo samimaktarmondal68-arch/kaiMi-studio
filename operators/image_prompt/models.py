@@ -1,6 +1,3 @@
-# Copyright 2026 KaiMi. All Rights Reserved.
-# This file is proprietary software. Unauthorized copying, modification
-# or redistribution is prohibited.
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -8,24 +5,20 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class ImagePromptRequest:
-    """Structured input for building an image prompt generation request.
-
-    The caller is responsible for providing all data — this operator
-    does not access storage, UI, or workflow state.
-    """
-
-    storyboard_text: str
+    script_text: str
+    transcript: str = ""
+    timestamps: list[dict] | None = None
     topic: str = ""
     language: str = "English"
 
 
 class ImagePromptValidationError(ValueError):
-    """Raised when an ImagePromptRequest fails validation."""
+    pass
 
 
 class ImagePromptGenerationError(RuntimeError):
-    """Raised when the AI provider fails to generate image prompt content."""
+    pass
 
 
 class ImagePromptParseError(RuntimeError):
-    """Raised when the AI response cannot be parsed into valid image prompts."""
+    pass

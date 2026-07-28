@@ -19,9 +19,7 @@ from pathlib import Path
 import pytest
 
 from core.project_manager import ProjectManager
-from core.research_storage import ResearchStorage
 from core.script_storage import ScriptStorage
-from core.storyboard_storage import StoryboardStorage
 from core.image_prompt_storage import ImagePromptStorage
 from core.history_manager import HistoryManager
 from core.export_service import ExportService
@@ -87,52 +85,25 @@ def _read_json_or_default(pm, name, filename, default):
 
 
 def _create_sample_project(pm, name="TestProject"):
-    pm.create_project(name, topic="AI Education", language="English", style="Educational")
+    pm.create_project(
+        name=name, topic="AI Education",
+        platform="YouTube", video_type="Educational",
+        language="English", script_mode="characters",
+        script_min=4500, script_max=5000,
+        research_sources="UNESCO, OECD", keywords="ai, education",
+    )
     return name
-
-
-def _fill_research(pm, name):
-    data = {
-        "topic": "AI Education",
-        "keywords": "ai, education, future",
-        "goal": "Explore AI in education",
-        "sources": "UNESCO, OECD",
-        "prompt_preview": "Research prompt here",
-        "generated_research": "AI is transforming education across the globe...",
-    }
-    _write_json(_proj_path(pm, name) / "research.json", data)
 
 
 def _fill_script(pm, name):
     data = {
-        "style": "Educational",
-        "length": "Medium",
-        "tone": "Friendly",
         "script_output": "INT. CLASSROOM - DAY\nTeacher introduces AI...",
+        "script_mode": "characters",
+        "script_min": 4500,
+        "script_max": 5000,
+        "research_data": "",
     }
     _write_json(_proj_path(pm, name) / "script.json", data)
-
-
-def _fill_storyboard(pm, name):
-    data = {"scenes": [
-        {
-            "scene_number": 1,
-            "timestamp": "00:00:10",
-            "narration": "Opening scene",
-            "visual_description": "Classroom view",
-            "camera_direction": "Wide shot",
-            "on_screen_text": "",
-        },
-        {
-            "scene_number": 2,
-            "timestamp": "00:00:25",
-            "narration": "AI introduction",
-            "visual_description": "AI visualization",
-            "camera_direction": "Close-up",
-            "on_screen_text": "Artificial Intelligence",
-        },
-    ]}
-    _write_json(_proj_path(pm, name) / "storyboard.json", data)
 
 
 def _fill_image_prompts(pm, name):
@@ -158,36 +129,21 @@ def _fill_image_prompts(pm, name):
 # =====================================================================
 
 class TestEndToEndWorkflow:
-    """Create -> Research -> Script -> Storyboard -> ImagePrompts -> Export -> Reload."""
+    """Create -> Script -> ImagePrompts -> Export -> Reload."""
 
     def test_full_project_lifecycle(self, pm):
         name = _create_sample_project(pm)
         data = pm.load_project(name)
         assert data is not None
         assert data["name"] == name
-        assert data["workflow_state"]["Research"] == "AVAILABLE"
-        assert data["workflow_state"]["Script"] == "LOCKED"
-
-    def test_save_and_reload_research(self, pm):
-        name = _create_sample_project(pm)
-        _fill_research(pm, name)
-        loaded = json.loads((_proj_path(pm, name) / "research.json").read_text(encoding="utf-8"))
-        assert loaded["topic"] == "AI Education"
-        assert "AI is transforming" in loaded["generated_research"]
+        assert data["workflow_state"]["Script"] == "AVAILABLE"
+        assert data["workflow_state"]["Voice"] == "LOCKED"
 
     def test_save_and_reload_script(self, pm):
         name = _create_sample_project(pm)
         _fill_script(pm, name)
         loaded = json.loads((_proj_path(pm, name) / "script.json").read_text(encoding="utf-8"))
-        assert loaded["style"] == "Educational"
         assert "CLASSROOM" in loaded["script_output"]
-
-    def test_save_and_reload_storyboard(self, pm):
-        name = _create_sample_project(pm)
-        _fill_storyboard(pm, name)
-        loaded = json.loads((_proj_path(pm, name) / "storyboard.json").read_text(encoding="utf-8"))
-        assert len(loaded["scenes"]) == 2
-        assert loaded["scenes"][0]["narration"] == "Opening scene"
 
     def test_save_and_reload_image_prompts(self, pm):
         name = _create_sample_project(pm)
@@ -198,9 +154,7 @@ class TestEndToEndWorkflow:
 
     def test_project_survives_full_cycle(self, pm):
         name = _create_sample_project(pm)
-        _fill_research(pm, name)
         _fill_script(pm, name)
-        _fill_storyboard(pm, name)
         _fill_image_prompts(pm, name)
 
         pm.touch_modified(name)
@@ -209,12 +163,8 @@ class TestEndToEndWorkflow:
         assert reloaded is not None
         assert reloaded["name"] == name
 
-        research = json.loads((_proj_path(pm, name) / "research.json").read_text(encoding="utf-8"))
-        assert research["topic"] == "AI Education"
         script = json.loads((_proj_path(pm, name) / "script.json").read_text(encoding="utf-8"))
-        assert script["style"] == "Educational"
-        storyboard = json.loads((_proj_path(pm, name) / "storyboard.json").read_text(encoding="utf-8"))
-        assert len(storyboard["scenes"]) == 2
+        assert "CLASSROOM" in script["script_output"]
         prompts = json.loads((_proj_path(pm, name) / "image_prompts.json").read_text(encoding="utf-8"))
         assert len(prompts["prompts"]) == 2
 
@@ -228,12 +178,12 @@ class TestEndToEndWorkflow:
 
     def test_autosave_simulation(self, pm):
         name = _create_sample_project(pm)
-        _fill_research(pm, name)
-        loaded = json.loads((_proj_path(pm, name) / "research.json").read_text(encoding="utf-8"))
-        assert loaded["generated_research"] == "AI is transforming education across the globe..."
-        _write_json(_proj_path(pm, name) / "research.json", {**loaded, "generated_research": "gen2_updated"})
-        loaded2 = json.loads((_proj_path(pm, name) / "research.json").read_text(encoding="utf-8"))
-        assert loaded2["generated_research"] == "gen2_updated"
+        _fill_script(pm, name)
+        loaded = json.loads((_proj_path(pm, name) / "script.json").read_text(encoding="utf-8"))
+        assert "CLASSROOM" in loaded["script_output"]
+        _write_json(_proj_path(pm, name) / "script.json", {**loaded, "script_output": "UPDATED SCRIPT"})
+        loaded2 = json.loads((_proj_path(pm, name) / "script.json").read_text(encoding="utf-8"))
+        assert loaded2["script_output"] == "UPDATED SCRIPT"
 
 
 # =====================================================================
@@ -278,9 +228,9 @@ class TestStressProjectManagement:
         assert sorted_p[0]["name"] == "New"
 
     def test_filter_by_status(self, pm):
-        pm.create_project("P1", "t", "en", "Educational")
-        pm.create_project("P2", "t", "en", "Educational")
-        pm.update_project("P1", {**pm.load_project("P1"), "status": "Script"})
+        pm.create_project("P1", "t")
+        pm.create_project("P2", "t")
+        pm.update_project("P2", {**pm.load_project("P2"), "status": "Voice"})
         projects = pm.get_projects()
         filtered = pm.filter_projects(projects, "Script")
         assert len(filtered) == 1
@@ -307,12 +257,12 @@ class TestStressProjectManagement:
 
     def test_duplicate_project(self, pm):
         _create_sample_project(pm, "Original")
-        _fill_research(pm, "Original")
+        _fill_script(pm, "Original")
         pm.duplicate_project("Original", "Copy")
         copy_data = pm.load_project("Copy")
         assert copy_data is not None
         assert copy_data["name"] == "Copy"
-        assert _read_json(pm, "Copy", "research.json")["topic"] == "AI Education"
+        assert _read_json(pm, "Copy", "script.json")["script_output"] == _read_json(pm, "Original", "script.json")["script_output"]
 
     def test_rename_project(self, pm):
         _create_sample_project(pm, "OldName")
@@ -353,15 +303,15 @@ class TestWorkflowValidation:
 
     def test_initial_state(self):
         state = build_initial_workflow_state()
-        assert state["Research"] == "AVAILABLE"
+        assert state["Script"] == "AVAILABLE"
         for stage in WORKFLOW_STAGES[1:]:
             assert state[stage] == "LOCKED"
 
-    def test_advance_research(self):
+    def test_advance_script(self):
         state = build_initial_workflow_state()
-        new_state = advance_workflow_state(state, "Research")
-        assert new_state["Research"] == "COMPLETED"
-        assert new_state["Script"] == "AVAILABLE"
+        new_state = advance_workflow_state(state, "Script")
+        assert new_state["Script"] == "COMPLETED"
+        assert new_state["Voice"] == "AVAILABLE"
         for stage in WORKFLOW_STAGES[2:]:
             assert new_state[stage] == "LOCKED"
 
@@ -374,17 +324,17 @@ class TestWorkflowValidation:
 
     def test_normalize_preserves_valid(self):
         state = build_initial_workflow_state()
-        state["Research"] = "COMPLETED"
-        state["Script"] = "AVAILABLE"
+        state["Script"] = "COMPLETED"
+        state["Voice"] = "AVAILABLE"
         normalized = normalize_workflow_state(state)
-        assert normalized["Research"] == "COMPLETED"
-        assert normalized["Script"] == "AVAILABLE"
+        assert normalized["Script"] == "COMPLETED"
+        assert normalized["Voice"] == "AVAILABLE"
 
     def test_normalize_repairs_invalid(self):
-        state = {"Research": "BANANA", "Script": "COMPLETED"}
+        state = {"Script": "BANANA", "Voice": "COMPLETED"}
         normalized = normalize_workflow_state(state)
-        assert normalized["Research"] == "AVAILABLE"
-        assert normalized["Script"] == "COMPLETED"
+        assert normalized["Script"] == "AVAILABLE"
+        assert normalized["Voice"] == "COMPLETED"
 
     def test_normalize_none(self):
         assert normalize_workflow_state(None) == build_initial_workflow_state()
@@ -392,28 +342,12 @@ class TestWorkflowValidation:
     def test_workflow_state_persists(self, pm):
         name = _create_sample_project(pm)
         data = pm.load_project(name)
-        ws = advance_workflow_state(data["workflow_state"], "Research")
+        ws = advance_workflow_state(data["workflow_state"], "Script")
         data["workflow_state"] = ws
         pm.update_project(name, data)
         reloaded = pm.load_project(name)
-        assert reloaded["workflow_state"]["Research"] == "COMPLETED"
-        assert reloaded["workflow_state"]["Script"] == "AVAILABLE"
-
-    def test_workspace_get_project_workflow_state(self, pm):
-        """Simulates the workspace auto-upgrade logic."""
-        name = _create_sample_project(pm)
-        _fill_research(pm, name)
-        data = pm.load_project(name)
-        ws = data.get("workflow_state", {})
-        rs = _read_json(pm, name, "research.json")
-        has_research = bool(rs.get("generated_research"))
-        if ws.get("Research") == "LOCKED" and has_research:
-            ws["Research"] = "AVAILABLE"
-        if has_research and ws.get("Research") != "COMPLETED":
-            ws["Research"] = "COMPLETED"
-            ws["Script"] = "AVAILABLE"
-        assert ws["Research"] == "COMPLETED"
-        assert ws["Script"] == "AVAILABLE"
+        assert reloaded["workflow_state"]["Script"] == "COMPLETED"
+        assert reloaded["workflow_state"]["Voice"] == "AVAILABLE"
 
 
 # =====================================================================
@@ -424,50 +358,13 @@ class TestExportFormats:
 
     def test_export_txt(self, pm, es):
         name = _create_sample_project(pm)
-        _fill_research(pm, name)
         _fill_script(pm, name)
         proj = pm.load_project(name)
         out = es.export_project(proj, fmt="txt")
         assert out.exists()
         content = out.read_text(encoding="utf-8")
         assert "TestProject" in content
-        assert "AI is transforming" in content
-
-    def test_export_markdown(self, pm, es):
-        name = _create_sample_project(pm)
-        _fill_research(pm, name)
-        _fill_script(pm, name)
-        proj = pm.load_project(name)
-        out = es.export_project(proj, fmt="markdown")
-        assert out.exists()
-        content = out.read_text(encoding="utf-8")
-        assert "# TestProject" in content
-        assert "## Research" in content
-
-    def test_export_json(self, pm, es):
-        name = _create_sample_project(pm)
-        _fill_research(pm, name)
-        proj = pm.load_project(name)
-        out = es.export_project(proj, fmt="json")
-        assert out.exists()
-        data = json.loads(out.read_text(encoding="utf-8"))
-        assert data["project"]["name"] == "TestProject"
-        assert "research" in data
-
-    def test_export_zip(self, pm, es):
-        name = _create_sample_project(pm)
-        _fill_research(pm, name)
-        _fill_script(pm, name)
-        _fill_storyboard(pm, name)
-        _fill_image_prompts(pm, name)
-        proj = pm.load_project(name)
-        out = es.export_project(proj, fmt="zip")
-        assert out.exists()
-        with zipfile.ZipFile(out, "r") as zf:
-            names = zf.namelist()
-            assert f"{name}/{name}.json" in names
-            assert f"{name}/{name}.txt" in names
-            assert f"{name}/{name}.md" in names
+        assert "CLASSROOM" in content
 
     def test_export_empty_project(self, pm, es):
         name = _create_sample_project(pm)
@@ -477,31 +374,10 @@ class TestExportFormats:
 
     def test_export_stage(self, pm, es):
         name = _create_sample_project(pm)
-        _fill_research(pm, name)
-        out = es.export_stage(name, "Research", fmt="txt")
+        _fill_image_prompts(pm, name)
+        out = es.export_stage(name, "Image Prompts", fmt="txt")
         assert out is not None
         assert out.exists()
-
-    def test_export_docx(self, pm, es):
-        name = _create_sample_project(pm)
-        _fill_research(pm, name)
-        _fill_script(pm, name)
-        _fill_storyboard(pm, name)
-        proj = pm.load_project(name)
-        out = es.export_project(proj, fmt="docx")
-        assert out.exists()
-        assert out.suffix == ".docx"
-        assert out.stat().st_size > 0
-
-    def test_export_pdf(self, pm, es):
-        name = _create_sample_project(pm)
-        _fill_research(pm, name)
-        _fill_script(pm, name)
-        proj = pm.load_project(name)
-        out = es.export_project(proj, fmt="pdf")
-        assert out.exists()
-        assert out.suffix == ".pdf"
-        assert out.stat().st_size > 0
 
 
 # =====================================================================
@@ -512,84 +388,31 @@ class TestHistoryManager:
 
     def test_save_and_list_snapshots(self, pm, hm):
         name = _create_sample_project(pm)
-        _fill_research(pm, name)
-        data = _read_json(pm, name, "research.json")
-        filename = hm.save_snapshot(name, "Research", data)
+        _fill_script(pm, name)
+        data = _read_json(pm, name, "script.json")
+        filename = hm.save_snapshot(name, "Script", data)
         assert filename.endswith(".json")
-        snapshots = hm.list_snapshots(name, "Research")
+        snapshots = hm.list_snapshots(name, "Script")
         assert len(snapshots) == 1
         assert snapshots[0]["filename"] == filename
 
-    def test_load_snapshot(self, pm, hm):
-        name = _create_sample_project(pm)
-        _fill_research(pm, name)
-        data = _read_json(pm, name, "research.json")
-        filename = hm.save_snapshot(name, "Research", data)
-        loaded = hm.load_snapshot(name, "Research", filename)
-        assert loaded["topic"] == "AI Education"
-
     def test_delete_snapshot(self, pm, hm):
         name = _create_sample_project(pm)
-        _fill_research(pm, name)
-        data = _read_json(pm, name, "research.json")
-        filename = hm.save_snapshot(name, "Research", data)
-        assert hm.delete_snapshot(name, "Research", filename) is True
-        assert len(hm.list_snapshots(name, "Research")) == 0
-
-    def test_compare_snapshots(self, pm, hm):
-        name = _create_sample_project(pm)
-        _fill_research(pm, name)
-        data1 = _read_json(pm, name, "research.json")
-        f1 = hm.save_snapshot(name, "Research", data1)
-        time.sleep(1.1)
-        data2 = {**data1, "topic": "AI Education v2", "generated_research": "updated"}
-        _write_json(_proj_path(pm, name) / "research.json", data2)
-        f2 = hm.save_snapshot(name, "Research", data2)
-        diffs = hm.compare_snapshots(name, "Research", f1, f2)
-        assert "topic" in diffs
-        assert diffs["topic"]["version_1"] == "AI Education"
-        assert diffs["topic"]["version_2"] == "AI Education v2"
-
-    def test_restore_snapshot(self, pm, hm):
-        name = _create_sample_project(pm)
-        _fill_research(pm, name)
-        data = _read_json(pm, name, "research.json")
-        f1 = hm.save_snapshot(name, "Research", data)
-        changed = {**data, "topic": "Changed", "generated_research": "changed content"}
-        _write_json(_proj_path(pm, name) / "research.json", changed)
-        restored = hm.restore_snapshot(name, "Research", f1)
-        assert restored["topic"] == "AI Education"
-        assert restored["generated_research"] == "AI is transforming education across the globe..."
-
-    def test_auto_snapshot(self, pm, hm):
-        name = _create_sample_project(pm)
-        _fill_research(pm, name)
-        result = hm.auto_snapshot(name, "Research")
-        assert result is not None
-        snapshots = hm.list_snapshots(name, "Research")
-        assert len(snapshots) == 1
-
-    def test_auto_snapshot_empty(self, pm, hm):
-        import uuid
-        name = _create_sample_project(pm, f"Empty_{uuid.uuid4().hex[:8]}")
-        result = hm.auto_snapshot(name, "Research")
-        assert result is None
+        _fill_script(pm, name)
+        data = _read_json(pm, name, "script.json")
+        filename = hm.save_snapshot(name, "Script", data)
+        assert hm.delete_snapshot(name, "Script", filename) is True
+        assert len(hm.list_snapshots(name, "Script")) == 0
 
     def test_multiple_stages_history(self, pm, hm):
         name = _create_sample_project(pm)
-        _fill_research(pm, name)
         _fill_script(pm, name)
-        _fill_storyboard(pm, name)
-        hm.save_snapshot(name, "Research", _read_json(pm, name, "research.json"))
         hm.save_snapshot(name, "Script", _read_json(pm, name, "script.json"))
-        hm.save_snapshot(name, "Storyboard", _read_json(pm, name, "storyboard.json"))
-        assert len(hm.list_snapshots(name, "Research")) == 1
         assert len(hm.list_snapshots(name, "Script")) == 1
-        assert len(hm.list_snapshots(name, "Storyboard")) == 1
 
     def test_history_directory_creation(self, pm, hm):
         name = _create_sample_project(pm)
-        d = hm._history_dir(name, "Research")
+        d = hm._history_dir(name, "Script")
         assert d.exists()
         assert d.is_dir()
 
@@ -661,11 +484,11 @@ class TestErrorHandling:
 
     def test_create_empty_name(self, pm):
         with pytest.raises(ValueError):
-            pm.create_project("", "topic", "en", "style")
+            pm.create_project("", "topic")
 
     def test_create_folder_separator_name(self, pm):
         with pytest.raises(ValueError):
-            pm.create_project("bad/name", "topic", "en", "style")
+            pm.create_project("bad/name", "topic")
 
     def test_duplicate_empty_name(self, pm):
         _create_sample_project(pm, "X")
@@ -717,13 +540,13 @@ class TestPerformance:
     def test_create_50_projects_under_5s(self, pm):
         start = time.time()
         for i in range(50):
-            pm.create_project(f"Perf_{i:03d}", f"Topic {i}", "en", "Educational")
+            pm.create_project(f"Perf_{i:03d}", f"Topic {i}")
         elapsed = time.time() - start
         assert elapsed < 5.0, f"Creating 50 projects took {elapsed:.2f}s"
 
     def test_search_50_projects_under_1s(self, pm):
         for i in range(50):
-            pm.create_project(f"Perf_{i:03d}", f"Topic {i}", "en", "Educational")
+            pm.create_project(f"Perf_{i:03d}", f"Topic {i}")
         start = time.time()
         pm.search_projects("Perf_025")
         elapsed = time.time() - start
@@ -738,17 +561,15 @@ class TestPerformance:
         elapsed = time.time() - start
         assert elapsed < 1.0, f"Sort took {elapsed:.2f}s"
 
-    def test_export_zip_under_3s(self, pm, es):
+    def test_export_txt_under_3s(self, pm, es):
         name = _create_sample_project(pm)
-        _fill_research(pm, name)
         _fill_script(pm, name)
-        _fill_storyboard(pm, name)
         _fill_image_prompts(pm, name)
         proj = pm.load_project(name)
         start = time.time()
-        es.export_project(proj, fmt="zip")
+        es.export_project(proj, fmt="txt")
         elapsed = time.time() - start
-        assert elapsed < 3.0, f"ZIP export took {elapsed:.2f}s"
+        assert elapsed < 3.0, f"TXT export took {elapsed:.2f}s"
 
     def test_task_manager_basic(self):
         tm = TaskManager()

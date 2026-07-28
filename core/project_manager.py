@@ -6,11 +6,13 @@ import os
 import re
 import shutil
 import tempfile
+import uuid
 from datetime import datetime
 from pathlib import Path
 
 from core.workflow import build_initial_workflow_state
 from core.logger import get_logger
+from core.templates import get_template
 
 _INVALID_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _RESERVED_NAMES = {
@@ -19,12 +21,10 @@ _RESERVED_NAMES = {
     *(f"LPT{i}" for i in range(1, 10)),
 }
 
+_PROJECT_VERSION = 2
+
 
 def _sanitize_project_name(name: str) -> str:
-    """Sanitize a project name to prevent path traversal and invalid filesystem names.
-
-    Raises ValueError if the name contains invalid characters or path traversal.
-    """
     name = name.strip()
     if not name:
         raise ValueError("Project name cannot be empty.")
@@ -41,7 +41,6 @@ def _sanitize_project_name(name: str) -> str:
 
 
 def _validate_project_path(project_path: Path, base_dir: Path) -> bool:
-    """Ensure project_path is strictly within base_dir (no traversal)."""
     try:
         resolved = project_path.resolve()
         base_resolved = base_dir.resolve()
@@ -51,15 +50,79 @@ def _validate_project_path(project_path: Path, base_dir: Path) -> bool:
 
 
 def resolve_project_dir(base_dir: Path, project_name: str) -> Path:
-    """Sanitize name, validate path, return the project directory.
-
-    Raises ValueError if the name is invalid or path traversal is detected.
-    """
     name = _sanitize_project_name(project_name)
     path = base_dir / name
     if not _validate_project_path(path, base_dir):
         raise ValueError("Invalid project path.")
     return path
+
+
+def _build_smart_metadata(
+    name: str, template_name: str, topic: str, platform: str, video_type: str,
+    language: str, script_mode: str, script_min: int, script_max: int,
+    duration_preset: str, research_sources: str, keywords: str,
+) -> dict:
+    return {
+        "name": name,
+        "topic": topic,
+        "template": template_name,
+        "platform": platform,
+        "video_type": video_type,
+        "language": language,
+        "script_mode": script_mode,
+        "script_min": script_min,
+        "script_max": script_max,
+        "duration_preset": duration_preset,
+        "research_sources": research_sources,
+        "keywords": keywords,
+        "project_version": _PROJECT_VERSION,
+        "project_id": str(uuid.uuid4())[:8],
+        "created": datetime.now().strftime("%d-%m-%Y %H:%M"),
+        "last_modified": datetime.now().strftime("%d-%m-%Y %H:%M"),
+        "last_opened": datetime.now().strftime("%d-%m-%Y %H:%M"),
+        "status": "Script",
+        "workflow_state": build_initial_workflow_state(),
+        "current_version": 0,
+        "total_versions": 0,
+        "autosave_time": 7,
+        "favorite": False,
+        "archived": False,
+        "thumbnail_color": "",
+        "asset_count": 0,
+        "storage_used": 0,
+        "description": "",
+    }
+
+
+def _migrate_project_data(data: dict) -> dict:
+    version = data.get("project_version", 1)
+    if version >= _PROJECT_VERSION:
+        return data
+
+    if "project_id" not in data:
+        data["project_id"] = str(uuid.uuid4())[:8]
+    if "template" not in data:
+        t = get_template("Custom")
+        data["template"] = t.template_name if t else "Custom"
+    if "last_opened" not in data:
+        data["last_opened"] = data.get("last_modified", datetime.now().strftime("%d-%m-%Y %H:%M"))
+    if "current_version" not in data:
+        data["current_version"] = 0
+    if "total_versions" not in data:
+        data["total_versions"] = 0
+    if "autosave_time" not in data:
+        data["autosave_time"] = 7
+    if "asset_count" not in data:
+        data["asset_count"] = 0
+    if "storage_used" not in data:
+        data["storage_used"] = 0
+    if "description" not in data:
+        data["description"] = ""
+    if "project_version" not in data:
+        data["project_version"] = _PROJECT_VERSION
+
+    data["project_version"] = _PROJECT_VERSION
+    return data
 
 
 class ProjectManager:
@@ -70,11 +133,12 @@ class ProjectManager:
         self.PROJECTS_DIR.mkdir(exist_ok=True)
         self._log = get_logger()
 
-    # ==========================================================
-    # CREATE PROJECT
-    # ==========================================================
-
-    def create_project(self, name, topic, language, style):
+    def create_project(self, name, topic, platform="Long Form", video_type="Educational",
+                       language="English", script_mode="characters",
+                       script_min=4500, script_max=5000,
+                       research_sources="", keywords="",
+                       duration_preset="", template_name="Custom",
+                       description=""):
         name = _sanitize_project_name(name)
         if not name:
             raise ValueError("Project name cannot be empty.")
@@ -91,35 +155,30 @@ class ProjectManager:
         if project_path.exists():
             raise FileExistsError(f'Project "{name}" already exists.')
 
-        project_path.mkdir()
-        for folder in ["images", "audio", "exports", "history"]:
-            (project_path / folder).mkdir()
-        for file in ["research.md", "critic.md", "script.md", "prompts.md"]:
-            (project_path / file).touch()
+        try:
+            project_path.mkdir()
+            for folder in ["audio", "exports", "history", "images", "videos", "temp"]:
+                (project_path / folder).mkdir()
+        except OSError as e:
+            raise OSError(f"Failed to create project directories: {e}")
 
-        data = {
-            "name": name,
-            "topic": topic,
-            "language": language,
-            "style": style,
-            "created": datetime.now().strftime("%d-%m-%Y %H:%M"),
-            "last_modified": datetime.now().strftime("%d-%m-%Y %H:%M"),
-            "status": "Research",
-            "workflow_state": build_initial_workflow_state(),
-            "favorite": False,
-            "archived": False,
-            "thumbnail_color": "",
-        }
+        data = _build_smart_metadata(
+            name=name, template_name=template_name, topic=topic,
+            platform=platform, video_type=video_type, language=language,
+            script_mode=script_mode, script_min=script_min,
+            script_max=script_max, duration_preset=duration_preset,
+            research_sources=research_sources, keywords=keywords,
+        )
+        data["description"] = description
 
-        with open(project_path / "project.json", "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4)
+        try:
+            with open(project_path / "project.json", "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4)
+        except OSError as e:
+            raise OSError(f"Failed to write project metadata: {e}")
 
-        self._log.info("ProjectManager", f"Created project: {name}")
+        self._log.info("ProjectManager", f"Created project: {name} (template: {template_name})")
         return project_path
-
-    # ==========================================================
-    # LOAD ALL PROJECTS
-    # ==========================================================
 
     def get_projects(self, include_archived=False):
         projects = []
@@ -133,25 +192,35 @@ class ProjectManager:
                         data = json.load(f)
                 except (OSError, json.JSONDecodeError):
                     continue
+                data = _migrate_project_data(data)
                 data["path"] = folder
+                self._compute_asset_stats(data, folder)
                 if not include_archived and data.get("archived", False):
                     continue
                 projects.append(data)
         return projects
 
+    def _compute_asset_stats(self, data: dict, project_path: Path) -> None:
+        try:
+            total_size = 0
+            file_count = 0
+            for f in project_path.rglob("*"):
+                if f.is_file() and f.name != "project.json":
+                    try:
+                        total_size += f.stat().st_size
+                        file_count += 1
+                    except OSError:
+                        pass
+            data["asset_count"] = file_count
+            data["storage_used"] = total_size
+        except OSError:
+            pass
+
     def get_all_projects(self):
         return self.get_projects(include_archived=True)
 
-    # ==========================================================
-    # PROJECT COUNT
-    # ==========================================================
-
     def get_project_count(self):
         return len(self.get_projects())
-
-    # ==========================================================
-    # RECENT PROJECTS
-    # ==========================================================
 
     def get_recent_projects(self, limit=5):
         projects = self.get_projects()
@@ -160,10 +229,6 @@ class ProjectManager:
             reverse=True,
         )
         return projects[:limit]
-
-    # ==========================================================
-    # SEARCH / SORT / FILTER
-    # ==========================================================
 
     def search_projects(self, query: str):
         query = query.lower().strip()
@@ -176,6 +241,7 @@ class ProjectManager:
                 p.get("topic", ""),
                 p.get("status", ""),
                 p.get("language", ""),
+                p.get("template", ""),
                 p.get("style", ""),
             ]).lower()
             if query in searchable:
@@ -197,10 +263,6 @@ class ProjectManager:
             return projects
         return [p for p in projects if p.get("status") == status_filter]
 
-    # ==========================================================
-    # DUPLICATE PROJECT
-    # ==========================================================
-
     def duplicate_project(self, original_name: str, new_name: str):
         new_name = _sanitize_project_name(new_name)
         if not new_name:
@@ -218,23 +280,28 @@ class ProjectManager:
         if dst.exists():
             raise FileExistsError(f'Project "{new_name}" already exists.')
 
-        shutil.copytree(src, dst)
+        try:
+            shutil.copytree(src, dst)
+        except OSError as e:
+            raise OSError(f"Failed to copy project directory: {e}")
 
         json_file = dst / "project.json"
         if json_file.exists():
-            with open(json_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            data["name"] = new_name
-            data["created"] = datetime.now().strftime("%d-%m-%Y %H:%M")
-            data["last_modified"] = datetime.now().strftime("%d-%m-%Y %H:%M")
-            with open(json_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=4)
+            try:
+                with open(json_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                data["name"] = new_name
+                data["project_id"] = str(uuid.uuid4())[:8]
+                data["created"] = datetime.now().strftime("%d-%m-%Y %H:%M")
+                data["last_modified"] = datetime.now().strftime("%d-%m-%Y %H:%M")
+                data["current_version"] = 0
+                data["total_versions"] = 0
+                with open(json_file, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=4)
+            except (OSError, json.JSONDecodeError) as e:
+                raise OSError(f"Failed to update duplicated project metadata: {e}")
 
         return dst
-
-    # ==========================================================
-    # RENAME PROJECT
-    # ==========================================================
 
     def rename_project(self, old_name: str, new_name: str):
         new_name = _sanitize_project_name(new_name)
@@ -253,22 +320,24 @@ class ProjectManager:
         if dst.exists():
             raise FileExistsError(f'Project "{new_name}" already exists.')
 
-        src.rename(dst)
+        try:
+            src.rename(dst)
+        except OSError as e:
+            raise OSError(f"Failed to rename project directory: {e}")
 
         json_file = dst / "project.json"
         if json_file.exists():
-            with open(json_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            data["name"] = new_name
-            data["last_modified"] = datetime.now().strftime("%d-%m-%Y %H:%M")
-            with open(json_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=4)
+            try:
+                with open(json_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                data["name"] = new_name
+                data["last_modified"] = datetime.now().strftime("%d-%m-%Y %H:%M")
+                with open(json_file, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=4)
+            except (OSError, json.JSONDecodeError) as e:
+                raise OSError(f"Failed to update renamed project metadata: {e}")
 
         return dst
-
-    # ==========================================================
-    # ARCHIVE PROJECT
-    # ==========================================================
 
     def archive_project(self, project_name: str):
         data = self.load_project(project_name)
@@ -286,10 +355,6 @@ class ProjectManager:
         data["last_modified"] = datetime.now().strftime("%d-%m-%Y %H:%M")
         return self.update_project(project_name, data)
 
-    # ==========================================================
-    # FAVORITE PROJECT
-    # ==========================================================
-
     def toggle_favorite(self, project_name: str):
         data = self.load_project(project_name)
         if data is None:
@@ -297,10 +362,6 @@ class ProjectManager:
         data["favorite"] = not data.get("favorite", False)
         data["last_modified"] = datetime.now().strftime("%d-%m-%Y %H:%M")
         return self.update_project(project_name, data)
-
-    # ==========================================================
-    # DELETE PROJECT
-    # ==========================================================
 
     def delete_project(self, project_name):
         project_name = _sanitize_project_name(project_name)
@@ -310,14 +371,14 @@ class ProjectManager:
         if not _validate_project_path(project_path, self.PROJECTS_DIR):
             return False
         if project_path.exists():
-            shutil.rmtree(project_path)
+            try:
+                shutil.rmtree(project_path)
+            except OSError as e:
+                self._log.error("ProjectManager", f"Failed to delete project: {e}")
+                return False
             self._log.info("ProjectManager", f"Deleted project: {project_name}")
             return True
         return False
-
-    # ==========================================================
-    # LOAD SINGLE PROJECT
-    # ==========================================================
 
     def load_project(self, project_name):
         project_name = _sanitize_project_name(project_name)
@@ -331,13 +392,19 @@ class ProjectManager:
             return None
         try:
             with open(json_file, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+            data = _migrate_project_data(data)
+            self._compute_asset_stats(data, project_path)
+            return data
         except (OSError, json.JSONDecodeError):
             return None
 
-    # ==========================================================
-    # LAST MODIFIED
-    # ==========================================================
+    def mark_opened(self, project_name: str) -> None:
+        data = self.load_project(project_name)
+        if data is None:
+            return
+        data["last_opened"] = datetime.now().strftime("%d-%m-%Y %H:%M")
+        self.update_project(project_name, data)
 
     def get_last_modified(self, project_name: str) -> str:
         project_path = self.PROJECTS_DIR / project_name
@@ -352,20 +419,12 @@ class ProjectManager:
         except OSError:
             return "Unknown"
 
-    # ==========================================================
-    # TOUCH MODIFIED
-    # ==========================================================
-
     def touch_modified(self, project_name: str):
         data = self.load_project(project_name)
         if data is None:
             return False
         data["last_modified"] = datetime.now().strftime("%d-%m-%Y %H:%M")
         return self.update_project(project_name, data)
-
-    # ==========================================================
-    # UPDATE PROJECT
-    # ==========================================================
 
     def update_project(self, project_name, data):
         project_name = _sanitize_project_name(project_name)
@@ -398,3 +457,33 @@ class ProjectManager:
                     os.remove(tmp_path)
                 except OSError:
                     pass
+
+    def scan_assets(self, project_name: str) -> list[dict]:
+        project_name = _sanitize_project_name(project_name)
+        if not project_name:
+            return []
+        project_path = self.PROJECTS_DIR / project_name
+        if not _validate_project_path(project_path, self.PROJECTS_DIR):
+            return []
+        if not project_path.exists():
+            return []
+
+        assets = []
+        try:
+            for f in sorted(project_path.rglob("*"), key=lambda p: p.stat().st_mtime if p.is_file() else 0, reverse=True):
+                if not f.is_file() or f.name == "project.json":
+                    continue
+                rel = f.relative_to(project_path)
+                parent = rel.parent
+                assets.append({
+                    "name": f.name,
+                    "path": str(f),
+                    "relative_path": str(rel),
+                    "folder": str(parent) if str(parent) != "." else "root",
+                    "type": f.suffix.lower().lstrip(".") or "unknown",
+                    "size": f.stat().st_size,
+                    "modified": datetime.fromtimestamp(f.stat().st_mtime).strftime("%d-%m-%Y %H:%M"),
+                })
+        except OSError:
+            pass
+        return assets

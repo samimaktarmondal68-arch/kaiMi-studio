@@ -1,23 +1,15 @@
-# Copyright 2026 KaiMi. All Rights Reserved.
-# This file is proprietary software. Unauthorized copying, modification
-# or redistribution is prohibited.
 from __future__ import annotations
 
 WORKFLOW_STAGES = [
-    "Research",
     "Script",
-    "Storyboard",
+    "Voice",
     "Image Prompts",
-    "Images",
-    "Voice Over",
-    "Video Editing",
-    "Thumbnail",
     "Export",
 ]
 
 
 def build_initial_workflow_state() -> dict[str, str]:
-    return {stage: "AVAILABLE" if stage == "Research" else "LOCKED" for stage in WORKFLOW_STAGES}
+    return {stage: "AVAILABLE" if stage == "Script" else "LOCKED" for stage in WORKFLOW_STAGES}
 
 
 def normalize_workflow_state(workflow_state: dict | None) -> dict[str, str]:
@@ -49,3 +41,30 @@ def advance_workflow_state(workflow_state: dict[str, str], completed_stage: str)
         normalized[stage] = "LOCKED"
 
     return normalized
+
+
+def get_next_pending_stage(workflow_state: dict | None) -> str:
+    workflow = normalize_workflow_state(workflow_state)
+    for stage in WORKFLOW_STAGES:
+        if workflow.get(stage) != "COMPLETED":
+            return stage
+    return WORKFLOW_STAGES[-1]
+
+
+PAGE_MAP = {}
+
+def get_resume_page_class(workflow_state: dict | None):
+    global PAGE_MAP
+    if not PAGE_MAP:
+        from ui.pages.script_page import ScriptPage
+        from ui.pages.voice_page import VoicePage
+        from ui.pages.image_prompts_page import ImagePromptsPage
+        from ui.pages.export_page import ExportPage
+        PAGE_MAP = {
+            "Script": ScriptPage,
+            "Voice": VoicePage,
+            "Image Prompts": ImagePromptsPage,
+            "Export": ExportPage,
+        }
+    stage = get_next_pending_stage(workflow_state)
+    return PAGE_MAP.get(stage), stage

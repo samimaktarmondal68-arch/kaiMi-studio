@@ -1,6 +1,3 @@
-# Copyright 2026 KaiMi. All Rights Reserved.
-# This file is proprietary software. Unauthorized copying, modification
-# or redistribution is prohibited.
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -8,24 +5,21 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class ScriptRequest:
-    """Structured input for building a script generation prompt.
-
-    The caller is responsible for providing all data — this operator
-    does not access storage, UI, or workflow state.
-    """
-
     topic: str
-    style: str = "Educational"
-    length: str = "Medium"
-    tone: str = "Friendly"
-    keywords: str = ""
-    goal: str = ""
+    platform: str = "Long Form"
+    video_type: str = "Educational"
     language: str = "English"
+    script_mode: str = "characters"
+    script_min: int = 4500
+    script_max: int = 5000
+    duration_preset: str = ""
+    research_sources: str = ""
+    keywords: str = ""
 
 
 class ScriptValidationError(ValueError):
-    """Raised when a ScriptRequest fails validation."""
+    pass
 
 
 class ScriptGenerationError(RuntimeError):
-    """Raised when the AI provider fails to generate script content."""
+    pass

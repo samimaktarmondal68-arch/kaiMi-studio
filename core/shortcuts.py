@@ -1,78 +1,59 @@
-# Copyright 2026 KaiMi. All Rights Reserved.
-# This file is proprietary software. Unauthorized copying, modification
-# or redistribution is prohibited.
-"""Keyboard shortcuts manager for KaiMi Studio."""
-
-from ui.global_search import GlobalSearchDialog
+from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtWidgets import QWidget
 
 
 class KeyboardShortcuts:
 
-    def __init__(self, root, home_window):
-        self.root = root
-        self.home = home_window
+    def __init__(self, main_window):
+        self.main_window = main_window
         self._bind_shortcuts()
 
     def _bind_shortcuts(self):
-        self.root.bind("<Control-n>", lambda e: self._new_project())
-        self.root.bind("<Control-s>", lambda e: self._save())
-        self.root.bind("<Control-Shift-S>", lambda e: self._export())
-        self.root.bind("<Control-k>", lambda e: self._open_search())
-        self.root.bind("<Control-1>", lambda e: self._goto("Dashboard"))
-        self.root.bind("<Control-2>", lambda e: self._goto("Projects"))
-        self.root.bind("<Control-3>", lambda e: self._goto("Workflow"))
-        self.root.bind("<Control-4>", lambda e: self._goto("Templates"))
-        self.root.bind("<Control-5>", lambda e: self._goto("Settings"))
+        self._add("Ctrl+N", self._new_project)
+        self._add("Ctrl+K", self._open_search)
+        self._add("Ctrl+1", lambda: self._goto("Dashboard"))
+        self._add("Ctrl+2", lambda: self._goto("Projects"))
+        self._add("Ctrl+3", lambda: self._goto("Asset Manager"))
+        self._add("Ctrl+4", lambda: self._goto("Settings"))
+
+    def _add(self, shortcut, callback):
+        action = QAction(self.main_window)
+        action.setShortcut(QKeySequence(shortcut))
+        action.triggered.connect(callback)
+        self.main_window.addAction(action)
 
     def _goto(self, page_name):
-        from ui.dashboard import Dashboard
-        from ui.projects import ProjectsPage
-        from ui.templates import TemplatesPage
-        from ui.settings_page import SettingsPage
-        from ui.workspace import WorkspacePage
-
-        page_map = {
-            "Dashboard": Dashboard,
-            "Projects": ProjectsPage,
-            "Workflow": WorkspacePage,
-            "Templates": TemplatesPage,
-            "Settings": SettingsPage,
-        }
-        cls = page_map.get(page_name)
-        if cls:
-            self.home.show_page(cls, page_name)
+        if hasattr(self.main_window, 'navigate_to'):
+            self.main_window.navigate_to(page_name)
 
     def _new_project(self):
         from ui.dialogs import NewProjectDialog
-        from ui.dashboard import Dashboard
-        NewProjectDialog(self.root, on_project_created=lambda n: self.home.show_page(Dashboard, "Dashboard"))
 
-    def _save(self):
-        try:
-            current = self.home.current_page
-            if hasattr(current, "save_current"):
-                current.save_current()
-            else:
-                from core.notifications import NotificationService
-                NotificationService.get().info("Nothing to save.")
-        except Exception:
-            pass
+        def on_created(name):
+            from core.workflow import get_resume_page_class
+            from core.project_manager import ProjectManager
+            pm = ProjectManager()
+            data = pm.load_project(name)
+            if data:
+                _pc, stage = get_resume_page_class(data.get("workflow_state", {}))
+                self.main_window.set_project_context(name)
+                self.main_window.navigate_to(stage, name)
 
-    def _export(self):
-        self._goto("Workflow")
+        dlg = NewProjectDialog(self.main_window, on_project_created=on_created)
+        dlg.exec()
 
     def _open_search(self):
+        from ui.global_search import GlobalSearchDialog
+
         def on_select(data):
-            if data.get("stage"):
-                from ui.workspace import WorkspacePage
-                self.home.show_page(
-                    WorkspacePage, "Workflow",
-                    initial_project_name=data.get("name"),
-                )
-            elif data.get("name"):
-                from ui.workspace import WorkspacePage
-                self.home.show_page(
-                    WorkspacePage, "Workflow",
-                    initial_project_name=data.get("name"),
-                )
-        GlobalSearchDialog(self.root, on_select=on_select)
+            if data.get("name"):
+                from core.workflow import get_resume_page_class
+                from core.project_manager import ProjectManager
+                pm = ProjectManager()
+                project_data = pm.load_project(data["name"])
+                if project_data:
+                    _pc, stage = get_resume_page_class(project_data.get("workflow_state", {}))
+                    self.main_window.set_project_context(data["name"])
+                    self.main_window.navigate_to(stage, data["name"])
+
+        GlobalSearchDialog(self.main_window, on_select=on_select).exec()

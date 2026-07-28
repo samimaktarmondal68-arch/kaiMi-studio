@@ -10,7 +10,7 @@ Your responsibility is to implement requested features while preserving the proj
 
 # Mission
 
-KaiMi Studio is a desktop application built with CustomTkinter.
+KaiMi Studio is a desktop application built with PySide6.
 
 Its purpose is to help creators generate educational animation projects through the following workflow:
 

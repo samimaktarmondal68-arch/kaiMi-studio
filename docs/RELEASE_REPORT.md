@@ -166,7 +166,7 @@ The application has no usage analytics. You won't know how users interact with i
 
 | Package | License | Compatible | Used |
 |---------|---------|------------|------|
-| customtkinter 6.0.0 | CC0-1.0 | ✅ | Yes |
+| PySide6 6.6.0+ | LGPL-3.0 | ✅ | Yes |
 | Pillow 12.3.0 | MIT-CMU | ✅ | Yes |
 | openai 2.46.0 | Apache-2.0 | ✅ | Yes |
 | requests 2.34.2 | Apache-2.0 | ✅ | Transitive |

@@ -1,18 +1,138 @@
-# Copyright 2026 KaiMi. All Rights Reserved.
-# This file is proprietary software. Unauthorized copying, modification
-# or redistribution is prohibited.
-"""Toast notification system for KaiMi Studio.
+from PySide6.QtCore import QPropertyAnimation, QEasingCurve, QTimer, Qt
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import (
+    QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget, QGraphicsDropShadowEffect,
+)
 
-Bottom-right stacked notifications with auto-dismiss and animation.
-"""
+NOTIFICATION_WIDTH = 380
+NOTIFICATION_MARGIN = 12
+NOTIFICATION_SPACING = 8
 
-import customtkinter as ctk
-from core.theme import Dark, Fonts, Radius, Spacing
+
+class _ToastWidget(QFrame):
+    def __init__(self, message, notification_type, parent=None):
+        super().__init__(parent)
+        from ui.theme_pyside import ThemeManager
+        c = ThemeManager.instance().colors()
+
+        self.setFixedWidth(NOTIFICATION_WIDTH)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+
+        type_colors = {
+            "success": (c.SUCCESS, "\u2714"),
+            "warning": (c.WARNING, "\u26A0"),
+            "error": (c.ERROR, "\u2716"),
+            "info": (c.PRIMARY, "\u2139"),
+        }
+        accent, icon = type_colors.get(notification_type, type_colors["info"])
+
+        self.setStyleSheet(
+            f"background-color: {c.CARD}; "
+            f"border: 1px solid {c.BORDER}; "
+            f"border-radius: 12px;"
+        )
+
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(40)
+        shadow.setOffset(0, 4)
+        shadow.setColor(QColor(0, 0, 0, 80))
+        self.setGraphicsEffect(shadow)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(16, 12, 12, 12)
+        layout.setSpacing(10)
+
+        icon_lbl = QLabel(icon)
+        icon_lbl.setStyleSheet(f"font-size: 16px; color: {accent}; background: transparent;")
+        icon_lbl.setFixedWidth(24)
+        layout.addWidget(icon_lbl)
+
+        msg_lbl = QLabel(message)
+        msg_lbl.setStyleSheet(f"font-size: 13px; color: {c.TEXT}; background: transparent;")
+        msg_lbl.setWordWrap(True)
+        layout.addWidget(msg_lbl, 1)
+
+        close_btn = QPushButton("\u2715")
+        close_btn.setFixedSize(24, 24)
+        close_btn.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: {c.TEXT_MUTED}; "
+            f"border: none; font-size: 12px; border-radius: 12px; }}"
+            f"QPushButton:hover {{ background-color: {c.HOVER}; color: {c.TEXT}; }}"
+        )
+        close_btn.clicked.connect(self._dismiss)
+        layout.addWidget(close_btn)
+
+        self._message = message
+        self._dismissing = False
+
+    def _dismiss(self):
+        if self._dismissing:
+            return
+        self._dismissing = True
+        parent = self.parent()
+        if parent and hasattr(parent, '_remove_toast'):
+            parent._remove_toast(self)
+
+
+class ToastContainer(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet("background: transparent;")
+        self._toasts = []
+
+    def add_toast(self, message, notification_type, duration):
+        toast = _ToastWidget(message, notification_type, self)
+        toast.setVisible(False)
+        self._toasts.append(toast)
+        self._reposition()
+        toast.setVisible(True)
+        self._slide_in(toast)
+
+        if duration > 0:
+            QTimer.singleShot(duration, lambda t=toast: t._dismiss())
+
+    def _remove_toast(self, toast):
+        if toast not in self._toasts:
+            return
+        self._slide_out(toast)
+        self._toasts.remove(toast)
+        QTimer.singleShot(300, toast.deleteLater)
+        self._reposition()
+
+    def _slide_in(self, toast):
+        toast.setMaximumHeight(0)
+        toast.show()
+        anim = QPropertyAnimation(toast, b"maximumHeight")
+        anim.setDuration(300)
+        anim.setStartValue(0)
+        anim.setEndValue(80)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.start()
+
+    def _slide_out(self, toast):
+        anim = QPropertyAnimation(toast, b"maximumHeight")
+        anim.setDuration(250)
+        anim.setStartValue(80)
+        anim.setEndValue(0)
+        anim.setEasingCurve(QEasingCurve.InCubic)
+        anim.start()
+
+    def _reposition(self):
+        y = 0
+        for toast in self._toasts:
+            toast.move(0, y)
+            y += toast.height() + NOTIFICATION_SPACING
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._reposition()
 
 
 class NotificationService:
     _instance = None
-    _notifications: list = []
 
     @classmethod
     def get(cls):
@@ -21,101 +141,41 @@ class NotificationService:
         return cls._instance
 
     def __init__(self):
-        self._root = None
+        self._parent = None
         self._container = None
 
-    def set_root(self, root):
-        self._root = root
-        NotificationService._notifications.clear()
-        if self._container is not None:
-            self._container.destroy()
-        self._container = ctk.CTkFrame(root, fg_color="transparent")
-        self._container.place(relx=1.0, rely=1.0, x=-Spacing.X5, y=-Spacing.X5, anchor="se")
-
-    def show(self, message: str, notification_type: str = "info", duration: int = 3000):
-        if self._container is None:
-            return
-
-        colors = {
-            "success": (Dark.SUCCESS, "#0F291A", "\u2714"),
-            "warning": (Dark.WARNING, "#2A1F0A", "\u26A0"),
-            "error": (Dark.ERROR, "#2A1215", "\u2716"),
-            "info": (Dark.PRIMARY, "#1A1535", "\u2139"),
-        }
-        accent, bg, icon = colors.get(notification_type, colors["info"])
-
-        toast = ctk.CTkFrame(
-            self._container,
-            fg_color=Dark.CARD,
-            corner_radius=Radius.MD,
-            border_width=1,
-            border_color=Dark.BORDER,
-            width=340,
-        )
-        toast.pack(fill="x", pady=Spacing.X1)
-
-        inner = ctk.CTkFrame(toast, fg_color="transparent")
-        inner.pack(fill="x", padx=Spacing.X4, pady=Spacing.X3)
-
-        icon_label = ctk.CTkLabel(
-            inner, text=icon, font=(Fonts.FAMILY, 14),
-            text_color=accent, width=24,
-        )
-        icon_label.pack(side="left", padx=(0, Spacing.X2))
-
-        msg = ctk.CTkLabel(
-            inner, text=message, font=Fonts.SMALL,
-            text_color=Dark.TEXT, anchor="w", wraplength=260,
-        )
-        msg.pack(side="left", fill="both", expand=True)
-
-        close_btn = ctk.CTkButton(
-            inner, text="\u2715", width=20, height=20,
-            fg_color="transparent", hover_color=Dark.HOVER,
-            text_color=Dark.TEXT_MUTED, font=(Fonts.FAMILY, 10),
-            command=lambda: self._dismiss(toast),
-        )
-        close_btn.pack(side="right")
-
-        accent_bar = ctk.CTkFrame(toast, fg_color=accent, height=2, corner_radius=1)
-        accent_bar.pack(fill="x", padx=Spacing.X4, pady=(0, Spacing.X2))
-
-        NotificationService._notifications.append(toast)
+    def set_parent(self, parent):
+        self._parent = parent
+        if self._container:
+            self._container.deleteLater()
+        self._container = ToastContainer(parent)
+        self._container.setVisible(False)
         self._reposition()
 
-        toast.after(duration, lambda: self._dismiss(toast))
-
-        toast.configure(fg_color=Dark.CARD)
-        toast.after(10, lambda: toast.configure(fg_color=Dark.CARD))
-
-    def _dismiss(self, toast):
-        if toast in NotificationService._notifications:
-            NotificationService._notifications.remove(toast)
-            toast.after(150, lambda: self._safe_destroy(toast))
-            self._reposition()
-
-    def _safe_destroy(self, widget):
-        try:
-            widget.destroy()
-        except Exception:
-            pass
-
     def _reposition(self):
-        for i, toast in enumerate(NotificationService._notifications):
-            try:
-                toast.pack_forget()
-                toast.pack(fill="x", pady=Spacing.X1)
-            except Exception:
-                pass
+        if not self._parent or not self._container:
+            return
+        pw = self._parent.width()
+        ph = self._parent.height()
+        cw = NOTIFICATION_WIDTH
+        x = pw - cw - NOTIFICATION_MARGIN
+        y = ph - NOTIFICATION_MARGIN - 80
+        self._container.setGeometry(x, y, cw, ph - y - NOTIFICATION_MARGIN)
+        self._container.setVisible(True)
 
-    def success(self, message: str, duration: int = 3000):
+    def show(self, message, notification_type="info", duration=3000):
+        if self._container:
+            self._reposition()
+            self._container.add_toast(message, notification_type, duration)
+
+    def success(self, message, duration=3000):
         self.show(message, "success", duration)
 
-    def warning(self, message: str, duration: int = 4000):
+    def warning(self, message, duration=4000):
         self.show(message, "warning", duration)
 
-    def error(self, message: str, duration: int = 5000):
+    def error(self, message, duration=5000):
         self.show(message, "error", duration)
 
-    def info(self, message: str, duration: int = 3000):
+    def info(self, message, duration=3000):
         self.show(message, "info", duration)

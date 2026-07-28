@@ -21,6 +21,9 @@ from providers.exceptions import (
     GenerationFailedError,
     ProviderError,
     ProviderNotConfiguredError,
+    QuotaExceededError,
+    RateLimitedError,
+    NetworkError,
 )
 from providers.models import (
     GenerationRequest,
@@ -468,17 +471,27 @@ class ProviderManager:
             )
             return []
 
+    # ── Auto-failover sequence ───────────────────────────────────────
+
+    FAILOVER_SEQUENCE = [
+        "gemini",
+        "openrouter",
+        "groq",
+        "deepseek",
+        "openai",
+        "anthropic",
+        "mistral",
+        "xai",
+        "cohere",
+    ]
+
     # ── Core generation ──────────────────────────────────────────────
 
     def generate(self, request: GenerationRequest) -> GenerationResponse:
-        """Generate text using the active provider.
+        """Generate text using the active provider with automatic failover.
 
-        This is the primary method operators call. It handles:
-        1. Obtaining the active provider
-        2. Initializing it if needed
-        3. Validating configuration
-        4. Generating text
-        5. Translating errors to standardized exceptions
+        Tries the active provider first. If it fails with a quota or rate
+        limit error, automatically falls back through the failover sequence.
 
         Args:
             request: Standard generation request.
@@ -487,47 +500,84 @@ class ProviderManager:
             Standard generation response with text and metadata.
 
         Raises:
-            ProviderNotConfiguredError: If the provider has no API key.
-            ProviderError: For any provider-level failure.
+            ProviderNotConfiguredError: If no provider is configured.
+            ProviderError: For any unrecoverable provider-level failure.
         """
         provider_name = self.get_active_provider_name()
         if not provider_name:
             raise ProviderNotConfiguredError("No active provider configured.")
 
-        provider = self._get_provider(provider_name)
+        attempted = set()
 
-        if not provider.validate_key():
-            raise ProviderNotConfiguredError(
-                f"Provider '{provider_name}' is not configured. "
-                "Set a valid API key in Settings.",
-                provider=provider_name,
-            )
+        while provider_name and provider_name not in attempted:
+            attempted.add(provider_name)
 
-        try:
-            if not provider.is_initialized:
-                provider.initialize()
-        except Exception as exc:
-            if isinstance(exc, ProviderError):
+            provider = self._get_provider(provider_name)
+
+            if not provider.validate_key():
+                last_error = ProviderNotConfiguredError(
+                    f"Provider '{provider_name}' is not configured.",
+                    provider=provider_name,
+                )
+                provider_name = self._get_next_failover(provider_name, attempted)
+                continue
+
+            try:
+                if not provider.is_initialized:
+                    provider.initialize()
+            except Exception as exc:
+                last_error = exc
+                provider_name = self._get_next_failover(provider_name, attempted)
+                continue
+
+            try:
+                return provider.generate(request)
+            except QuotaExceededError as exc:
+                logger.warning(
+                    "[Manager] Quota exceeded for '%s', failing over", provider_name,
+                )
+                last_error = exc
+                provider_name = self._get_next_failover(provider_name, attempted)
+                continue
+            except RateLimitedError as exc:
+                logger.warning(
+                    "[Manager] Rate limited for '%s', failing over", provider_name,
+                )
+                last_error = exc
+                provider_name = self._get_next_failover(provider_name, attempted)
+                continue
+            except NetworkError as exc:
+                logger.warning(
+                    "[Manager] Network error for '%s', failing over", provider_name,
+                )
+                last_error = exc
+                provider_name = self._get_next_failover(provider_name, attempted)
+                continue
+            except ProviderError:
                 raise
-            raise ProviderError(
-                f"Failed to initialize provider '{provider_name}': {exc}",
-                provider=provider_name,
-                cause=exc,
-            ) from exc
+            except NotImplementedError as exc:
+                raise ProviderError(
+                    f"Provider '{provider_name}' is not implemented: {exc}",
+                    provider=provider_name,
+                    cause=exc,
+                ) from exc
+            except Exception as exc:
+                raise GenerationFailedError(
+                    f"Generation failed with provider '{provider_name}': {exc}",
+                    provider=provider_name,
+                    cause=exc,
+                ) from exc
 
-        try:
-            return provider.generate(request)
-        except ProviderError:
-            raise
-        except NotImplementedError as exc:
-            raise ProviderError(
-                f"Provider '{provider_name}' is not implemented: {exc}",
-                provider=provider_name,
-                cause=exc,
-            ) from exc
-        except Exception as exc:
-            raise GenerationFailedError(
-                f"Generation failed with provider '{provider_name}': {exc}",
-                provider=provider_name,
-                cause=exc,
-            ) from exc
+        raise GenerationFailedError(
+            "All available providers exhausted. "
+            f"Last error: {last_error}",
+        ) from (last_error if isinstance(last_error, Exception) else None)
+
+    def _get_next_failover(self, current: str, attempted: set) -> str | None:
+        """Find the next un-attempted provider in the failover sequence."""
+        for name in self.FAILOVER_SEQUENCE:
+            if name not in attempted and self._registry.is_registered(name):
+                cfg = self._config.get("providers", {}).get(name, {})
+                if cfg.get("api_key", "").strip():
+                    return name
+        return None
