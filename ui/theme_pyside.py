@@ -47,6 +47,10 @@ class ThemeManager:
 
     def on_change(self, callback):
         self._callbacks.append(callback)
+        def disconnect():
+            if callback in self._callbacks:
+                self._callbacks.remove(callback)
+        return disconnect
 
     def _apply(self):
         app = QApplication.instance()
@@ -88,11 +92,12 @@ class ThemeManager:
                 background-color: {c.SIDEBAR};
                 border: 1px solid {c.BORDER};
                 border-radius: 16px;
+                padding: 0px;
             }}
             QFrame#card {{
                 background-color: {c.CARD};
                 border: 1px solid {c.BORDER};
-                border-radius: 16px;
+                border-radius: 12px;
             }}
             QFrame#card:hover {{
                 border: 1px solid {c.PRIMARY};
@@ -101,17 +106,17 @@ class ThemeManager:
                 background-color: {c.PRIMARY};
                 color: {c.TEXT_ON_PRIMARY};
                 border: none;
-                border-radius: 16px;
-                padding: 10px 24px;
-                font-size: 14px;
-                font-weight: bold;
+                border-radius: 12px;
+                padding: 8px 20px;
+                font-size: 13px;
+                font-weight: 600;
             }}
             QPushButton:hover {{
                 background-color: {c.PRIMARY_HOVER};
             }}
             QPushButton:pressed {{
                 background-color: {c.PRIMARY_HOVER};
-                padding: 11px 23px 9px 25px;
+                padding: 9px 19px 7px 21px;
             }}
             QPushButton:disabled {{
                 background-color: {c.SURFACE};
@@ -146,10 +151,10 @@ class ThemeManager:
                 background-color: transparent;
                 color: {c.TEXT_SECONDARY};
                 border: none;
-                border-radius: 12px;
-                padding: 8px 12px;
+                border-radius: 8px;
+                padding: 6px 12px;
                 text-align: left;
-                font-size: 14px;
+                font-size: 13px;
             }}
             QPushButton#nav_item:hover {{
                 background-color: {c.HOVER};
@@ -159,14 +164,14 @@ class ThemeManager:
                 background-color: {c.INPUT_BG};
                 color: {c.TEXT};
                 border: 1px solid {c.INPUT_BORDER};
-                border-radius: 12px;
-                padding: 10px 16px;
-                font-size: 14px;
-                min-height: 20px;
+                border-radius: 10px;
+                padding: 8px 14px;
+                font-size: 13px;
+                min-height: 18px;
             }}
             QLineEdit:focus {{
                 border: 2px solid {c.PRIMARY};
-                padding: 9px 15px;
+                padding: 7px 13px;
             }}
             QLineEdit:disabled {{
                 background-color: {c.BG};
@@ -176,9 +181,9 @@ class ThemeManager:
                 background-color: {c.INPUT_BG};
                 color: {c.TEXT};
                 border: 1px solid {c.INPUT_BORDER};
-                border-radius: 12px;
-                padding: 12px 16px;
-                font-size: 14px;
+                border-radius: 10px;
+                padding: 10px 14px;
+                font-size: 13px;
             }}
             QTextEdit:focus {{
                 border: 2px solid {c.PRIMARY};
@@ -187,9 +192,9 @@ class ThemeManager:
                 background-color: {c.INPUT_BG};
                 color: {c.TEXT};
                 border: 1px solid {c.INPUT_BORDER};
-                border-radius: 12px;
-                padding: 12px 16px;
-                font-size: 14px;
+                border-radius: 10px;
+                padding: 10px 14px;
+                font-size: 13px;
             }}
             QPlainTextEdit:focus {{
                 border: 2px solid {c.PRIMARY};
@@ -198,11 +203,11 @@ class ThemeManager:
                 background-color: {c.INPUT_BG};
                 color: {c.TEXT};
                 border: 1px solid {c.INPUT_BORDER};
-                border-radius: 12px;
-                padding: 10px 16px;
-                font-size: 14px;
+                border-radius: 10px;
+                padding: 8px 14px;
+                font-size: 13px;
                 min-width: 140px;
-                min-height: 20px;
+                min-height: 18px;
             }}
             QComboBox:hover {{
                 border: 1px solid {c.PRIMARY};
@@ -280,19 +285,22 @@ class ThemeManager:
                 border-radius: 8px;
             }}
             QLabel#title {{
-                font-size: 32px;
+                font-size: 28px;
                 font-weight: bold;
                 color: {c.TEXT};
+                padding: 0px;
             }}
             QLabel#section {{
-                font-size: 22px;
+                font-size: 20px;
                 font-weight: 600;
                 color: {c.TEXT};
+                padding: 0px;
             }}
             QLabel#card_title {{
-                font-size: 18px;
+                font-size: 16px;
                 font-weight: 600;
                 color: {c.TEXT};
+                padding: 0px;
             }}
             QLabel#body {{
                 font-size: 14px;
@@ -305,9 +313,9 @@ class ThemeManager:
             QGroupBox {{
                 background-color: {c.CARD};
                 border: 1px solid {c.BORDER};
-                border-radius: 16px;
+                border-radius: 12px;
                 margin-top: 8px;
-                padding: 20px;
+                padding: 16px;
             }}
             QGroupBox::title {{
                 subcontrol-origin: margin;

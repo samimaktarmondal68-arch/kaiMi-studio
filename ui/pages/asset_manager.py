@@ -3,7 +3,7 @@
 import shutil
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QHeaderView, QLabel,
     QTableWidget, QTableWidgetItem, QTreeWidget,
@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QFileDialog, QAbstractItemView, QInputDialog,
 )
 
+from core.pipeline_events import get_pipeline_events
 from core.project_manager import ProjectManager
 from core.notifications import NotificationService
 from core.theme import Fonts
@@ -42,9 +43,8 @@ class AssetManagerPage(QWidget):
         self.manager = ProjectManager()
         self.project_name = None
         self._assets: list[dict] = []
-        self._auto_refresh_timer = QTimer()
-        self._auto_refresh_timer.setInterval(5000)
-        self._auto_refresh_timer.timeout.connect(self._refresh_assets)
+        self._events = get_pipeline_events()
+        self._events.assets_changed.connect(self._on_assets_changed)
         ThemeManager.instance().on_change(lambda _: self._on_theme_changed())
         self._build()
 
@@ -52,11 +52,11 @@ class AssetManagerPage(QWidget):
         if self.project_name:
             self._load_project_data()
 
+    def _on_assets_changed(self, project_name):
+        if project_name == self.project_name:
+            self._refresh_assets()
+
     def set_project(self, name):
-        if self.project_name is None and name is not None:
-            self._auto_refresh_timer.start()
-        elif name is None:
-            self._auto_refresh_timer.stop()
         self.project_name = name
         has_project = name is not None
         self.empty_state.setVisible(not has_project)
@@ -65,8 +65,8 @@ class AssetManagerPage(QWidget):
 
     def _build(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 32, 32, 32)
-        layout.setSpacing(20)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
 
         header_row = QHBoxLayout()
         header_row.addWidget(PageTitle("Asset Manager"))
@@ -76,11 +76,6 @@ class AssetManagerPage(QWidget):
         self.refresh_btn.clicked.connect(self._refresh_assets)
         self.refresh_btn.setFixedWidth(100)
         header_row.addWidget(self.refresh_btn)
-
-        self.auto_refresh_btn = ModernButton("Auto Refresh: ON", primary=False)
-        self.auto_refresh_btn.clicked.connect(self._toggle_auto_refresh)
-        self.auto_refresh_btn.setFixedWidth(140)
-        header_row.addWidget(self.auto_refresh_btn)
 
         layout.addLayout(header_row)
 
@@ -362,10 +357,4 @@ class AssetManagerPage(QWidget):
             except Exception as e:
                 NotificationService.get().error(f"Delete failed: {e}")
 
-    def _toggle_auto_refresh(self):
-        if self._auto_refresh_timer.isActive():
-            self._auto_refresh_timer.stop()
-            self.auto_refresh_btn.setText("Auto Refresh: OFF")
-        else:
-            self._auto_refresh_timer.start()
-            self.auto_refresh_btn.setText("Auto Refresh: ON")
+

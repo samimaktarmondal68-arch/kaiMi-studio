@@ -8,15 +8,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.autosave import get_autosave_manager
 from core.export_service import ExportService
 from core.history_manager import HistoryManager
 from core.image_prompt_storage import ImagePromptStorage
 from core.notifications import NotificationService
+from core.pipeline_service import get_pipeline_service
 from core.project_manager import ProjectManager
 from core.script_storage import ScriptStorage
 from core.task_manager import TaskManager
 from core.theme import Fonts, Spacing, Radius
-from core.workflow import advance_workflow_state
 from operators.image_prompt.models import ImagePromptRequest
 from operators.image_prompt.operator import ImagePromptOperator
 from operators.image_prompt.parser import ImagePromptParser
@@ -24,6 +25,7 @@ from ui.theme_pyside import ThemeManager
 from ui.widgets import (
     CardTitle,
     EmptyState,
+    IconProvider,
     ModernButton,
     ModernCard,
     MutedLabel,
@@ -42,9 +44,12 @@ class ImagePromptsPage(QWidget):
         self.parser = ImagePromptParser()
         self.export_service = ExportService(self.manager)
         self.task_manager = TaskManager()
+        self._pipeline = get_pipeline_service()
         self.project_name = None
         self._prompts = []
         self._history = HistoryManager()
+        self._autosave = get_autosave_manager()
+        self._autosave.register("image_prompts", self._autosave_save)
         ThemeManager.instance().on_change(lambda _: self._on_theme_changed())
         self._build()
 
@@ -58,11 +63,10 @@ class ImagePromptsPage(QWidget):
 
     def _build(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 32, 32, 32)
-        layout.setSpacing(20)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(12)
 
         self._build_project_header(layout)
-        layout.addSpacing(8)
 
         self._build_controls(layout)
 
@@ -112,7 +116,7 @@ class ImagePromptsPage(QWidget):
     def _build_controls(self, parent):
         c = ThemeManager.instance().colors()
         controls_card = ModernCard()
-        controls_card.content_layout.setSpacing(12)
+        controls_card.content_layout.setSpacing(8)
 
         desc = QLabel("Uses your script and transcript to generate production-ready image prompts for each scene.")
         desc.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
@@ -177,8 +181,10 @@ class ImagePromptsPage(QWidget):
 
         ts = prompt.get("timestamp", "")
         if ts:
-            ts_label = QLabel(f"\u23F1 {ts}")
-            ts_label.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)} padding: 0 8px;")
+            ts_icon = IconProvider.icon_label("clock", 14, c.TEXT_SECONDARY)
+            header.addWidget(ts_icon)
+            ts_label = QLabel(ts)
+            ts_label.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
             header.addWidget(ts_label)
 
         header.addStretch()
@@ -213,6 +219,12 @@ class ImagePromptsPage(QWidget):
             NotificationService.get().warning("Select a project first.")
             return
 
+        validation = self._pipeline.validate_stage(self.project_name, "Image Prompts")
+        if not validation.passed:
+            for msg in validation.messages:
+                NotificationService.get().warning(msg)
+            return
+
         script_data = self.script_storage.load(self.project_name)
         script_text = script_data.get("script_output", "")
         if not script_text:
@@ -230,7 +242,6 @@ class ImagePromptsPage(QWidget):
 
         if transcript_path.exists():
             try:
-                import json
                 with open(transcript_path, "r", encoding="utf-8") as fh:
                     tdata = json.load(fh)
                 transcript = tdata.get("text", "")
@@ -239,7 +250,6 @@ class ImagePromptsPage(QWidget):
 
         if voice_path.exists():
             try:
-                import json
                 with open(voice_path, "r", encoding="utf-8") as fh:
                     vdata = json.load(fh)
                 if not transcript:
@@ -247,6 +257,8 @@ class ImagePromptsPage(QWidget):
                 timestamps = vdata.get("segments")
             except Exception:
                 pass
+
+        self._pipeline.mark_stage_started(self.project_name, "Image Prompts")
 
         self.generate_btn.setEnabled(False)
         self.export_btn.setEnabled(False)
@@ -274,10 +286,7 @@ class ImagePromptsPage(QWidget):
             self.prompt_storage.save(self.project_name, prompts)
             self._render_prompts()
 
-            workflow = project_data.get("workflow_state", {})
-            workflow = advance_workflow_state(workflow, "Image Prompts")
-            project_data["workflow_state"] = workflow
-            self.manager.update_project(self.project_name, project_data)
+            self._pipeline.mark_stage_completed(self.project_name, "Image Prompts")
 
             self.generate_btn.setEnabled(True)
             self.export_btn.setEnabled(True)
@@ -289,12 +298,12 @@ class ImagePromptsPage(QWidget):
                 f"Generated {len(prompts)} image prompts"
             )
             NotificationService.get().success(f"Generated {len(prompts)} image prompts.")
-            self._update_parent_sidebar()
 
         def on_error(exc):
             self.generate_btn.setEnabled(True)
             self.export_btn.setEnabled(True)
             self.progress_widget.setVisible(False)
+            self._pipeline.mark_stage_failed(self.project_name, "Image Prompts", str(exc))
             NotificationService.get().error(str(exc))
 
         self.task_manager.run_task(
@@ -304,10 +313,10 @@ class ImagePromptsPage(QWidget):
             on_error=on_error,
         )
 
-    def _update_parent_sidebar(self):
-        main = self.window()
-        if main and hasattr(main, '_update_sidebar_project') and self.project_name:
-            main._update_sidebar_project(self.project_name)
+    def _autosave_save(self):
+        if not self.project_name:
+            return
+        self.prompt_storage.save(self.project_name, self._prompts)
 
     def export_txt(self):
         if not self.project_name:

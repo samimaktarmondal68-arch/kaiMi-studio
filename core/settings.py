@@ -27,6 +27,11 @@ _DEFAULTS: dict = {
     "autosave_enabled": True,
     "autosave_interval": 30,
     "first_run": True,
+    "last_language": "English",
+    "last_platform": "YouTube",
+    "last_video_type": "Educational",
+    "last_template": "Custom",
+    "last_export_format": "txt",
 }
 
 

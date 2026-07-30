@@ -9,12 +9,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.project_manager import ProjectManager
 from core.notifications import NotificationService
+from core.pipeline_events import get_pipeline_events
+from core.pipeline_service import get_pipeline_service, StageStatus
+from core.project_manager import ProjectManager
 from core.theme import Fonts, Theme
 from ui.theme_pyside import ThemeManager
 from ui.widgets import (
     EmptyState,
+    IconProvider,
     ModernButton,
     ModernCard,
     MutedLabel,
@@ -50,7 +53,7 @@ class _ProjectCard(ModernCard):
         super().__init__()
         self._project = project
         self._navigate_callback = navigate_callback
-        self.setFixedHeight(200)
+        self.setFixedHeight(170)
         self._outer_layout.setContentsMargins(0, 0, 0, 0)
         self._build()
 
@@ -60,21 +63,24 @@ class _ProjectCard(ModernCard):
         language = self._project.get("language", "English")
         platform = self._project.get("platform", "")
         template = self._project.get("template", "Custom")
-        workflow = self._project.get("workflow_state", {})
         last_modified = self._project.get("last_modified", "")
         asset_count = self._project.get("asset_count", 0)
         storage_used = self._project.get("storage_used", 0)
 
         c = ThemeManager.instance().colors()
+        pipeline = get_pipeline_service()
+        pipeline_state = pipeline.get_pipeline_state(name)
+        health = pipeline.get_project_health(name)
+        action = pipeline.get_next_action(name)
 
-        completed_count = sum(1 for s in STAGE_LABELS if workflow.get(s) == "COMPLETED")
-        pct = int(completed_count / len(STAGE_LABELS) * 100)
-
-        active_stage = next(
-            (s for s in STAGE_LABELS if workflow.get(s) not in ("COMPLETED",)),
-            STAGE_LABELS[-1],
+        completed_count = sum(
+            1 for s in STAGE_LABELS
+            if pipeline_state.get(s) == StageStatus.COMPLETED
         )
-        badge_color = Theme.get_stage_color(c, active_stage)
+        pct = int(completed_count / len(STAGE_LABELS) * 100) if STAGE_LABELS else 0
+
+        active_stage = action.stage if action.stage and action.can_execute else "Export"
+        badge_color = Theme.get_stage_color(c, active_stage) if active_stage else c.PRIMARY
 
         layout = QHBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
@@ -84,14 +90,14 @@ class _ProjectCard(ModernCard):
         gradient = f"qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {c.PRIMARY_LIGHT}, stop:1 {c.SURFACE})"
         thumbnail.setStyleSheet(
             f"background: {gradient}; "
-            f"border-top-left-radius: 16px; border-bottom-left-radius: 16px; "
-            f"min-width: 160px; max-width: 160px;"
+            f"border-top-left-radius: 12px; border-bottom-left-radius: 12px; "
+            f"min-width: 120px; max-width: 120px;"
         )
         thumb_layout = QVBoxLayout(thumbnail)
         thumb_layout.setAlignment(Qt.AlignCenter)
 
         pct_label = QLabel(f"{pct}%")
-        pct_label.setStyleSheet(f"{Fonts.css(32, 'bold', c.PRIMARY)} background: transparent;")
+        pct_label.setStyleSheet(f"{Fonts.css(26, 'bold', c.PRIMARY)} background: transparent;")
         thumb_layout.addWidget(pct_label)
 
         pct_sub = QLabel("complete")
@@ -101,21 +107,19 @@ class _ProjectCard(ModernCard):
         layout.addWidget(thumbnail)
 
         content = QVBoxLayout()
-        content.setContentsMargins(24, 20, 24, 20)
+        content.setContentsMargins(16, 14, 16, 14)
         content.setSpacing(4)
 
         name_label = QLabel(name)
-        name_label.setStyleSheet(f"{Fonts.card_title(c.TEXT)}")
+        name_label.setStyleSheet(f"{Fonts.css(16, '600', c.TEXT)}")
         content.addWidget(name_label)
 
         meta = QLabel(f"{topic}  \u00B7  {language}" + (f"  \u00B7  {platform}" if platform else ""))
-        meta.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
+        meta.setStyleSheet(f"{Fonts.caption(c.TEXT_SECONDARY)}")
         content.addWidget(meta)
 
-        content.addSpacing(2)
-
         stats_row = QHBoxLayout()
-        stats_row.setSpacing(16)
+        stats_row.setSpacing(12)
         for label_text, value in [("Template", template), ("Assets", str(asset_count)), ("Storage", _format_size(storage_used))]:
             col = QVBoxLayout()
             col.setSpacing(0)
@@ -123,12 +127,10 @@ class _ProjectCard(ModernCard):
             lbl.setStyleSheet(f"{Fonts.tiny(c.TEXT_MUTED)} background: transparent;")
             col.addWidget(lbl)
             val = QLabel(value)
-            val.setStyleSheet(f"{Fonts.caption_bold(c.TEXT)} background: transparent;")
+            val.setStyleSheet(f"{Fonts.caption(c.TEXT)} background: transparent; font-weight: 500;")
             col.addWidget(val)
             stats_row.addLayout(col)
         content.addLayout(stats_row)
-
-        content.addSpacing(4)
 
         progress_bar = QFrame()
         bar_layout = QHBoxLayout(progress_bar)
@@ -136,11 +138,11 @@ class _ProjectCard(ModernCard):
         bar_layout.setSpacing(0)
 
         bar_bg = QFrame()
-        bar_bg.setStyleSheet(f"background-color: {c.SURFACE}; border-radius: 4px; min-height: 6px; max-height: 6px;")
+        bar_bg.setStyleSheet(f"background-color: {c.SURFACE}; border-radius: 3px; min-height: 4px; max-height: 4px;")
         bar_fill = QFrame()
         bar_fill.setStyleSheet(
-            f"background-color: {c.PRIMARY}; border-radius: 4px; "
-            f"min-height: 6px; max-height: 6px; min-width: {max(pct, 4)}%; max-width: {pct}%;"
+            f"background-color: {c.PRIMARY}; border-radius: 3px; "
+            f"min-height: 4px; max-height: 4px; min-width: {max(pct, 4)}%; max-width: {pct}%;"
         )
 
         bar_fill_layout = QHBoxLayout(bar_bg)
@@ -152,46 +154,49 @@ class _ProjectCard(ModernCard):
         content.addWidget(progress_bar)
 
         step_labels = QHBoxLayout()
-        step_labels.setSpacing(8)
+        step_labels.setSpacing(6)
         for stage in STAGE_LABELS:
-            state = workflow.get(stage, "LOCKED")
-            if state == "COMPLETED":
-                text = f"\u2713 {stage}"
+            status = pipeline_state.get(stage, StageStatus.BLOCKED)
+            if status == StageStatus.COMPLETED:
+                icon_name = "check_circle"
                 sc = c.SUCCESS
-            elif state == "AVAILABLE":
-                text = f"\u25CF {stage}"
+            elif status in (StageStatus.NOT_STARTED, StageStatus.IN_PROGRESS):
+                icon_name = "circle"
                 sc = Theme.get_stage_color(c, stage)
             else:
-                text = f"\u25CB {stage}"
+                icon_name = "circle_empty"
                 sc = c.TEXT_MUTED
-            lbl = QLabel(text)
-            lbl.setStyleSheet(f"{Fonts.tiny(sc)} background: transparent;")
-            step_labels.addWidget(lbl)
+            icon_lbl = IconProvider.icon_label(icon_name, 12, sc)
+            step_labels.addWidget(icon_lbl)
+            text_lbl = QLabel(stage)
+            text_lbl.setStyleSheet(f"{Fonts.tiny(sc)} background: transparent;")
+            step_labels.addWidget(text_lbl)
         step_labels.addStretch()
         content.addLayout(step_labels)
 
         if last_modified:
-            mod = QLabel(f"Last modified: {last_modified}")
+            mod = QLabel(last_modified)
             mod.setStyleSheet(f"{Fonts.tiny(c.TEXT_MUTED)} background: transparent;")
             content.addWidget(mod)
 
         layout.addLayout(content, 1)
 
         actions = QVBoxLayout()
-        actions.setContentsMargins(16, 16, 16, 16)
-        actions.setSpacing(8)
+        actions.setContentsMargins(8, 8, 8, 8)
+        actions.setSpacing(6)
         actions.setAlignment(Qt.AlignTop | Qt.AlignRight)
 
-        badge = StatusBadge(active_stage, color=c.TEXT_ON_PRIMARY, bg=badge_color)
+        badge = StatusBadge(action.label if action.label else active_stage,
+                           color=c.TEXT_ON_PRIMARY, bg=badge_color)
         actions.addWidget(badge)
 
         open_btn = ModernButton("Resume", primary=True)
-        open_btn.setFixedSize(90, 34)
+        open_btn.setFixedSize(80, 30)
         open_btn.clicked.connect(lambda checked, n=name: self._navigate_callback(n))
         actions.addWidget(open_btn)
 
         history_btn = ModernButton("History", primary=False)
-        history_btn.setFixedSize(90, 34)
+        history_btn.setFixedSize(80, 30)
         history_btn.clicked.connect(lambda checked, n=name: self._show_history(n))
         actions.addWidget(history_btn)
 
@@ -209,6 +214,13 @@ class ProjectsPage(QWidget):
     def __init__(self):
         super().__init__()
         self.manager = ProjectManager()
+        self._pipeline = get_pipeline_service()
+        self._events = get_pipeline_events()
+        self._events.stage_completed.connect(self._on_pipeline_event)
+        self._events.project_updated.connect(self._on_pipeline_event)
+        self._events.project_created.connect(self._on_pipeline_event)
+        self._events.project_deleted.connect(self._on_pipeline_event)
+        self._events.health_changed.connect(self._on_pipeline_event)
         self._search_query = ""
         self._sort_by = "last_modified"
         self._sort_reverse = True
@@ -216,13 +228,16 @@ class ProjectsPage(QWidget):
         ThemeManager.instance().on_change(lambda _: self._on_theme_changed())
         self._build()
 
+    def _on_pipeline_event(self, *args):
+        self.refresh()
+
     def _on_theme_changed(self):
         self.refresh()
 
     def _build(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 32, 32, 32)
-        layout.setSpacing(20)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
 
         header = QHBoxLayout()
         header.setSpacing(16)
@@ -232,29 +247,29 @@ class ProjectsPage(QWidget):
         header.addStretch()
 
         new_btn = ModernButton("+ New Project", primary=True)
-        new_btn.setFixedSize(160, 40)
+        new_btn.setFixedSize(140, 36)
         new_btn.clicked.connect(self._create_new)
         header.addWidget(new_btn)
 
         layout.addLayout(header)
 
         toolbar = QHBoxLayout()
-        toolbar.setSpacing(12)
+        toolbar.setSpacing(8)
 
         self.search_input = SearchInput(placeholder="Search projects...")
-        self.search_input.setFixedWidth(280)
+        self.search_input.setFixedWidth(240)
         self.search_input.textChanged.connect(self._on_search_changed)
         toolbar.addWidget(self.search_input)
 
         self.sort_combo = QComboBox()
         self.sort_combo.addItems(SORT_OPTIONS)
-        self.sort_combo.setMinimumWidth(160)
+        self.sort_combo.setMinimumWidth(140)
         self.sort_combo.currentTextChanged.connect(self._on_sort_changed)
         toolbar.addWidget(self.sort_combo)
 
         self.filter_combo = QComboBox()
         self.filter_combo.addItems(FILTER_OPTIONS)
-        self.filter_combo.setMinimumWidth(150)
+        self.filter_combo.setMinimumWidth(130)
         self.filter_combo.currentTextChanged.connect(self._on_filter_changed)
         toolbar.addWidget(self.filter_combo)
 
@@ -273,7 +288,7 @@ class ProjectsPage(QWidget):
         self.cards_container = QWidget()
         self.cards_layout = QVBoxLayout(self.cards_container)
         self.cards_layout.setContentsMargins(0, 0, 0, 0)
-        self.cards_layout.setSpacing(16)
+        self.cards_layout.setSpacing(12)
         self.cards_layout.addStretch()
 
         scroll.setWidget(self.cards_container)
@@ -291,7 +306,7 @@ class ProjectsPage(QWidget):
 
         if not projects:
             empty = EmptyState(
-                icon="\U0001F4C1",
+                icon="projects",
                 title="No Projects Found",
                 description="Create a new project to get started.",
                 action_callback=self._create_new,
@@ -312,12 +327,10 @@ class ProjectsPage(QWidget):
         while parent and not hasattr(parent, "navigate_to"):
             parent = parent.parent()
         if parent:
-            from core.workflow import get_resume_page_class
-            data = self.manager.load_project(project_name)
-            if data:
-                _page_class, stage_label = get_resume_page_class(data.get("workflow_state", {}))
-                parent.set_project_context(project_name)
-                parent.navigate_to(stage_label, project_name)
+            action = self._pipeline.get_next_action(project_name)
+            target = action.stage if action.stage else STAGE_LABELS[0]
+            parent.set_project_context(project_name)
+            parent.navigate_to(target, project_name)
 
     def _create_new(self):
         parent = self.window()
@@ -326,16 +339,14 @@ class ProjectsPage(QWidget):
 
     def _on_project_created(self, name):
         self.refresh()
-        from core.notifications import NotificationService
+        self._events.project_created.emit(name)
         NotificationService.get().success(f"Project '{name}' created.")
         parent = self.window()
         if parent and hasattr(parent, 'navigate_to'):
-            from core.workflow import get_resume_page_class
-            data = self.manager.load_project(name)
-            if data:
-                _page_class, stage_label = get_resume_page_class(data.get("workflow_state", {}))
-                parent.set_project_context(name)
-                parent.navigate_to(stage_label, name)
+            action = self._pipeline.get_next_action(name)
+            target = action.stage if action.stage else STAGE_LABELS[0]
+            parent.set_project_context(name)
+            parent.navigate_to(target, name)
 
     def refresh(self):
         projects = self.manager.search_projects(self._search_query)

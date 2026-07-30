@@ -81,9 +81,14 @@ def main():
         dlg = FirstRunDialog(window, on_close=_on_first_run_close)
         dlg.exec()
 
-    sys.exit(app.exec())
+    def _shutdown():
+        log.shutdown("Application closed")
+        from core.autosave import get_autosave_manager
+        get_autosave_manager().shutdown()
 
-    log.shutdown("Application closed")
+    app.aboutToQuit.connect(_shutdown)
+
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QByteArray
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QFrame,
     QGraphicsDropShadowEffect,
@@ -11,10 +12,197 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QIcon, QPixmap, QPainter
 
 from ..theme_pyside import ThemeManager
 from core.theme import Fonts
+
+
+class IconProvider:
+    """Single source of truth for all application icons.
+    Each icon is an SVG string rendered to QPixmap at requested size/color.
+    Usage: icon = IconProvider.icon("dashboard")  # returns QIcon
+           pixmap = IconProvider.pixmap("script", 20, "#22C55E")
+           label = IconProvider.icon_label("voice", 16)
+    """
+
+    _cache = {}
+
+    _SVG = {
+        "dashboard": (
+            '<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" '
+            'stroke-linecap="round" stroke-linejoin="round">'
+            '<rect x="3" y="3" width="7" height="7" rx="1"/>'
+            '<rect x="14" y="3" width="7" height="7" rx="1"/>'
+            '<rect x="3" y="14" width="7" height="7" rx="1"/>'
+            '<rect x="14" y="14" width="7" height="7" rx="1"/>'
+            '</svg>'
+        ),
+        "projects": (
+            '<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" '
+            'stroke-linecap="round" stroke-linejoin="round">'
+            '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>'
+            '</svg>'
+        ),
+        "assets": (
+            '<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" '
+            'stroke-linecap="round" stroke-linejoin="round">'
+            '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>'
+            '<path d="M12 11v6"/>'
+            '<path d="M9 14l3-3 3 3"/>'
+            '</svg>'
+        ),
+        "script": (
+            '<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" '
+            'stroke-linecap="round" stroke-linejoin="round">'
+            '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>'
+            '<polyline points="14 2 14 8 20 8"/>'
+            '<line x1="9" y1="13" x2="15" y2="13"/>'
+            '<line x1="9" y1="17" x2="13" y2="17"/>'
+            '</svg>'
+        ),
+        "voice": (
+            '<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" '
+            'stroke-linecap="round" stroke-linejoin="round">'
+            '<rect x="9" y="2" width="6" height="12" rx="3"/>'
+            '<path d="M5 10a7 7 0 0 0 14 0"/>'
+            '<line x1="12" y1="19" x2="12" y2="22"/>'
+            '</svg>'
+        ),
+        "image": (
+            '<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" '
+            'stroke-linecap="round" stroke-linejoin="round">'
+            '<rect x="3" y="3" width="18" height="18" rx="2"/>'
+            '<circle cx="8.5" cy="8.5" r="1.5"/>'
+            '<path d="M21 15l-5-5L5 21"/>'
+            '</svg>'
+        ),
+        "export": (
+            '<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" '
+            'stroke-linecap="round" stroke-linejoin="round">'
+            '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>'
+            '<polyline points="7 10 12 15 17 10"/>'
+            '<line x1="12" y1="15" x2="12" y2="3"/>'
+            '</svg>'
+        ),
+        "settings": (
+            '<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" '
+            'stroke-linecap="round" stroke-linejoin="round">'
+            '<circle cx="12" cy="12" r="3"/>'
+            '<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>'
+            '</svg>'
+        ),
+        "add": (
+            '<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" '
+            'stroke-linecap="round" stroke-linejoin="round">'
+            '<circle cx="12" cy="12" r="10"/>'
+            '<line x1="12" y1="8" x2="12" y2="16"/>'
+            '<line x1="8" y1="12" x2="16" y2="12"/>'
+            '</svg>'
+        ),
+        "storage": (
+            '<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" '
+            'stroke-linecap="round" stroke-linejoin="round">'
+            '<ellipse cx="12" cy="5" rx="9" ry="3"/>'
+            '<path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>'
+            '<path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>'
+            '</svg>'
+        ),
+        "check_circle": (
+            '<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" '
+            'stroke-linecap="round" stroke-linejoin="round">'
+            '<circle cx="12" cy="12" r="10"/>'
+            '<polyline points="9 12 11 14 15 10"/>'
+            '</svg>'
+        ),
+        "clock": (
+            '<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" '
+            'stroke-linecap="round" stroke-linejoin="round">'
+            '<circle cx="12" cy="12" r="10"/>'
+            '<polyline points="12 6 12 12 16 14"/>'
+            '</svg>'
+        ),
+        "check": (
+            '<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="3" '
+            'stroke-linecap="round" stroke-linejoin="round">'
+            '<polyline points="4 12 10 18 20 6"/>'
+            '</svg>'
+        ),
+        "circle": (
+            '<svg viewBox="0 0 24 24" fill="{color}" stroke="none">'
+            '<circle cx="12" cy="12" r="6"/>'
+            '</svg>'
+        ),
+        "circle_empty": (
+            '<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2">'
+            '<circle cx="12" cy="12" r="6"/>'
+            '</svg>'
+        ),
+        "warning": (
+            '<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" '
+            'stroke-linecap="round" stroke-linejoin="round">'
+            '<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>'
+            '<line x1="12" y1="9" x2="12" y2="13"/>'
+            '<line x1="12" y1="17" x2="12.01" y2="17"/>'
+            '</svg>'
+        ),
+        "document": (
+            '<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" '
+            'stroke-linecap="round" stroke-linejoin="round">'
+            '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>'
+            '<polyline points="14 2 14 8 20 8"/>'
+            '</svg>'
+        ),
+        "external": (
+            '<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" '
+            'stroke-linecap="round" stroke-linejoin="round">'
+            '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>'
+            '<polyline points="15 3 21 3 21 9"/>'
+            '<line x1="10" y1="14" x2="21" y2="3"/>'
+            '</svg>'
+        ),
+        "folder_open": (
+            '<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" '
+            'stroke-linecap="round" stroke-linejoin="round">'
+            '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>'
+            '<path d="M6 21l4-8 4 4 4-6 4 10"/>'
+            '</svg>'
+        ),
+    }
+
+    @classmethod
+    def _build_svg(cls, name: str, color: str = "#94A3B8") -> str:
+        svg_template = cls._SVG.get(name)
+        if not svg_template:
+            return ""
+        return svg_template.format(color=color)
+
+    @classmethod
+    def pixmap(cls, name: str, size: int = 20, color: str = None) -> QPixmap:
+        if color is None:
+            c = ThemeManager.instance().colors()
+            color = c.TEXT_SECONDARY
+        svg_data = cls._build_svg(name, color)
+        if not svg_data:
+            return QPixmap()
+        renderer = QSvgRenderer(QByteArray(svg_data.encode("utf-8")))
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        renderer.render(painter)
+        painter.end()
+        return pixmap
+
+    @classmethod
+    def icon(cls, name: str, size: int = 20, color: str = None) -> QIcon:
+        return QIcon(cls.pixmap(name, size, color))
+
+    @classmethod
+    def icon_label(cls, name: str, size: int = 20, color: str = None) -> QLabel:
+        label = QLabel()
+        label.setPixmap(cls.pixmap(name, size, color))
+        label.setFixedSize(size, size)
+        return label
 
 
 class ModernButton(QPushButton):
@@ -32,7 +220,7 @@ class ModernButton(QPushButton):
         else:
             self.setObjectName("secondary")
 
-        self.setFixedHeight(40)
+        self.setFixedHeight(36)
         self.setCursor(Qt.PointingHandCursor)
         self.setAttribute(Qt.WA_StyledBackground, True)
 
@@ -60,7 +248,7 @@ class ModernCard(QFrame):
         self.setGraphicsEffect(shadow)
 
         self._outer_layout = QVBoxLayout(self)
-        self._outer_layout.setContentsMargins(20, 20, 20, 20)
+        self._outer_layout.setContentsMargins(16, 16, 16, 16)
         self.content_layout = QVBoxLayout()
         self._outer_layout.addLayout(self.content_layout)
 
@@ -90,26 +278,26 @@ class ProgressWidget(QWidget):
         super().__init__(parent)
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(8)
+        layout.setSpacing(6)
         layout.setContentsMargins(0, 0, 0, 0)
 
         self.status_label = QLabel("")
-        self.status_label.setObjectName("body")
+        self.status_label.setObjectName("muted")
         self.status_label.setAlignment(Qt.AlignLeft)
         layout.addWidget(self.status_label)
 
         bar_row = QHBoxLayout()
-        bar_row.setSpacing(12)
+        bar_row.setSpacing(8)
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.progress_bar.setTextVisible(False)
-        self.progress_bar.setFixedHeight(12)
+        self.progress_bar.setFixedHeight(8)
         bar_row.addWidget(self.progress_bar, 1)
 
         self.percentage_label = QLabel("0%")
-        self.percentage_label.setObjectName("body")
-        self.percentage_label.setFixedWidth(44)
+        self.percentage_label.setObjectName("muted")
+        self.percentage_label.setFixedWidth(36)
         self.percentage_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         bar_row.addWidget(self.percentage_label)
         layout.addLayout(bar_row)
@@ -158,11 +346,11 @@ class IconLabel(QWidget):
         super().__init__(parent)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setSpacing(6)
 
         self.icon = QLabel(icon_text)
         font = self.icon.font()
-        font.setPointSize(16)
+        font.setPointSize(14)
         self.icon.setFont(font)
         layout.addWidget(self.icon)
 
@@ -218,7 +406,7 @@ class SearchInput(QLineEdit):
     def __init__(self, placeholder="", parent=None):
         super().__init__(parent)
         self.setPlaceholderText(placeholder)
-        self.setMinimumHeight(40)
+        self.setFixedHeight(36)
         self.setAttribute(Qt.WA_StyledBackground, True)
 
 
@@ -256,8 +444,8 @@ class StatusBadge(QLabel):
     def _update_style(self):
         c = ThemeManager.instance().colors()
         self.setStyleSheet(
-            f"{Fonts.caption_bold(self._color)} padding: 2px 10px; "
-            f"border-radius: 8px; background-color: {self._bg};"
+            f"{Fonts.tiny(self._color)} padding: 2px 8px; "
+            f"border-radius: 6px; background-color: {self._bg};"
         )
 
     def update_colors(self, color: str, bg: str):
@@ -280,7 +468,7 @@ class SectionHeader(QWidget):
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
+        layout.setSpacing(2)
 
         self.title_label = QLabel(title)
         self.title_label.setObjectName("section")
@@ -306,8 +494,8 @@ class EmptyState(QWidget):
         layout.setContentsMargins(32, 32, 32, 32)
 
         if icon:
-            self.icon_label = QLabel(icon)
-            self.icon_label.setStyleSheet("font-size: 48px; background: transparent;")
+            c = ThemeManager.instance().colors()
+            self.icon_label = IconProvider.icon_label(icon, 48, c.TEXT_MUTED)
             self.icon_label.setAlignment(Qt.AlignCenter)
             layout.addWidget(self.icon_label)
 

@@ -5,14 +5,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QFileSystemWatcher, QTimer
+from PySide6.QtCore import QFileSystemWatcher, QObject, QTimer
 
 
-class ProjectFileWatcher:
+class ProjectFileWatcher(QObject):
 
-    def __init__(self) -> None:
-        self._watcher = QFileSystemWatcher()
-        self._debounce_timer = QTimer()
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._watcher = QFileSystemWatcher(self)
+        self._debounce_timer = QTimer(self)
         self._debounce_timer.setSingleShot(True)
         self._debounce_timer.setInterval(500)
         self._on_change_callbacks: list[Callable[[str], None]] = []

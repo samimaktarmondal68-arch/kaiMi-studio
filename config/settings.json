@@ -1,5 +1,5 @@
 {
-    "theme": "light",
+    "theme": "dark",
     "window_width": 1600,
     "window_height": 1000,
     "window_maximized": false,
@@ -8,6 +8,11 @@
     "autosave_enabled": true,
     "autosave_interval": 60,
     "first_run": false,
+    "last_language": "English",
+    "last_platform": "YouTube",
+    "last_video_type": "Educational",
+    "last_template": "Custom",
+    "last_export_format": "txt",
     "__proto__": "polluted",
     "export_format": "txt"
 }

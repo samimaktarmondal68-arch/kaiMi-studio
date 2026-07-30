@@ -117,9 +117,9 @@ class Fonts:
     FAMILY = "Segoe UI"
     FAMILY_ALT = "Inter"
 
-    TITLE = (FAMILY, 32, "bold")
-    SECTION = (FAMILY, 22, "semibold")
-    CARD_TITLE = (FAMILY, 18, "medium")
+    TITLE = (FAMILY, 28, "bold")
+    SECTION = (FAMILY, 20, "semibold")
+    CARD_TITLE = (FAMILY, 16, "semibold")
     BODY = (FAMILY, 14)
     BODY_BOLD = (FAMILY, 14, "bold")
     SMALL = (FAMILY, 12)
@@ -140,23 +140,23 @@ class Fonts:
 
     @classmethod
     def display_title(cls, color=None):
-        return cls.css(32, "bold", color)
-
-    @classmethod
-    def page_title(cls, color=None):
         return cls.css(28, "bold", color)
 
     @classmethod
+    def page_title(cls, color=None):
+        return cls.css(24, "bold", color)
+
+    @classmethod
     def section_title(cls, color=None):
-        return cls.css(22, "600", color)
+        return cls.css(20, "600", color)
 
     @classmethod
     def card_title(cls, color=None):
-        return cls.css(18, "600", color)
+        return cls.css(16, "600", color)
 
     @classmethod
     def subtitle(cls, color=None):
-        return cls.css(16, "600", color)
+        return cls.css(15, "600", color)
 
     @classmethod
     def body(cls, color=None):

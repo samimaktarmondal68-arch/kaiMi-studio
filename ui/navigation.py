@@ -32,9 +32,7 @@ class NavigationController(QObject):
     def navigate_to(self, label, project_name=None):
         """Navigate to a page by label. All navigation must go through here.
 
-        Args:
-            label: The page label (e.g., "Dashboard", "Projects", "Script").
-            project_name: Optional project name to set as context.
+        Uses current project context when navigating between workflow stages.
         """
         if not self._initialized:
             return
@@ -51,16 +49,18 @@ class NavigationController(QObject):
         if target_widget is None:
             return
 
+        # Preserve current project if navigating without explicit project
+        effective_project = project_name or self._current_project
         if hasattr(target_widget, 'set_project'):
-            target_widget.set_project(project_name)
+            target_widget.set_project(effective_project)
 
         self._main_window.content.setCurrentWidget(target_widget)
         self._main_window.sidebar.set_active(label)
         self._current_page_label = label
-        self._current_project = project_name or self._current_project
+        self._current_project = effective_project
 
-        if project_name:
-            self._handle_project_context(project_name)
+        if effective_project:
+            self._handle_project_context(effective_project)
 
         self.page_changed.emit(label)
 

@@ -6,10 +6,12 @@ from PySide6.QtWidgets import (
 )
 
 from core.project_manager import ProjectManager
+from core.settings import AppSettings
 from core.templates import get_template, get_template_names, TemplateConfig
 from core.theme import Fonts, Spacing, Radius
 from core.version import APP_NAME, VERSION, CODENAME
 from ..theme_pyside import ThemeManager
+from ..widgets import IconProvider
 
 
 def _dialog_styles():
@@ -27,10 +29,10 @@ def _dialog_styles():
             background-color: {c.INPUT_BG};
             color: {c.TEXT};
             border: 1px solid {c.INPUT_BORDER};
-            border-radius: 12px;
-            padding: 10px 16px;
-            font-size: 14px;
-            min-height: 20px;
+            border-radius: 10px;
+            padding: 8px 14px;
+            font-size: 13px;
+            min-height: 18px;
         }}
         QLineEdit:focus {{
             border: 2px solid {c.PRIMARY};
@@ -39,9 +41,9 @@ def _dialog_styles():
             background-color: {c.INPUT_BG};
             color: {c.TEXT};
             border: 1px solid {c.INPUT_BORDER};
-            border-radius: 12px;
-            padding: 10px 16px;
-            font-size: 14px;
+            border-radius: 10px;
+            padding: 8px 14px;
+            font-size: 13px;
             min-height: 60px;
             max-height: 80px;
         }}
@@ -52,39 +54,39 @@ def _dialog_styles():
             background-color: {c.INPUT_BG};
             color: {c.TEXT};
             border: 1px solid {c.INPUT_BORDER};
-            border-radius: 12px;
-            padding: 10px 16px;
-            font-size: 14px;
-            min-height: 20px;
+            border-radius: 10px;
+            padding: 8px 14px;
+            font-size: 13px;
+            min-height: 18px;
         }}
         QComboBox::drop-down {{
             border: none;
-            width: 32px;
+            width: 28px;
         }}
         QComboBox QAbstractItemView {{
             background-color: {c.CARD};
             color: {c.TEXT};
             border: 1px solid {c.BORDER};
-            border-radius: 12px;
+            border-radius: 10px;
             selection-background-color: {c.PRIMARY_LIGHT};
-            padding: 8px;
+            padding: 6px;
         }}
         QComboBox QAbstractItemView::item {{
-            padding: 8px 12px;
-            border-radius: 8px;
+            padding: 6px 10px;
+            border-radius: 6px;
         }}
         QComboBox QAbstractItemView::item:hover {{
             background-color: {c.HOVER};
         }}
         QRadioButton {{
             color: {c.TEXT};
-            font-size: 14px;
-            spacing: 8px;
+            font-size: 13px;
+            spacing: 6px;
         }}
         QRadioButton::indicator {{
-            width: 18px;
-            height: 18px;
-            border-radius: 9px;
+            width: 16px;
+            height: 16px;
+            border-radius: 8px;
             border: 2px solid {c.TEXT_MUTED};
         }}
         QRadioButton::indicator:checked {{
@@ -95,10 +97,10 @@ def _dialog_styles():
             background-color: {c.PRIMARY};
             color: {c.TEXT_ON_PRIMARY};
             border: none;
-            border-radius: 12px;
-            padding: 10px 24px;
-            font-size: 14px;
-            font-weight: bold;
+            border-radius: 10px;
+            padding: 8px 20px;
+            font-size: 13px;
+            font-weight: 600;
         }}
         QPushButton#primary:hover {{
             background-color: {c.PRIMARY_HOVER};
@@ -107,9 +109,9 @@ def _dialog_styles():
             background-color: transparent;
             color: {c.TEXT};
             border: 1px solid {c.BORDER};
-            border-radius: 12px;
-            padding: 10px 24px;
-            font-size: 14px;
+            border-radius: 10px;
+            padding: 8px 20px;
+            font-size: 13px;
         }}
         QPushButton#secondary:hover {{
             background-color: {c.SURFACE};
@@ -118,7 +120,7 @@ def _dialog_styles():
         QFrame#card {{
             background-color: {c.CARD};
             border: 1px solid {c.BORDER};
-            border-radius: 16px;
+            border-radius: 12px;
         }}
     """
 
@@ -131,6 +133,7 @@ class NewProjectDialog(QDialog):
         self.setMinimumWidth(560)
         self.setModal(True)
         self.manager = ProjectManager()
+        self._settings = AppSettings()
         self._on_project_created = on_project_created
         self._build()
         self.setStyleSheet(_dialog_styles())
@@ -138,16 +141,16 @@ class NewProjectDialog(QDialog):
     def _build(self):
         c = ThemeManager.instance().colors()
         layout = QVBoxLayout(self)
-        layout.setSpacing(16)
-        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(12)
+        layout.setContentsMargins(20, 20, 20, 20)
 
         title = QLabel("New Project")
-        title.setStyleSheet(f"{Fonts.section_title(c.TEXT)}")
+        title.setStyleSheet(f"{Fonts.css(20, '600', c.TEXT)}")
         layout.addWidget(title)
 
         form = QWidget()
         form_layout = QVBoxLayout(form)
-        form_layout.setSpacing(12)
+        form_layout.setSpacing(8)
 
         def make_field(label_text, widget):
             row = QVBoxLayout()
@@ -164,6 +167,10 @@ class NewProjectDialog(QDialog):
 
         self.template_combo = QComboBox()
         self.template_combo.addItems(get_template_names())
+        saved_template = self._settings.get("last_template", "Custom")
+        idx = self.template_combo.findText(saved_template)
+        if idx >= 0:
+            self.template_combo.setCurrentIndex(idx)
         self.template_combo.currentTextChanged.connect(self._on_template_changed)
         form_layout.addLayout(make_field("Template", self.template_combo))
 
@@ -187,14 +194,26 @@ class NewProjectDialog(QDialog):
 
         self.platform_combo = QComboBox()
         self.platform_combo.addItems(["YouTube", "TikTok", "Instagram", "Other"])
+        saved_platform = self._settings.get("last_platform", "YouTube")
+        idx_p = self.platform_combo.findText(saved_platform)
+        if idx_p >= 0:
+            self.platform_combo.setCurrentIndex(idx_p)
         form_layout.addLayout(make_field("Platform", self.platform_combo))
 
-        video_type = QComboBox()
-        video_type.addItems(["Educational", "Entertainment", "Documentary", "Tutorial", "Other"])
-        form_layout.addLayout(make_field("Video Type", video_type))
+        self.video_type_combo = QComboBox()
+        self.video_type_combo.addItems(["Educational", "Entertainment", "Documentary", "Tutorial", "Other"])
+        saved_vtype = self._settings.get("last_video_type", "Educational")
+        idx_v = self.video_type_combo.findText(saved_vtype)
+        if idx_v >= 0:
+            self.video_type_combo.setCurrentIndex(idx_v)
+        form_layout.addLayout(make_field("Video Type", self.video_type_combo))
 
         self.language_combo = QComboBox()
         self.language_combo.addItems(["English", "Spanish", "French", "German", "Chinese", "Japanese", "Arabic", "Hindi", "Portuguese"])
+        saved_lang = self._settings.get("last_language", "English")
+        idx_l = self.language_combo.findText(saved_lang)
+        if idx_l >= 0:
+            self.language_combo.setCurrentIndex(idx_l)
         form_layout.addLayout(make_field("Language", self.language_combo))
 
         format_container = QWidget()
@@ -270,6 +289,10 @@ class NewProjectDialog(QDialog):
                 duration_preset=template.duration_preset if template else "",
                 description=self.description_input.toPlainText().strip(),
             )
+            self._settings.set("last_language", self.language_combo.currentText())
+            self._settings.set("last_platform", self.platform_combo.currentText())
+            self._settings.set("last_video_type", self.video_type_combo.currentText())
+            self._settings.set("last_template", template_name)
             self.accept()
             if self._on_project_created:
                 self._on_project_created(name)
@@ -292,8 +315,8 @@ class FirstRunDialog(QDialog):
     def _build(self):
         c = ThemeManager.instance().colors()
         layout = QVBoxLayout(self)
-        layout.setSpacing(20)
-        layout.setContentsMargins(32, 32, 32, 32)
+        layout.setSpacing(16)
+        layout.setContentsMargins(24, 24, 24, 24)
 
         title = QLabel(f"Welcome to {APP_NAME}")
         title.setStyleSheet(f"{Fonts.css(28, 'bold', c.PRIMARY)}")
@@ -318,25 +341,24 @@ class FirstRunDialog(QDialog):
         scroll_layout.setSpacing(12)
 
         steps = [
-            ("\U0001F3E0", "Create a Project", "Set up your project with topic, platform, and script target."),
-            ("\U0001F4DD", "Generate Script", "One click generates a complete script with automatic research."),
-            ("\U0001F3A4", "Voice / Transcript", "Optional: upload audio for transcription with timestamps."),
-            ("\U0001F5BC\uFE0F", "Image Prompts", "Generate production-ready image prompts."),
-            ("\U0001F4E4", "Export TXT", "Export your script and prompts as a TXT file."),
+            ("folder_open", "Create a Project", "Set up your project with topic, platform, and script target."),
+            ("document", "Generate Script", "One click generates a complete script with automatic research."),
+            ("voice", "Voice / Transcript", "Optional: upload audio for transcription with timestamps."),
+            ("image", "Image Prompts", "Generate production-ready image prompts."),
+            ("export", "Export TXT", "Export your script and prompts as a TXT file."),
         ]
 
-        for icon, step_title, desc in steps:
+        for icon_name, step_title, desc in steps:
             card = QFrame()
             card.setObjectName("card")
             card.setAttribute(Qt.WA_StyledBackground, True)
-            card.setFixedHeight(80)
+            card.setFixedHeight(68)
 
             card_layout = QHBoxLayout(card)
-            card_layout.setContentsMargins(16, 12, 16, 12)
-            card_layout.setSpacing(12)
+            card_layout.setContentsMargins(14, 10, 14, 10)
+            card_layout.setSpacing(10)
 
-            icon_lbl = QLabel(icon)
-            icon_lbl.setStyleSheet(f"font-size: 24px; background: transparent;")
+            icon_lbl = IconProvider.icon_label(icon_name, 24, c.PRIMARY)
             card_layout.addWidget(icon_lbl)
 
             text_layout = QVBoxLayout()
@@ -358,7 +380,7 @@ class FirstRunDialog(QDialog):
 
         close_btn = QPushButton("Get Started")
         close_btn.setObjectName("primary")
-        close_btn.setFixedHeight(40)
+        close_btn.setFixedHeight(36)
         close_btn.clicked.connect(self._on_close)
         layout.addWidget(close_btn)
 

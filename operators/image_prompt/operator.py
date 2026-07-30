@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import time
+
+from core.logger import get_logger
 from operators.image_prompt.models import (
     ImagePromptGenerationError,
     ImagePromptRequest,
@@ -24,13 +27,19 @@ class ImagePromptOperator:
     ) -> None:
         self._prompt_builder = prompt_builder or ImagePromptBuilder()
         self._provider_manager = provider_manager or ProviderManager()
+        self._log = get_logger()
 
     def execute(self, request: ImagePromptRequest) -> str:
+        self._log.info("ImagePromptOperator", f"Starting image prompt generation")
+        t0 = time.perf_counter()
         self._validate_request(request)
 
         system_prompt, user_prompt = self._prompt_builder.build(request)
 
-        return self._generate(system_prompt, user_prompt)
+        result = self._generate(system_prompt, user_prompt)
+        elapsed = time.perf_counter() - t0
+        self._log.info("ImagePromptOperator", f"Image prompts generated in {elapsed:.2f}s ({len(result)} chars)")
+        return result
 
     def get_prompt_preview(self, request: ImagePromptRequest) -> str:
         self._validate_request(request)

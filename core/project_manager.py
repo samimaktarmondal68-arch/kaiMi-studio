@@ -204,10 +204,20 @@ class ProjectManager:
         try:
             total_size = 0
             file_count = 0
-            for f in project_path.rglob("*"):
-                if f.is_file() and f.name != "project.json":
+            for entry in os.scandir(project_path):
+                if entry.is_dir():
+                    for root, _dirs, files in os.walk(entry.path):
+                        for fname in files:
+                            if fname != "project.json":
+                                try:
+                                    fpath = os.path.join(root, fname)
+                                    total_size += os.path.getsize(fpath)
+                                    file_count += 1
+                                except OSError:
+                                    pass
+                elif entry.is_file() and entry.name != "project.json":
                     try:
-                        total_size += f.stat().st_size
+                        total_size += entry.stat().st_size
                         file_count += 1
                     except OSError:
                         pass

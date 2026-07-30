@@ -8,12 +8,15 @@ from PySide6.QtWidgets import (
 
 from core.export_service import ExportService
 from core.notifications import NotificationService
+from core.pipeline_events import get_pipeline_events
+from core.pipeline_service import get_pipeline_service, StageStatus
 from core.project_manager import ProjectManager
 from core.theme import Fonts, Theme
 from ui.theme_pyside import ThemeManager
 from ui.widgets import (
     CardTitle,
     EmptyState,
+    IconProvider,
     MutedLabel,
     ModernButton,
     ModernCard,
@@ -29,9 +32,18 @@ class ExportPage(QWidget):
         super().__init__()
         self.manager = ProjectManager()
         self.export_service = ExportService(self.manager)
+        self._pipeline = get_pipeline_service()
+        self._events = get_pipeline_events()
+        self._events.stage_completed.connect(self._on_pipeline_event)
+        self._events.project_updated.connect(self._on_pipeline_event)
+        self._events.export_completed.connect(self._on_pipeline_event)
         self.project_name = None
         ThemeManager.instance().on_change(lambda _: self._on_theme_changed())
         self._build()
+
+    def _on_pipeline_event(self, *args):
+        if self.project_name:
+            self._load_project_data()
 
     def _on_theme_changed(self):
         if self.project_name:
@@ -43,11 +55,10 @@ class ExportPage(QWidget):
 
     def _build(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 32, 32, 32)
-        layout.setSpacing(20)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(12)
 
         self._build_project_header(layout)
-        layout.addSpacing(8)
 
         self._build_export_card(layout)
         self._build_workflow_card(layout)
@@ -84,13 +95,15 @@ class ExportPage(QWidget):
         parent.addWidget(card)
 
     def _build_export_card(self, parent):
+        c = ThemeManager.instance().colors()
+
         card = ModernCard()
-        card.content_layout.setSpacing(16)
+        card.content_layout.setSpacing(8)
 
         card.content_layout.addWidget(SectionHeader("Export Project"))
 
         desc = QLabel("Export your script and image prompts as a TXT file ready for production.")
-        desc.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
+        desc.setStyleSheet(f"{Fonts.caption(c.TEXT_SECONDARY)}")
         desc.setWordWrap(True)
         card.content_layout.addWidget(desc)
 
@@ -112,7 +125,7 @@ class ExportPage(QWidget):
 
     def _build_workflow_card(self, parent):
         card = ModernCard()
-        card.content_layout.setSpacing(12)
+        card.content_layout.setSpacing(8)
 
         card.content_layout.addWidget(SectionHeader("Workflow Progress"))
 
@@ -138,24 +151,33 @@ class ExportPage(QWidget):
     def _load_project_data(self):
         if not self.project_name:
             return
+        c = ThemeManager.instance().colors()
+
+        pipeline_state = self._pipeline.get_pipeline_state(self.project_name)
+        health = self._pipeline.get_project_health(self.project_name)
+
+        all_completed = all(
+            pipeline_state.get(s) == StageStatus.COMPLETED
+            for s in STAGE_LABELS
+        )
+
+        self.export_btn.setEnabled(all_completed)
+
         project_data = self.manager.load_project(self.project_name)
         if project_data:
             topic = project_data.get("topic", "")
             platform = project_data.get("platform", "")
             language = project_data.get("language", "")
             self.name_label.setText(f"Project: {self.project_name}")
-            c = ThemeManager.instance().colors()
             self.info_label.setText(f"{topic}  \u2022  {platform}  \u2022  {language}")
             self.info_label.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
-            self.export_btn.setEnabled(True)
         else:
             self.name_label.setText(f"Project: {self.project_name}")
-            self.export_btn.setEnabled(True)
 
-        self._build_workflow_steps(project_data or {})
+        self._build_workflow_steps(pipeline_state)
         self._load_export_history()
 
-    def _build_workflow_steps(self, project_data):
+    def _build_workflow_steps(self, pipeline_state):
         for i in reversed(range(self.workflow_layout.count())):
             w = self.workflow_layout.itemAt(i).widget()
             if w:
@@ -163,26 +185,32 @@ class ExportPage(QWidget):
                 w.deleteLater()
 
         c = ThemeManager.instance().colors()
-        workflow = project_data.get("workflow_state", {})
 
-        steps = ["Script", "Voice", "Image Prompts", "Export"]
-
-        for stage_name in steps:
+        for stage_name in STAGE_LABELS:
             stage_color = Theme.get_stage_color(c, stage_name)
-            state = workflow.get(stage_name, "LOCKED")
-            if state == "COMPLETED":
-                icon = "\u2713"
+            status = pipeline_state.get(stage_name, StageStatus.BLOCKED)
+            if status == StageStatus.COMPLETED:
+                icon_name = "check_circle"
                 color = c.SUCCESS
-            elif state == "AVAILABLE":
-                icon = "\u25CF"
+            elif status in (StageStatus.NOT_STARTED, StageStatus.IN_PROGRESS):
+                icon_name = "circle"
                 color = stage_color
+            elif status == StageStatus.FAILED:
+                icon_name = "warning"
+                color = c.ERROR
             else:
-                icon = "\u25CB"
+                icon_name = "circle_empty"
                 color = c.TEXT_MUTED
 
-            step = QLabel(f"  {icon}  {stage_name}")
-            step.setStyleSheet(f"{Fonts.body(color)} padding: 2px 0;")
-            self.workflow_layout.addWidget(step)
+            step_row = QHBoxLayout()
+            step_row.setSpacing(8)
+            step_icon = IconProvider.icon_label(icon_name, 14, color)
+            step_row.addWidget(step_icon)
+            step_text = QLabel(stage_name)
+            step_text.setStyleSheet(f"{Fonts.body(color)}")
+            step_row.addWidget(step_text)
+            step_row.addStretch()
+            self.workflow_layout.addLayout(step_row)
 
         self.workflow_layout.addStretch()
 
@@ -202,19 +230,28 @@ class ExportPage(QWidget):
     def _do_export(self):
         if not self.project_name:
             return
+
+        validation = self._pipeline.validate_stage(self.project_name, "Export")
+        if not validation.passed:
+            for msg in validation.messages:
+                NotificationService.get().warning(msg)
+            return
+
         project_data = self.manager.load_project(self.project_name)
         if not project_data:
             self.status_label.setText("Project data not found.")
             return
         try:
             result = self.export_service.export_project(project_data, fmt="txt")
-            self.status_label.setText(f"\u2713 Exported to: {result}")
+            self.status_label.setText(f"Exported to: {result}")
             c = ThemeManager.instance().colors()
             self.status_label.setStyleSheet(f"color: {c.SUCCESS}; font-weight: bold;")
             NotificationService.get().success(f"Exported '{self.project_name}' as TXT.")
+            self._pipeline.mark_stage_completed(self.project_name, "Export")
             self._load_export_history()
         except Exception as e:
             self.status_label.setText(f"Export failed: {e}")
             c = ThemeManager.instance().colors()
             self.status_label.setStyleSheet(f"color: {c.ERROR};")
+            self._pipeline.mark_stage_failed(self.project_name, "Export", str(e))
             NotificationService.get().error(f"Export failed: {e}")

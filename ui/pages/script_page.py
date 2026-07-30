@@ -11,17 +11,18 @@ from PySide6.QtWidgets import (
 from core.autosave import get_autosave_manager
 from core.history_manager import HistoryManager
 from core.notifications import NotificationService
+from core.pipeline_service import get_pipeline_service
 from core.project_manager import ProjectManager
 from core.script_storage import ScriptStorage
 from core.task_manager import TaskManager
 from core.theme import Fonts, Spacing, Radius
-from core.workflow import advance_workflow_state
 from operators.script.models import ScriptRequest
 from operators.script.operator import ScriptOperator
 from ..theme_pyside import ThemeManager
 from ..widgets import (
     AutosaveIndicator,
     CardTitle,
+    IconProvider,
     ModernButton,
     ModernCard,
     MutedLabel,
@@ -47,6 +48,7 @@ class ScriptPage(QWidget):
         self.script_storage = ScriptStorage()
         self.operator = ScriptOperator()
         self.task_manager = TaskManager()
+        self._pipeline = get_pipeline_service()
         self.project_name = None
         self._script_text = ""
         self._saved_text = ""
@@ -74,11 +76,10 @@ class ScriptPage(QWidget):
 
     def _build(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 32, 32, 32)
-        layout.setSpacing(16)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(12)
 
         self._build_project_header(layout)
-        layout.addSpacing(8)
 
         self._build_status_bar(layout)
 
@@ -136,13 +137,13 @@ class ScriptPage(QWidget):
         bar = QFrame()
         bar.setObjectName("card")
         bar.setAttribute(Qt.WA_StyledBackground, True)
-        bar.setFixedHeight(48)
+        bar.setFixedHeight(40)
 
         c = ThemeManager.instance().colors()
 
         row = QHBoxLayout(bar)
-        row.setContentsMargins(20, 0, 20, 0)
-        row.setSpacing(24)
+        row.setContentsMargins(16, 0, 16, 0)
+        row.setSpacing(16)
 
         self.char_count_label = QLabel("0 characters")
         self.char_count_label.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
@@ -168,7 +169,7 @@ class ScriptPage(QWidget):
     def _build_editor(self, parent):
         self.editor = QPlainTextEdit()
         self.editor.textChanged.connect(self._on_text_changed)
-        self.editor.setMinimumHeight(350)
+        self.editor.setMinimumHeight(300)
         self.editor.setPlaceholderText("Your script will appear here...")
         parent.addWidget(self.editor, 1)
 
@@ -200,10 +201,10 @@ class ScriptPage(QWidget):
         self.save_btn.setEnabled(self._dirty)
         c = ThemeManager.instance().colors()
         if self._dirty:
-            self.status_label.setText("\u26A0 Unsaved changes")
+            self.status_label.setText("Unsaved changes")
             self.status_label.setStyleSheet(f"color: {c.WARNING};")
         else:
-            self.status_label.setText("\u2713 Saved")
+            self.status_label.setText("Saved")
             self.status_label.setStyleSheet(f"color: {c.SUCCESS}; font-weight: bold;")
         self._autosave.mark_dirty("script")
 
@@ -236,7 +237,7 @@ class ScriptPage(QWidget):
             self._dirty = False
             self.save_btn.setEnabled(False)
             c = ThemeManager.instance().colors()
-            self.status_label.setText("\u2713 Saved")
+            self.status_label.setText("Saved")
             self.status_label.setStyleSheet(f"color: {c.SUCCESS}; font-weight: bold;")
             self.char_count_label.setText(f"{len(output)} characters")
             self.word_count_label.setText(f"{self._count_words(output)} words")
@@ -246,9 +247,17 @@ class ScriptPage(QWidget):
             NotificationService.get().warning("Select a project first.")
             return
 
+        validation = self._pipeline.validate_stage(self.project_name, "Script")
+        if not validation.passed:
+            for msg in validation.messages:
+                NotificationService.get().warning(msg)
+            return
+
         project_data = self.manager.load_project(self.project_name)
         if not project_data:
             return
+
+        self._pipeline.mark_stage_started(self.project_name, "Script")
 
         self.generate_btn.setEnabled(False)
         self.save_btn.setEnabled(False)
@@ -291,17 +300,14 @@ class ScriptPage(QWidget):
             project_data["status"] = "Script"
             self.manager.update_project(self.project_name, project_data)
 
-            workflow = self.manager.load_project(self.project_name).get("workflow_state", {})
-            workflow = advance_workflow_state(workflow, "Script")
-            project_data["workflow_state"] = workflow
-            self.manager.update_project(self.project_name, project_data)
+            self._pipeline.mark_stage_completed(self.project_name, "Script")
 
             self.progress_widget.show_complete("Script generated successfully.")
             QTimer.singleShot(2000, lambda: self.progress_widget.setVisible(False))
 
             self.generate_btn.setEnabled(True)
             c = ThemeManager.instance().colors()
-            self.status_label.setText("\u2713 Saved")
+            self.status_label.setText("Saved")
             self.status_label.setStyleSheet(f"color: {c.SUCCESS}; font-weight: bold;")
             self.char_count_label.setText(f"{len(result)} characters")
             self.word_count_label.setText(f"{self._count_words(result)} words")
@@ -310,12 +316,12 @@ class ScriptPage(QWidget):
                 f"Generated script ({self._count_words(result)} words)"
             )
             NotificationService.get().success("Script generated successfully.")
-            self._update_parent_sidebar()
 
         def on_error(exc):
             self._stop_progress_animation()
             self.generate_btn.setEnabled(True)
             self.progress_widget.setVisible(False)
+            self._pipeline.mark_stage_failed(self.project_name, "Script", str(exc))
             c = ThemeManager.instance().colors()
             self.status_label.setText(f"Error: {exc}")
             self.status_label.setStyleSheet(f"color: {c.ERROR};")
@@ -327,11 +333,6 @@ class ScriptPage(QWidget):
             on_complete=on_complete,
             on_error=on_error,
         )
-
-    def _update_parent_sidebar(self):
-        main = self.window()
-        if main and hasattr(main, '_update_sidebar_project') and self.project_name:
-            main._update_sidebar_project(self.project_name)
 
     def _autosave_save(self):
         if not self.project_name:
@@ -345,7 +346,7 @@ class ScriptPage(QWidget):
         self._dirty = False
         self.save_btn.setEnabled(False)
         c = ThemeManager.instance().colors()
-        self.status_label.setText("\u2713 Saved")
+        self.status_label.setText("Saved")
         self.status_label.setStyleSheet(f"color: {c.SUCCESS}; font-weight: bold;")
 
     def _start_progress_animation(self):

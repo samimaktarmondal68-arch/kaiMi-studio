@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
 
 from core.settings import AppSettings
 from core.theme import Fonts
+from core.version import APP_NAME, APP_DESCRIPTION, COPYRIGHT, VERSION
 from ui.theme_pyside import ThemeManager
 from ui.widgets import CardTitle, MutedLabel, ModernCard, PageTitle, SectionLabel
 
@@ -33,15 +34,14 @@ class SettingsPage(QWidget):
 
     def _build(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 32, 32, 32)
-        layout.setSpacing(24)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
 
         header = PageTitle("Settings")
         layout.addWidget(header)
 
         subtitle = MutedLabel("Configure your workspace preferences")
         layout.addWidget(subtitle)
-        layout.addSpacing(4)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -51,7 +51,7 @@ class SettingsPage(QWidget):
         scroll_content = QWidget()
         self._scroll_layout = QVBoxLayout(scroll_content)
         self._scroll_layout.setContentsMargins(0, 0, 0, 0)
-        self._scroll_layout.setSpacing(20)
+        self._scroll_layout.setSpacing(12)
 
         self._build_appearance()
         self._build_language()
@@ -69,10 +69,10 @@ class SettingsPage(QWidget):
         row.setSpacing(16)
 
         lbl = QLabel(label_text)
-        lbl.setStyleSheet(f"{Fonts.label(c.TEXT)} min-width: 120px;")
+        lbl.setStyleSheet(f"{Fonts.label(c.TEXT)} min-width: 100px;")
         row.addWidget(lbl)
 
-        widget.setMinimumHeight(40)
+        widget.setFixedHeight(36)
         row.addWidget(widget)
         row.addStretch()
         return row
@@ -80,15 +80,13 @@ class SettingsPage(QWidget):
     def _build_appearance(self):
         c = ThemeManager.instance().colors()
         card = ModernCard()
-        card.content_layout.setSpacing(16)
+        card.content_layout.setSpacing(8)
 
         title = SectionLabel("Appearance")
         card.content_layout.addWidget(title)
 
         desc = MutedLabel("Switch between dark and light themes")
         card.content_layout.addWidget(desc)
-
-        card.content_layout.addSpacing(4)
 
         self.theme_combo = QComboBox()
         self.theme_combo.addItems(["Dark", "Light"])
@@ -103,15 +101,13 @@ class SettingsPage(QWidget):
     def _build_language(self):
         c = ThemeManager.instance().colors()
         card = ModernCard()
-        card.content_layout.setSpacing(16)
+        card.content_layout.setSpacing(8)
 
         title = SectionLabel("Language")
         card.content_layout.addWidget(title)
 
         desc = MutedLabel("Select your preferred language")
         card.content_layout.addWidget(desc)
-
-        card.content_layout.addSpacing(4)
 
         self.language_combo = QComboBox()
         self.language_combo.addItems(["English", "Spanish", "French", "German", "Chinese", "Japanese"])
@@ -123,15 +119,13 @@ class SettingsPage(QWidget):
     def _build_provider(self):
         c = ThemeManager.instance().colors()
         card = ModernCard()
-        card.content_layout.setSpacing(16)
+        card.content_layout.setSpacing(8)
 
         title = SectionLabel("AI Provider")
         card.content_layout.addWidget(title)
 
         desc = MutedLabel("Configure the AI provider and model for generation")
         card.content_layout.addWidget(desc)
-
-        card.content_layout.addSpacing(4)
 
         self.provider_combo = QComboBox()
         self.provider_combo.setEditable(False)
@@ -151,26 +145,22 @@ class SettingsPage(QWidget):
     def _build_about(self):
         c = ThemeManager.instance().colors()
         card = ModernCard()
-        card.content_layout.setSpacing(12)
+        card.content_layout.setSpacing(6)
 
         title = SectionLabel("About")
         card.content_layout.addWidget(title)
 
-        card.content_layout.addSpacing(4)
-
-        name = CardTitle("KaiMi Studio")
+        name = CardTitle(APP_NAME)
         card.content_layout.addWidget(name)
 
-        version = QLabel("Version 1.0.0")
-        version.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
-        card.content_layout.addWidget(version)
+        ver = QLabel(f"Version {VERSION}")
+        ver.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
+        card.content_layout.addWidget(ver)
 
-        desc = MutedLabel("A desktop application for generating educational animation projects.")
+        desc = MutedLabel(APP_DESCRIPTION)
         card.content_layout.addWidget(desc)
 
-        card.content_layout.addSpacing(4)
-
-        copyright_lbl = MutedLabel("\u00A9 2026 KaiMi. All rights reserved.")
+        copyright_lbl = MutedLabel(COPYRIGHT)
         card.content_layout.addWidget(copyright_lbl)
 
         self._scroll_layout.addWidget(card)

@@ -12,6 +12,8 @@ from .navigation import NavigationController
 from core.autosave import get_autosave_manager
 from core.file_watcher import ProjectFileWatcher
 from core.notifications import NotificationService
+from core.pipeline_events import get_pipeline_events
+from core.pipeline_service import get_pipeline_service
 from core.project_manager import ProjectManager
 from core.shortcuts import KeyboardShortcuts
 
@@ -24,8 +26,13 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1200, 700)
         self._current_page = None
         self._project_name = None
-        self._file_watcher = ProjectFileWatcher()
+        self._file_watcher = ProjectFileWatcher(self)
         self._file_watcher.on_change(self._on_external_change)
+        self._events = get_pipeline_events()
+        self._events.stage_completed.connect(self._on_pipeline_event)
+        self._events.project_updated.connect(self._on_pipeline_event)
+        self._events.export_completed.connect(self._on_pipeline_event)
+        self._events.health_changed.connect(self._on_pipeline_event)
         self._init_theme()
         self._init_ui()
         self._restore_geometry()
@@ -39,8 +46,8 @@ class MainWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         layout = QHBoxLayout(central)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(12)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
 
         self.sidebar = Sidebar()
         self._page_map = self._build_page_map()
@@ -102,12 +109,15 @@ class MainWindow(QMainWindow):
     def navigate_to(self, label, project_name=None):
         self.nav.navigate_to(label, project_name)
 
+    def _on_pipeline_event(self, *args):
+        if self._project_name:
+            self._update_sidebar_project(self._project_name)
+            current = self.content.currentWidget()
+            if hasattr(current, '_load_project_data'):
+                current._load_project_data()
+
     def _update_sidebar_project(self, project_name):
-        from core.project_manager import ProjectManager
-        pm = ProjectManager()
-        data = pm.load_project(project_name)
-        workflow = data.get("workflow_state", {}) if data else {}
-        self.sidebar.set_project_context(project_name, workflow)
+        self.sidebar.set_project_context(project_name)
 
     def _on_external_change(self, project_name: str):
         """Called when external file changes are detected."""

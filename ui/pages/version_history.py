@@ -32,8 +32,8 @@ class VersionHistoryDialog(QDialog):
     def _build(self):
         c = ThemeManager.instance().colors()
         layout = QVBoxLayout(self)
-        layout.setSpacing(16)
-        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(12)
+        layout.setContentsMargins(20, 20, 20, 20)
 
         header_row = QHBoxLayout()
         header_row.addWidget(PageTitle("Version History"))

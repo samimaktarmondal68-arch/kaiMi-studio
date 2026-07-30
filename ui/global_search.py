@@ -12,6 +12,7 @@ from core.script_storage import ScriptStorage
 from core.storyboard_storage import StoryboardStorage
 from core.theme import Fonts
 from ui.theme_pyside import ThemeManager
+from ui.widgets import IconProvider
 
 
 class GlobalSearchDialog(QDialog):
@@ -135,9 +136,11 @@ class GlobalSearchDialog(QDialog):
 
     def _add_result(self, title, category, data):
         c = ThemeManager.instance().colors()
-        item = QListWidgetItem(f"\U0001F4C1  {title}  \u2014  {category}")
+        item = QListWidgetItem(f"{title}  \u2014  {category}")
         item.setForeground(QColor(c.TEXT))
         item.setData(Qt.UserRole, data)
+        icon = IconProvider.icon("projects", 16, c.TEXT_MUTED)
+        item.setIcon(icon)
         self.results_list.addItem(item)
         self._results.append((item, data))
 

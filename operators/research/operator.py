@@ -3,6 +3,9 @@
 # or redistribution is prohibited.
 from __future__ import annotations
 
+import time
+
+from core.logger import get_logger
 from operators.research.prompt_builder import ResearchPromptBuilder, ResearchRequest
 from providers.exceptions import ProviderError, ProviderNotConfiguredError
 from providers.models import GenerationRequest
@@ -38,26 +41,20 @@ class ResearchOperator:
     ) -> None:
         self._prompt_builder = prompt_builder or ResearchPromptBuilder()
         self._provider_manager = provider_manager or ProviderManager()
+        self._log = get_logger()
 
     def execute(self, request: ResearchRequest) -> str:
-        """Execute the full research pipeline.
-
-        Args:
-            request: A structured ResearchRequest containing research parameters.
-
-        Returns:
-            The generated research text from the active AI provider.
-
-        Raises:
-            ResearchValidationError: If the request is missing required fields.
-            ProviderConfigurationError: If the active provider is not configured.
-            ResearchGenerationError: If the provider fails to generate content.
-        """
+        """Execute the full research pipeline."""
+        self._log.info("ResearchOperator", f"Starting research generation: topic={request.topic}")
+        t0 = time.perf_counter()
         self._validate_request(request)
 
         prompt = self._prompt_builder.build(request)
 
-        return self._generate(prompt)
+        result = self._generate(prompt)
+        elapsed = time.perf_counter() - t0
+        self._log.info("ResearchOperator", f"Research generated in {elapsed:.2f}s ({len(result)} chars)")
+        return result
 
     def get_prompt_preview(self, request: ResearchRequest) -> str:
         """Return the research prompt without calling the AI provider.

@@ -16,13 +16,14 @@ from PySide6.QtWidgets import (
 from core.autosave import get_autosave_manager
 from core.history_manager import HistoryManager
 from core.notifications import NotificationService
+from core.pipeline_service import get_pipeline_service
 from core.project_manager import ProjectManager
 from core.theme import Fonts, Spacing, Radius
-from core.workflow import advance_workflow_state
 from ..theme_pyside import ThemeManager
 from ..widgets import (
     AutosaveIndicator,
     CardTitle,
+    IconProvider,
     ModernButton,
     ModernCard,
     MutedLabel,
@@ -58,6 +59,7 @@ class VoicePage(QWidget):
     def __init__(self):
         super().__init__()
         self.manager = ProjectManager()
+        self._pipeline = get_pipeline_service()
         self.project_name = None
         self._audio_path = None
         self._transcript_text = ""
@@ -96,17 +98,14 @@ class VoicePage(QWidget):
 
     def _build(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 32, 32, 32)
-        layout.setSpacing(16)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(12)
 
         self._build_project_header(layout)
-        layout.addSpacing(8)
 
         self._build_upload_section(layout)
-        layout.addSpacing(8)
 
         self._build_transcript_section(layout)
-        layout.addSpacing(12)
 
         self._build_action_bar(layout)
 
@@ -151,7 +150,7 @@ class VoicePage(QWidget):
 
     def _build_upload_section(self, parent):
         card = ModernCard()
-        card.content_layout.setSpacing(12)
+        card.content_layout.setSpacing(8)
 
         card.content_layout.addWidget(SectionHeader("Upload Audio"))
 
@@ -197,7 +196,7 @@ class VoicePage(QWidget):
         self.transcript_box = QPlainTextEdit()
         self.transcript_box.setPlaceholderText("No transcript yet. Upload audio and generate.")
         self.transcript_box.textChanged.connect(self._on_text_edit)
-        self.transcript_box.setMinimumHeight(200)
+        self.transcript_box.setMinimumHeight(160)
         parent.addWidget(self.transcript_box, 1)
 
         self.timestamps_label = MutedLabel("")
@@ -233,10 +232,10 @@ class VoicePage(QWidget):
         self.save_btn.setEnabled(self._dirty)
         c = ThemeManager.instance().colors()
         if self._dirty:
-            self.status_label.setText("\u26A0 Unsaved changes")
+            self.status_label.setText("Unsaved changes")
             self.status_label.setStyleSheet(f"color: {c.WARNING};")
         else:
-            self.status_label.setText("\u2713 Saved")
+            self.status_label.setText("Saved")
             self.status_label.setStyleSheet(f"color: {c.SUCCESS}; font-weight: bold;")
         self._autosave.mark_dirty("voice")
 
@@ -244,7 +243,7 @@ class VoicePage(QWidget):
         self._dirty = False
         self.save_btn.setEnabled(False)
         c = ThemeManager.instance().colors()
-        self.status_label.setText("\u2713 Saved")
+        self.status_label.setText("Saved")
         self.status_label.setStyleSheet(f"color: {c.SUCCESS}; font-weight: bold;")
 
     def _load_project_data(self):
@@ -344,6 +343,12 @@ class VoicePage(QWidget):
         if not self._audio_path or not self.project_name:
             return
 
+        validation = self._pipeline.validate_stage(self.project_name, "Voice")
+        if not validation.passed:
+            for msg in validation.messages:
+                NotificationService.get().warning(msg)
+            return
+
         try:
             import whisper
         except ImportError:
@@ -351,6 +356,8 @@ class VoicePage(QWidget):
                 "Whisper not installed. Run: pip install openai-whisper"
             )
             return
+
+        self._pipeline.mark_stage_started(self.project_name, "Voice")
 
         self._transcribing = True
         self.transcribe_btn.setEnabled(False)
@@ -424,12 +431,7 @@ class VoicePage(QWidget):
                 f"{len(segs_out)} segments  |  First: {segs_out[0]['time']}  |  Last: {segs_out[-1]['time']}"
             )
 
-        project_data = self.manager.load_project(self.project_name)
-        if project_data:
-            workflow = project_data.get("workflow_state", {})
-            workflow = advance_workflow_state(workflow, "Voice")
-            project_data["workflow_state"] = workflow
-            self.manager.update_project(self.project_name, project_data)
+        self._pipeline.mark_stage_completed(self.project_name, "Voice")
 
         self.transcribe_btn.setEnabled(True)
         self.upload_btn.setEnabled(True)
@@ -438,12 +440,14 @@ class VoicePage(QWidget):
             f"Generated transcript from audio ({len(segs_out)} segments)"
         )
         NotificationService.get().success("Transcript generated successfully.")
-        self._update_parent_sidebar()
 
-    def _update_parent_sidebar(self):
-        main = self.window()
-        if main and hasattr(main, '_update_sidebar_project') and self.project_name:
-            main._update_sidebar_project(self.project_name)
+    def _on_transcription_error(self, error_msg):
+        self._transcribing = False
+        self.progress_widget.setVisible(False)
+        self.transcribe_btn.setEnabled(True)
+        self.upload_btn.setEnabled(True)
+        self._pipeline.mark_stage_failed(self.project_name, "Voice", error_msg)
+        NotificationService.get().error(f"Transcription failed: {error_msg}")
 
     def _autosave_save(self):
         if not self.project_name:
@@ -454,13 +458,6 @@ class VoicePage(QWidget):
         fp.write_text(json.dumps({"text": text}, indent=4), encoding="utf-8")
         self._saved_text = text
         self._update_status_clean()
-
-    def _on_transcription_error(self, error_msg):
-        self._transcribing = False
-        self.progress_widget.setVisible(False)
-        self.transcribe_btn.setEnabled(True)
-        self.upload_btn.setEnabled(True)
-        NotificationService.get().error(f"Transcription failed: {error_msg}")
 
     def save_transcript(self):
         if not self.project_name:
