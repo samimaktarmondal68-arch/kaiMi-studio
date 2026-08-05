@@ -1,4 +1,4 @@
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QObject, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -12,11 +12,13 @@ from core.autosave import get_autosave_manager
 from core.export_service import ExportService
 from core.history_manager import HistoryManager
 from core.image_prompt_storage import ImagePromptStorage
+from core.logger import get_logger
 from core.notifications import NotificationService
 from core.pipeline_service import get_pipeline_service
 from core.project_manager import ProjectManager
 from core.script_storage import ScriptStorage
 from core.task_manager import TaskManager
+from core.transcript_storage import TranscriptStorage
 from core.theme import Fonts, Spacing, Radius
 from operators.image_prompt.models import ImagePromptRequest
 from operators.image_prompt.operator import ImagePromptOperator
@@ -34,12 +36,28 @@ from ui.widgets import (
 )
 
 
+class _GenerationBridge(QObject):
+    """Marshals background-thread task results back to the GUI thread.
+
+    Qt signals connected to the ImagePromptsPage (a widget living on the
+    main thread) use queued connections, so emitting from the worker thread
+    is safe. This prevents direct Qt widget access from background threads.
+    """
+
+    completed = Signal(object)
+    failed = Signal(object)
+
+
+_log = get_logger()
+
+
 class ImagePromptsPage(QWidget):
     def __init__(self):
         super().__init__()
         self.manager = ProjectManager()
         self.script_storage = ScriptStorage()
         self.prompt_storage = ImagePromptStorage()
+        self.transcript_storage = TranscriptStorage()
         self.operator = ImagePromptOperator()
         self.parser = ImagePromptParser()
         self.export_service = ExportService(self.manager)
@@ -50,6 +68,9 @@ class ImagePromptsPage(QWidget):
         self._history = HistoryManager()
         self._autosave = get_autosave_manager()
         self._autosave.register("image_prompts", self._autosave_save)
+        self._generation_bridge = _GenerationBridge()
+        self._generation_bridge.completed.connect(self._on_generation_completed)
+        self._generation_bridge.failed.connect(self._on_generation_failed)
         ThemeManager.instance().on_change(lambda _: self._on_theme_changed())
         self._build()
 
@@ -219,6 +240,10 @@ class ImagePromptsPage(QWidget):
             NotificationService.get().warning("Select a project first.")
             return
 
+        if self.task_manager.is_running:
+            NotificationService.get().warning("Generation already in progress.")
+            return
+
         validation = self._pipeline.validate_stage(self.project_name, "Image Prompts")
         if not validation.passed:
             for msg in validation.messages:
@@ -232,31 +257,10 @@ class ImagePromptsPage(QWidget):
             return
 
         project_data = self.manager.load_project(self.project_name)
-        project_path = self.manager.PROJECTS_DIR / self.project_name
 
-        transcript = ""
-        timestamps = None
-
-        transcript_path = project_path / "transcript.json"
-        voice_path = project_path / "voice.json"
-
-        if transcript_path.exists():
-            try:
-                with open(transcript_path, "r", encoding="utf-8") as fh:
-                    tdata = json.load(fh)
-                transcript = tdata.get("text", "")
-            except Exception:
-                pass
-
-        if voice_path.exists():
-            try:
-                with open(voice_path, "r", encoding="utf-8") as fh:
-                    vdata = json.load(fh)
-                if not transcript:
-                    transcript = vdata.get("transcript", "")
-                timestamps = vdata.get("segments")
-            except Exception:
-                pass
+        transcript_data = self.transcript_storage.load(self.project_name)
+        transcript = transcript_data.get("text", "")
+        timestamps = transcript_data.get("segments") or None
 
         self._pipeline.mark_stage_started(self.project_name, "Image Prompts")
 
@@ -282,29 +286,11 @@ class ImagePromptsPage(QWidget):
             return prompts
 
         def on_complete(prompts):
-            self._prompts = prompts
-            self.prompt_storage.save(self.project_name, prompts)
-            self._render_prompts()
-
-            self._pipeline.mark_stage_completed(self.project_name, "Image Prompts")
-
-            self.generate_btn.setEnabled(True)
-            self.export_btn.setEnabled(True)
-            self.progress_widget.show_complete(f"Generated {len(prompts)} image prompts.")
-            from PySide6.QtCore import QTimer
-            QTimer.singleShot(2000, lambda: self.progress_widget.setVisible(False))
-            self._history.record_action(
-                self.project_name, "Generated",
-                f"Generated {len(prompts)} image prompts"
-            )
-            NotificationService.get().success(f"Generated {len(prompts)} image prompts.")
+            self._generation_bridge.completed.emit(prompts)
 
         def on_error(exc):
-            self.generate_btn.setEnabled(True)
-            self.export_btn.setEnabled(True)
-            self.progress_widget.setVisible(False)
-            self._pipeline.mark_stage_failed(self.project_name, "Image Prompts", str(exc))
-            NotificationService.get().error(str(exc))
+            _log.error("ImagePromptsPage", "generate_prompts failed", exc)
+            self._generation_bridge.failed.emit(exc)
 
         self.task_manager.run_task(
             task_name="Generate Image Prompts",
@@ -312,6 +298,32 @@ class ImagePromptsPage(QWidget):
             on_complete=on_complete,
             on_error=on_error,
         )
+
+    def _on_generation_completed(self, prompts):
+        """Handle successful generation on the GUI thread."""
+        self._prompts = prompts
+        self.prompt_storage.save(self.project_name, prompts)
+        self._render_prompts()
+
+        self._pipeline.mark_stage_completed(self.project_name, "Image Prompts")
+
+        self.generate_btn.setEnabled(True)
+        self.export_btn.setEnabled(True)
+        self.progress_widget.show_complete(f"Generated {len(prompts)} image prompts.")
+        QTimer.singleShot(2000, lambda: self.progress_widget.setVisible(False))
+        self._history.record_action(
+            self.project_name, "Generated",
+            f"Generated {len(prompts)} image prompts"
+        )
+        NotificationService.get().success(f"Generated {len(prompts)} image prompts.")
+
+    def _on_generation_failed(self, exc):
+        """Handle a failed generation on the GUI thread."""
+        self.generate_btn.setEnabled(True)
+        self.export_btn.setEnabled(True)
+        self.progress_widget.setVisible(False)
+        self._pipeline.mark_stage_failed(self.project_name, "Image Prompts", str(exc))
+        NotificationService.get().error(str(exc))
 
     def _autosave_save(self):
         if not self.project_name:

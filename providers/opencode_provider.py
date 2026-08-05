@@ -52,10 +52,19 @@ class OpenAICompatibleProvider(BaseProvider):
         self._client = None
         self._resolved_model = config.model.strip()
 
+    def _is_local_endpoint(self) -> bool:
+        """Return True when the base URL points to a local server.
+
+        Local servers (Ollama, LM Studio, etc.) typically need no API key,
+        so validation and initialization are relaxed for them.
+        """
+        base_url = self._config.base_url.strip().lower()
+        return any(host in base_url for host in ("localhost", "127.0.0.1", "0.0.0.0"))
+
     def initialize(self) -> None:
         """Create the OpenAI SDK client."""
         api_key = self._config.api_key.strip()
-        if not api_key:
+        if not api_key and not self._is_local_endpoint():
             raise InvalidAPIKeyError(
                 f"No API key configured for {self._config.name}. "
                 "Set it in Settings.",
@@ -72,7 +81,9 @@ class OpenAICompatibleProvider(BaseProvider):
             ) from exc
 
         try:
-            kwargs = {"api_key": api_key}
+            # Local endpoints accept a placeholder key; remote providers must
+            # supply a real one (enforced above).
+            kwargs = {"api_key": api_key or "ollama"}
             base_url = self._config.base_url.strip()
             if base_url:
                 kwargs["base_url"] = base_url
@@ -135,7 +146,13 @@ class OpenAICompatibleProvider(BaseProvider):
         )
 
     def validate_key(self) -> bool:
-        """Validate the API key by listing models."""
+        """Validate the API key with a real API request.
+
+        Performs a lightweight models.list() call. A successful response (or a
+        rate-limit response, which still proves connectivity) passes; every
+        other failure — invalid key, wrong endpoint, unreachable server —
+        reports failure so the Settings connection test stays honest.
+        """
         if not self._initialized:
             try:
                 self.initialize()
@@ -143,9 +160,16 @@ class OpenAICompatibleProvider(BaseProvider):
                 return False
 
         try:
-            models = self.list_models()
-            return len(models) > 0
-        except Exception:
+            self._client.models.list()
+            return True
+        except Exception as exc:
+            status_code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+            if status_code == 429:
+                return True
+            logger.error(
+                "[OpenAI-Compatible] validate_key failed: %s: %s (status=%s)",
+                type(exc).__name__, exc, status_code,
+            )
             return False
 
     def list_models(self) -> list[str]:

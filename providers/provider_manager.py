@@ -12,8 +12,11 @@ No operator should ever know which concrete provider is active.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import logging
+import uuid
 from pathlib import Path
 
 from providers.base_provider import BaseProvider
@@ -35,6 +38,47 @@ from providers.registry import ProviderRegistry
 
 logger = logging.getLogger("kaimi_studio.providers.manager")
 
+# Marker prefix for API keys that are obfuscated at rest. Values without this
+# prefix are treated as legacy plaintext and still work.
+_ENCRYPTED_KEY_PREFIX = "enc:v1:"
+
+
+def _machine_key() -> bytes:
+    """Derive an obfuscation key from a machine identifier.
+
+    API keys are XOR-encoded with a key derived from the machine's node ID
+    (MAC address). The stored value is not readable as plaintext and can only
+    be decoded on the same machine. This protects keys at rest in
+    config/providers.json without requiring an OS keyring or extra deps.
+    """
+    return hashlib.sha256(f"kaimi:{uuid.getnode()}".encode("utf-8")).digest()
+
+
+def _encrypt_api_key(plaintext: str) -> str:
+    """Obfuscate an API key before it is written to providers.json."""
+    plaintext = (plaintext or "").strip()
+    if not plaintext:
+        return ""
+    data = plaintext.encode("utf-8")
+    key = _machine_key()
+    encoded = bytes(value ^ key[index % len(key)] for index, value in enumerate(data))
+    return _ENCRYPTED_KEY_PREFIX + base64.urlsafe_b64encode(encoded).decode("ascii")
+
+
+def _decrypt_api_key(stored: str) -> str:
+    """Return the plaintext API key from a stored (possibly encoded) value."""
+    stored = (stored or "").strip()
+    if not stored:
+        return ""
+    if not stored.startswith(_ENCRYPTED_KEY_PREFIX):
+        return stored  # legacy plaintext value
+    try:
+        encoded = base64.urlsafe_b64decode(stored[len(_ENCRYPTED_KEY_PREFIX):].encode("ascii"))
+        key = _machine_key()
+        return bytes(value ^ key[index % len(key)] for index, value in enumerate(encoded)).decode("utf-8")
+    except Exception:
+        return stored
+
 # Provider metadata: display name, default base URL, whether API key is required
 PROVIDER_METADATA: dict[str, dict] = {
     "gemini": {
@@ -51,13 +95,13 @@ PROVIDER_METADATA: dict[str, dict] = {
     },
     "openai": {
         "display_name": "OpenAI",
-        "base_url": "https://api.openai.com",
+        "base_url": "https://api.openai.com/v1",
         "requires_key": True,
         "description": "GPT models by OpenAI",
     },
     "openrouter": {
         "display_name": "OpenRouter",
-        "base_url": "https://openrouter.ai/api",
+        "base_url": "https://openrouter.ai/api/v1",
         "requires_key": True,
         "description": "Multi-model router",
     },
@@ -69,19 +113,19 @@ PROVIDER_METADATA: dict[str, dict] = {
     },
     "groq": {
         "display_name": "Groq",
-        "base_url": "https://api.groq.com/openai",
+        "base_url": "https://api.groq.com/openai/v1",
         "requires_key": True,
         "description": "Groq LPU inference",
     },
     "deepseek": {
         "display_name": "DeepSeek",
-        "base_url": "https://api.deepseek.com",
+        "base_url": "https://api.deepseek.com/v1",
         "requires_key": True,
         "description": "DeepSeek AI",
     },
     "mistral": {
         "display_name": "Mistral",
-        "base_url": "https://api.mistral.ai",
+        "base_url": "https://api.mistral.ai/v1",
         "requires_key": True,
         "description": "Mistral AI",
     },
@@ -93,7 +137,7 @@ PROVIDER_METADATA: dict[str, dict] = {
     },
     "xai": {
         "display_name": "xAI",
-        "base_url": "https://api.x.ai",
+        "base_url": "https://api.x.ai/v1",
         "requires_key": True,
         "description": "Grok by xAI",
     },
@@ -291,10 +335,14 @@ class ProviderManager:
         return cfg.get("model", "")
 
     def get_provider_api_key(self, provider_name: str | None = None) -> str:
-        """Return the configured API key for a provider."""
+        """Return the plaintext API key for a provider.
+
+        Stored keys are obfuscated at rest; this method decodes them before
+        returning so callers always receive a usable value.
+        """
         target = provider_name.strip().lower() if provider_name else self.get_active_provider_name()
         cfg = self._config.get("providers", {}).get(target, {})
-        return cfg.get("api_key", "")
+        return _decrypt_api_key(cfg.get("api_key", ""))
 
     def get_provider_base_url(self, provider_name: str | None = None) -> str:
         """Return the configured base URL for a provider."""
@@ -303,12 +351,15 @@ class ProviderManager:
         return cfg.get("base_url", "")
 
     def set_provider_api_key(self, provider_name: str, api_key: str) -> None:
-        """Update the API key for a provider and evict cached instance."""
+        """Update the API key for a provider and evict cached instance.
+
+        The key is obfuscated before being written to providers.json.
+        """
         name = provider_name.strip().lower()
         providers = self._config.setdefault("providers", {})
         if name not in providers:
             providers[name] = {}
-        providers[name]["api_key"] = api_key.strip()
+        providers[name]["api_key"] = _encrypt_api_key(api_key)
         self._instances.pop(name, None)
         self._save_configuration()
 
@@ -333,17 +384,18 @@ class ProviderManager:
         self._save_configuration()
 
     def save_provider_config(self, provider_name: str, api_key: str = "", base_url: str = "", model: str = "") -> None:
-        """Save all provider config fields at once and evict cached instance."""
+        """Save all provider config fields at once and evict cached instance.
+
+        Every field is written exactly as provided (empty values clear the
+        stored setting). The API key is obfuscated before being persisted.
+        """
         name = provider_name.strip().lower()
         providers = self._config.setdefault("providers", {})
         if name not in providers:
             providers[name] = {}
-        if api_key != "":
-            providers[name]["api_key"] = api_key.strip()
-        if base_url != "":
-            providers[name]["base_url"] = base_url.strip()
-        if model != "":
-            providers[name]["model"] = model.strip()
+        providers[name]["api_key"] = _encrypt_api_key(api_key)
+        providers[name]["base_url"] = base_url.strip()
+        providers[name]["model"] = model.strip()
         self._instances.pop(name, None)
         self._save_configuration()
 
@@ -376,7 +428,7 @@ class ProviderManager:
         raw = self._config.get("providers", {}).get(name, {})
         return ProviderConfig(
             name=name,
-            api_key=raw.get("api_key", ""),
+            api_key=_decrypt_api_key(raw.get("api_key", "")),
             base_url=raw.get("base_url", ""),
             model=raw.get("model", ""),
             enabled=raw.get("enabled", False),
@@ -411,7 +463,7 @@ class ProviderManager:
         """Check if a provider has a valid API key configured."""
         target = provider_name.strip().lower() if provider_name else self.get_active_provider_name()
         raw = self._config.get("providers", {}).get(target, {})
-        api_key = raw.get("api_key", "").strip()
+        api_key = _decrypt_api_key(raw.get("api_key", "")).strip()
         return bool(api_key)
 
     def get_provider_capabilities(self, provider_name: str | None = None) -> ProviderCapabilities:
@@ -424,24 +476,36 @@ class ProviderManager:
         """Test if a provider is accessible.
 
         Returns:
-            Tuple of (success, message).
+            Tuple of (success, message). The message is provider-specific and
+            actionable so the Settings UI can surface it directly to the user.
         """
         target = provider_name.strip().lower() if provider_name else self.get_active_provider_name()
+        meta = self.get_provider_metadata(target)
+        display = meta.get("display_name", target.title())
+        requires_key = meta.get("requires_key", True)
+
         logger.info("[Manager] test_provider_connection: provider=%s", target)
+
+        if requires_key and not self.validate_provider_configuration(target):
+            return False, f"{display} requires an API key. Enter your key and click Save."
+
         try:
             provider = self._get_provider(target)
             is_valid = provider.validate_key()
-            logger.info("[Manager] validate_key result: %s", is_valid)
-            if is_valid:
-                return True, f"{target.title()} connection successful."
-            return False, f"{target.title()} API key is invalid."
         except Exception as exc:
             logger.error(
                 "[Manager] test_provider_connection failed for '%s': %s: %s",
                 target, type(exc).__name__, exc,
                 exc_info=True,
             )
-            return False, f"{target.title()} connection failed: {exc}"
+            return False, f"{display} connection failed: {exc}"
+
+        logger.info("[Manager] validate_key result for '%s': %s", target, is_valid)
+        if is_valid:
+            return True, f"{display} connection successful."
+        if requires_key:
+            return False, f"{display} connection failed. Check your API key and network access."
+        return False, f"{display} connection failed. Make sure the local server is running."
 
     def list_models(self, provider_name: str | None = None) -> list[str]:
         """List available models for a provider."""
@@ -578,6 +642,6 @@ class ProviderManager:
         for name in self.FAILOVER_SEQUENCE:
             if name not in attempted and self._registry.is_registered(name):
                 cfg = self._config.get("providers", {}).get(name, {})
-                if cfg.get("api_key", "").strip():
+                if _decrypt_api_key(cfg.get("api_key", "")).strip():
                     return name
         return None

@@ -1,21 +1,40 @@
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox, QFrame, QHBoxLayout,
     QLabel, QLineEdit, QScrollArea,
     QVBoxLayout, QWidget,
 )
 
+from core.notifications import NotificationService
 from core.settings import AppSettings
+from core.task_manager import TaskManager
 from core.theme import Fonts
 from core.version import APP_NAME, APP_DESCRIPTION, COPYRIGHT, VERSION
 from ui.theme_pyside import ThemeManager
-from ui.widgets import CardTitle, MutedLabel, ModernCard, PageTitle, SectionLabel
+from ui.widgets import CardTitle, ModernButton, MutedLabel, ModernCard, PageTitle, SectionLabel
+
+
+class _ConnectionBridge(QObject):
+    """Marshals background-thread connection test results to the GUI thread.
+
+    TaskManager runs callbacks on the worker thread; emitting a Qt signal
+    from there is safe because the connection to the SettingsPage (a widget
+    on the main thread) is queued.
+    """
+
+    done = Signal(bool, str)
+    failed = Signal(str)
 
 
 class SettingsPage(QWidget):
     def __init__(self):
         super().__init__()
         self.settings = AppSettings()
+        self.task_manager = TaskManager()
+        self._loading_providers = False
+        self._connection_bridge = _ConnectionBridge()
+        self._connection_bridge.done.connect(self._on_connection_result)
+        self._connection_bridge.failed.connect(self._on_connection_error)
         ThemeManager.instance().on_change(lambda _: self._on_theme_changed())
         self._build()
 
@@ -92,8 +111,8 @@ class SettingsPage(QWidget):
         self.theme_combo.addItems(["Dark", "Light"])
         current = self.settings.get_theme()
         self.theme_combo.setCurrentText(current.title() if current else "Dark")
-        self.theme_combo.currentTextChanged.connect(self._on_theme_changed)
         self.theme_combo.setMinimumWidth(220)
+        self.theme_combo.currentTextChanged.connect(self._on_theme_selected)
 
         card.content_layout.addLayout(self._make_field_row("Theme", self.theme_combo))
         self._scroll_layout.addWidget(card)
@@ -117,7 +136,6 @@ class SettingsPage(QWidget):
         self._scroll_layout.addWidget(card)
 
     def _build_provider(self):
-        c = ThemeManager.instance().colors()
         card = ModernCard()
         card.content_layout.setSpacing(8)
 
@@ -130,14 +148,41 @@ class SettingsPage(QWidget):
         self.provider_combo = QComboBox()
         self.provider_combo.setEditable(False)
         self.provider_combo.setMinimumWidth(220)
-
+        self.provider_combo.currentTextChanged.connect(self._on_provider_changed)
         card.content_layout.addLayout(self._make_field_row("Provider", self.provider_combo))
 
         self.model_input = QLineEdit()
         self.model_input.setPlaceholderText("Enter model name")
         self.model_input.setMinimumWidth(260)
-
         card.content_layout.addLayout(self._make_field_row("Model", self.model_input))
+
+        self.base_url_input = QLineEdit()
+        self.base_url_input.setPlaceholderText("Enter base URL")
+        self.base_url_input.setMinimumWidth(260)
+        card.content_layout.addLayout(self._make_field_row("Base URL", self.base_url_input))
+
+        self.api_key_input = QLineEdit()
+        self.api_key_input.setEchoMode(QLineEdit.Password)
+        self.api_key_input.setPlaceholderText("Enter API key")
+        self.api_key_input.setMinimumWidth(260)
+        card.content_layout.addLayout(self._make_field_row("API Key", self.api_key_input))
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(12)
+        self.save_provider_btn = ModernButton("Save Provider", primary=True)
+        self.save_provider_btn.clicked.connect(self._save_provider)
+        buttons.addWidget(self.save_provider_btn)
+
+        self.test_connection_btn = ModernButton("Test Connection", primary=False)
+        self.test_connection_btn.clicked.connect(self._test_connection)
+        buttons.addWidget(self.test_connection_btn)
+
+        buttons.addStretch()
+        card.content_layout.addLayout(buttons)
+
+        self.provider_status = MutedLabel("")
+        self.provider_status.setWordWrap(True)
+        card.content_layout.addWidget(self.provider_status)
 
         self._load_providers()
         self._scroll_layout.addWidget(card)
@@ -165,27 +210,174 @@ class SettingsPage(QWidget):
 
         self._scroll_layout.addWidget(card)
 
-    def _on_theme_changed(self, value):
+    def _on_theme_selected(self, value):
         mode = value.lower()
-        ThemeManager.instance().set_mode(mode)
         self.settings.set_theme(mode)
+        ThemeManager.instance().set_mode(mode)
+
+    # ── Provider configuration ───────────────────────────────────────
 
     def _load_providers(self):
+        """Populate the provider combo box and load the active provider's fields."""
+        self._loading_providers = True
         try:
             from providers.provider_manager import ProviderManager
             pm = ProviderManager()
             names = pm.get_registered_providers()
             self.provider_combo.clear()
             for name in names:
-                self.provider_combo.addItem(name)
+                meta = pm.get_provider_metadata(name)
+                self.provider_combo.addItem(meta.get("display_name", name.title()), name)
 
             active = pm.get_active_provider_name()
-            if active and active in names:
-                self.provider_combo.setCurrentText(active)
-
-            model = pm.get_provider_model(active or "")
-            if model:
-                self.model_input.setText(model)
+            idx = self.provider_combo.findData(active)
+            if idx >= 0:
+                self.provider_combo.setCurrentIndex(idx)
         except ImportError:
-            self.provider_combo.addItem("OpenAI")
-            self.provider_combo.addItem("Anthropic")
+            self.provider_combo.addItem("Gemini", "gemini")
+            self.provider_combo.addItem("Anthropic", "anthropic")
+        finally:
+            self._loading_providers = False
+        self._load_provider_fields()
+
+    def _current_provider_name(self) -> str:
+        """Return the canonical name of the provider currently selected."""
+        return str(self.provider_combo.currentData() or "").strip().lower()
+
+    def _on_provider_changed(self, *args):
+        if self._loading_providers:
+            return
+        name = self._current_provider_name()
+        if not name:
+            return
+        try:
+            from providers.provider_manager import ProviderManager
+            pm = ProviderManager()
+            pm.set_active_provider(name)
+        except Exception:
+            pass
+        self._load_provider_fields()
+
+    def _load_provider_fields(self):
+        """Load saved model, base URL, and API key for the selected provider."""
+        name = self._current_provider_name()
+        if not name:
+            return
+
+        from providers.provider_manager import ProviderManager
+        pm = ProviderManager()
+        meta = pm.get_provider_metadata(name)
+        display = meta.get("display_name", name.title())
+        requires_key = meta.get("requires_key", True)
+
+        self.model_input.setText(pm.get_provider_model(name))
+        self.base_url_input.setText(pm.get_provider_base_url(name))
+
+        saved_key = pm.get_provider_api_key(name)
+        self.api_key_input.setText(saved_key)
+
+        if requires_key:
+            self.api_key_input.setEnabled(True)
+            self.api_key_input.setPlaceholderText("Enter API key")
+            if saved_key:
+                self._set_provider_status(f"{display} API key is configured.", "success")
+            else:
+                self._set_provider_status(f"No API key saved for {display}.", "warning")
+        else:
+            self.api_key_input.setEnabled(False)
+            self.api_key_input.setText("")
+            self.api_key_input.setPlaceholderText("No API key required (local provider)")
+            self._set_provider_status(
+                f"{display} is a local provider — no API key required.", "info"
+            )
+
+    def _save_provider(self):
+        """Persist the provider selection, API key, base URL, and model."""
+        name = self._current_provider_name()
+        if not name:
+            return
+
+        from providers.provider_manager import ProviderManager
+        pm = ProviderManager()
+        meta = pm.get_provider_metadata(name)
+        display = meta.get("display_name", name.title())
+        requires_key = meta.get("requires_key", True)
+
+        stored = pm.get_provider_config(name)
+        model = self.model_input.text().strip() or stored.get("model", "")
+        base_url = self.base_url_input.text().strip() or stored.get("base_url", "")
+        api_key = self.api_key_input.text().strip()
+        if not api_key:
+            api_key = pm.get_provider_api_key(name)
+
+        pm.set_active_provider(name)
+        pm.save_provider_config(name, api_key=api_key, base_url=base_url, model=model)
+
+        if requires_key and not api_key:
+            self._set_provider_status(f"{display} saved, but no API key is set yet.", "warning")
+        else:
+            self._set_provider_status(f"{display} configuration saved.", "success")
+        NotificationService.get().success(f"{display} configuration saved.")
+
+    def _test_connection(self):
+        """Save the current config, then test the selected provider."""
+        name = self._current_provider_name()
+        if not name:
+            return
+
+        self._save_provider()
+
+        from providers.provider_manager import ProviderManager
+        pm = ProviderManager()
+        meta = pm.get_provider_metadata(name)
+        display = meta.get("display_name", name.title())
+
+        self.test_connection_btn.setText("Testing...")
+        self.test_connection_btn.setEnabled(False)
+        self._set_provider_status(f"Testing connection to {display}...", "info")
+
+        def run_task(task_manager):
+            return pm.test_provider_connection(name)
+
+        def on_complete(result):
+            ok, message = result
+            self._connection_bridge.done.emit(bool(ok), str(message))
+
+        def on_error(exc):
+            self._connection_bridge.failed.emit(f"{display} connection failed: {exc}")
+
+        self.task_manager.run_task(
+            task_name=f"Test {display} Connection",
+            task_func=run_task,
+            on_complete=on_complete,
+            on_error=on_error,
+        )
+
+    def _on_connection_result(self, ok, message):
+        """Show the provider-specific result of a connection test."""
+        self.test_connection_btn.setText("Test Connection")
+        self.test_connection_btn.setEnabled(True)
+        self._set_provider_status(message, "success" if ok else "error")
+        if ok:
+            NotificationService.get().success(message)
+        else:
+            NotificationService.get().error(message)
+
+    def _on_connection_error(self, message):
+        self.test_connection_btn.setText("Test Connection")
+        self.test_connection_btn.setEnabled(True)
+        self._set_provider_status(message, "error")
+        NotificationService.get().error(message)
+
+    def _set_provider_status(self, message, level="info"):
+        """Update the provider status label with the given message and color."""
+        c = ThemeManager.instance().colors()
+        colors = {
+            "success": c.SUCCESS,
+            "warning": c.WARNING,
+            "error": c.ERROR,
+            "info": c.TEXT_SECONDARY,
+        }
+        color = colors.get(level, c.TEXT_SECONDARY)
+        self.provider_status.setText(message)
+        self.provider_status.setStyleSheet(Fonts.body(color))

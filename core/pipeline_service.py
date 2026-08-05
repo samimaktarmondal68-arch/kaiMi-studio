@@ -215,8 +215,9 @@ class PipelineService:
                 messages.append("No topic defined for the project.")
                 passed = False
             if not data.get("platform"):
-                messages.append("No platform selected.")
-                passed = False
+                # Legacy projects may lack a platform; default keeps them working.
+                data["platform"] = "Long Form"
+                self._pm.update_project(project_name, data)
 
         elif stage == "Voice":
             script_data = self._load_storage("script", project_name)

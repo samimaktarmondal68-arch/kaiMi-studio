@@ -117,7 +117,12 @@ class GeminiProvider(BaseProvider):
         )
 
     def validate_key(self) -> bool:
-        """Validate the Gemini API key by listing models."""
+        """Validate the Gemini API key with a real API request.
+
+        Performs a lightweight models.list() call. Auth problems (401/403, or
+        400 with an API-key message) report failure; endpoints that answer but
+        do not expose model listing are treated as connected.
+        """
         if not self._initialized:
             try:
                 self.initialize()
@@ -125,9 +130,18 @@ class GeminiProvider(BaseProvider):
                 return False
 
         try:
-            models = self.list_models()
-            return len(models) > 0
-        except Exception:
+            self._client.models.list()
+            return True
+        except Exception as exc:
+            status_code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+            error_str = str(exc).lower()
+            if status_code in (404, 405):
+                return True
+            if status_code in (401, 403):
+                return False
+            if status_code == 400 and "api key" in error_str:
+                return False
+            logger.error("[Gemini] validate_key failed: %s: %s", type(exc).__name__, exc)
             return False
 
     def list_models(self) -> list[str]:

@@ -1,4 +1,4 @@
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QObject, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 
 from core.autosave import get_autosave_manager
 from core.history_manager import HistoryManager
+from core.logger import get_logger
 from core.notifications import NotificationService
 from core.pipeline_service import get_pipeline_service
 from core.project_manager import ProjectManager
@@ -29,6 +30,21 @@ from ..widgets import (
     ProgressWidget,
     StatusBadge,
 )
+
+
+_log = get_logger()
+
+
+class _GenerationBridge(QObject):
+    """Marshals background-thread task results back to the GUI thread.
+
+    Qt signals connected to the ScriptPage (a widget living on the main
+    thread) use queued connections, so emitting from the worker thread is
+    safe. This prevents direct Qt widget access from background threads.
+    """
+
+    completed = Signal(str)
+    failed = Signal(str)
 
 
 PROGRESS_STAGES = [
@@ -55,12 +71,16 @@ class ScriptPage(QWidget):
         self._dirty = False
         self._progress_index = 0
         self._progress_timer = None
+        self._last_research_context = ""
         self._history = HistoryManager()
         self._autosave = get_autosave_manager()
         self._autosave.register("script", self._autosave_save)
         self._autosave_indicator = AutosaveIndicator()
         self._autosave.on_status_change(self._autosave_indicator.set_status)
         ThemeManager.instance().on_change(lambda _: self._on_theme_changed())
+        self._generation_bridge = _GenerationBridge()
+        self._generation_bridge.completed.connect(self._on_generation_completed)
+        self._generation_bridge.failed.connect(self._on_generation_failed)
         self._build()
 
     def _on_theme_changed(self):
@@ -267,6 +287,7 @@ class ScriptPage(QWidget):
         self._start_progress_animation()
 
         def run_task(task_manager):
+            research_context = self._obtain_research_context(project_data)
             request = ScriptRequest(
                 topic=project_data.get("topic", ""),
                 platform=project_data.get("platform", "Long Form"),
@@ -276,56 +297,18 @@ class ScriptPage(QWidget):
                 script_min=project_data.get("script_min", 4500),
                 script_max=project_data.get("script_max", 5000),
                 duration_preset=project_data.get("duration_preset", ""),
-                research_sources=project_data.get("research_sources", ""),
+                research_sources=research_context,
                 keywords=project_data.get("keywords", ""),
             )
+            self._last_research_context = research_context
             return self.operator.execute(request)
 
         def on_complete(result):
-            self._stop_progress_animation()
-            self.editor.setPlainText(result)
-            self._saved_text = result
-            self._dirty = False
-
-            self.script_storage.save(
-                project_name=self.project_name,
-                script_output=result,
-                script_mode=project_data.get("script_mode", "characters"),
-                script_min=project_data.get("script_min", 4500),
-                script_max=project_data.get("script_max", 5000),
-                duration_preset=project_data.get("duration_preset", ""),
-            )
-
-            project_data["last_modified"] = __import__("datetime").datetime.now().strftime("%d-%m-%Y %H:%M")
-            project_data["status"] = "Script"
-            self.manager.update_project(self.project_name, project_data)
-
-            self._pipeline.mark_stage_completed(self.project_name, "Script")
-
-            self.progress_widget.show_complete("Script generated successfully.")
-            QTimer.singleShot(2000, lambda: self.progress_widget.setVisible(False))
-
-            self.generate_btn.setEnabled(True)
-            c = ThemeManager.instance().colors()
-            self.status_label.setText("Saved")
-            self.status_label.setStyleSheet(f"color: {c.SUCCESS}; font-weight: bold;")
-            self.char_count_label.setText(f"{len(result)} characters")
-            self.word_count_label.setText(f"{self._count_words(result)} words")
-            self._history.record_action(
-                self.project_name, "Generated",
-                f"Generated script ({self._count_words(result)} words)"
-            )
-            NotificationService.get().success("Script generated successfully.")
+            self._generation_bridge.completed.emit(result)
 
         def on_error(exc):
-            self._stop_progress_animation()
-            self.generate_btn.setEnabled(True)
-            self.progress_widget.setVisible(False)
-            self._pipeline.mark_stage_failed(self.project_name, "Script", str(exc))
-            c = ThemeManager.instance().colors()
-            self.status_label.setText(f"Error: {exc}")
-            self.status_label.setStyleSheet(f"color: {c.ERROR};")
-            NotificationService.get().error(str(exc))
+            _log.error("ScriptPage", f"generate_script failed: {exc}", exc)
+            self._generation_bridge.failed.emit(str(exc))
 
         self.task_manager.run_task(
             task_name="Generate Script",
@@ -333,6 +316,115 @@ class ScriptPage(QWidget):
             on_complete=on_complete,
             on_error=on_error,
         )
+
+    def _obtain_research_context(self, project_data):
+        """Return research context for script generation.
+
+        Reuses stored research when available; otherwise runs the research
+        operator automatically in the backend and persists the result.
+        """
+        from core.research_storage import ResearchStorage
+        from operators.research.operator import ResearchOperator
+        from operators.research.prompt_builder import ResearchRequest
+
+        storage = ResearchStorage()
+        existing = storage.load(self.project_name) or {}
+        generated = (existing.get("generated_research") or "").strip()
+        if generated:
+            return generated
+
+        _log.info("No stored research for %s; generating automatically", self.project_name)
+        topic = project_data.get("topic", "")
+        operator = ResearchOperator()
+        request = ResearchRequest(
+            topic=topic,
+            keywords=project_data.get("keywords", ""),
+            goal=f"Provide thorough, accurate background research for a {project_data.get('video_type', 'Educational')} video about: {topic}.",
+            sources=project_data.get("research_sources", ""),
+            audience="general audience",
+            language=project_data.get("language", "English"),
+        )
+        fresh_research = operator.execute(request)
+        storage.save(
+            project_name=self.project_name,
+            topic=topic,
+            keywords=str(request.keywords),
+            goal=request.goal,
+            sources=str(request.sources),
+            prompt_preview=operator.get_prompt_preview(request),
+            generated_research=fresh_research,
+        )
+        return fresh_research
+
+    def _on_generation_completed(self, result):
+        """Handle a successful script generation on the GUI thread."""
+        self._stop_progress_animation()
+        self.editor.setPlainText(result)
+        self._saved_text = result
+        self._dirty = False
+
+        project_data = self.manager.load_project(self.project_name) or {}
+
+        self.script_storage.save(
+            project_name=self.project_name,
+            script_output=result,
+            script_mode=project_data.get("script_mode", "characters"),
+            script_min=project_data.get("script_min", 4500),
+            script_max=project_data.get("script_max", 5000),
+            duration_preset=project_data.get("duration_preset", ""),
+            research_data=self._last_research_context,
+        )
+        self._last_research_context = ""
+
+        project_data["last_modified"] = __import__("datetime").datetime.now().strftime("%d-%m-%Y %H:%M")
+        project_data["status"] = "Script"
+        self.manager.update_project(self.project_name, project_data)
+
+        self._pipeline.mark_stage_completed(self.project_name, "Script")
+
+        self.progress_widget.show_complete("Script generated successfully.")
+        QTimer.singleShot(2000, lambda: self.progress_widget.setVisible(False))
+
+        self.generate_btn.setEnabled(True)
+        c = ThemeManager.instance().colors()
+        self.status_label.setText("Saved")
+        self.status_label.setStyleSheet(f"color: {c.SUCCESS}; font-weight: bold;")
+        self.char_count_label.setText(f"{len(result)} characters")
+        self.word_count_label.setText(f"{self._count_words(result)} words")
+        self._history.record_action(
+            self.project_name, "Generated",
+            f"Generated script ({self._count_words(result)} words)"
+        )
+        NotificationService.get().success("Script generated successfully.")
+
+    def _on_generation_failed(self, message):
+        """Handle a failed generation on the GUI thread."""
+        self._stop_progress_animation()
+        self.generate_btn.setEnabled(True)
+        self.progress_widget.setVisible(False)
+        friendly = self._friendly_error_message(message)
+        self._pipeline.mark_stage_failed(self.project_name, "Script", friendly)
+        c = ThemeManager.instance().colors()
+        self.status_label.setText(f"Error: {friendly}")
+        self.status_label.setStyleSheet(f"color: {c.ERROR};")
+        NotificationService.get().error(friendly)
+
+    @staticmethod
+    def _friendly_error_message(message):
+        """Condense a raw provider error into a concise user-facing message.
+
+        Provider failover errors embed the full SDK JSON payload; strip it
+        so the status label and notification stay readable.
+        """
+        text = str(message)
+        marker = "Last error: "
+        if marker in text:
+            text = "All available providers are exhausted. " + text.split(marker, 1)[1]
+        if " {" in text:
+            text = text.split(" {", 1)[0]
+        if text.endswith("RESOURCE_EXHAUSTED."):
+            text = text[:-len("RESOURCE_EXHAUSTED.")] + "(quota exceeded)."
+        return text.strip()
 
     def _autosave_save(self):
         if not self.project_name:

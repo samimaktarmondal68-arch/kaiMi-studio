@@ -431,6 +431,63 @@ class TestNotificationService:
 
 
 # =====================================================================
+# PHASE 7B — Provider Configuration & Persistence
+# =====================================================================
+
+class TestProviderConfiguration:
+
+    def test_api_key_encrypted_round_trip(self, tmp_path):
+        from providers.provider_manager import ProviderManager
+        pm = ProviderManager(config_path=tmp_path / "providers.json")
+        pm.set_active_provider("gemini")
+        pm.save_provider_config("gemini", api_key="sk-secret-value", model="gemini-2.0-flash")
+
+        raw = (tmp_path / "providers.json").read_text(encoding="utf-8")
+        assert "sk-secret-value" not in raw, "plaintext key leaked into providers.json"
+
+        reloaded = ProviderManager(config_path=tmp_path / "providers.json")
+        assert reloaded.get_provider_api_key("gemini") == "sk-secret-value"
+        assert reloaded.validate_provider_configuration("gemini")
+        assert reloaded.get_provider_model("gemini") == "gemini-2.0-flash"
+
+    def test_legacy_plaintext_key_still_reads(self, tmp_path):
+        from providers.provider_manager import ProviderManager
+        cfg_path = tmp_path / "providers.json"
+        cfg_path.write_text(
+            json.dumps({
+                "active_provider": "gemini",
+                "providers": {"gemini": {"api_key": "legacy-plain-key"}},
+            }),
+            encoding="utf-8",
+        )
+        pm = ProviderManager(config_path=cfg_path)
+        assert pm.get_provider_api_key("gemini") == "legacy-plain-key"
+
+    def test_save_config_can_clear_key(self, tmp_path):
+        from providers.provider_manager import ProviderManager
+        pm = ProviderManager(config_path=tmp_path / "providers.json")
+        pm.save_provider_config("gemini", api_key="secret")
+        pm.save_provider_config("gemini", api_key="")
+        assert pm.get_provider_api_key("gemini") == ""
+        assert not pm.validate_provider_configuration("gemini")
+
+    def test_connection_test_requires_key_message(self, tmp_path):
+        from providers.provider_manager import ProviderManager
+        pm = ProviderManager(config_path=tmp_path / "providers.json")
+        pm.set_active_provider("openai")
+        ok, msg = pm.test_provider_connection("openai")
+        assert ok is False
+        assert "API key" in msg
+
+    def test_active_provider_persists(self, tmp_path):
+        from providers.provider_manager import ProviderManager
+        pm = ProviderManager(config_path=tmp_path / "providers.json")
+        pm.set_active_provider("openrouter")
+        reloaded = ProviderManager(config_path=tmp_path / "providers.json")
+        assert reloaded.get_active_provider_name() == "openrouter"
+
+
+# =====================================================================
 # PHASE 8 — Keyboard Shortcuts (structural)
 # =====================================================================
 
