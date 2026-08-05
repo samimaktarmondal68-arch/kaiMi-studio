@@ -245,17 +245,12 @@ class SettingsPage(QWidget):
         return str(self.provider_combo.currentData() or "").strip().lower()
 
     def _on_provider_changed(self, *args):
+        # Browsing the dropdown only loads that provider's fields for
+        # editing; the selection becomes active only via Save Provider.
         if self._loading_providers:
             return
-        name = self._current_provider_name()
-        if not name:
+        if not self._current_provider_name():
             return
-        try:
-            from providers.provider_manager import ProviderManager
-            pm = ProviderManager()
-            pm.set_active_provider(name)
-        except Exception:
-            pass
         self._load_provider_fields()
 
     def _load_provider_fields(self):

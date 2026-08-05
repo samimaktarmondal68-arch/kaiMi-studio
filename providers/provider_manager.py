@@ -535,6 +535,24 @@ class ProviderManager:
             )
             return []
 
+    def preflight_check(self) -> tuple[bool, str]:
+        """Check that the active provider is usable before starting generation.
+
+        Returns:
+            Tuple of (ok, message). When ok is False, the message is
+            actionable and safe to surface directly to the user.
+        """
+        name = self.get_active_provider_name()
+        if not name:
+            return False, "No active AI provider is configured. Choose one in Settings."
+        meta = self.get_provider_metadata(name)
+        display = meta.get("display_name", name.title())
+        if not self.get_provider_model(name).strip():
+            return False, f"Provider '{display}' has no model configured. Set a model in Settings."
+        if meta.get("requires_key", True) and not self.validate_provider_configuration(name):
+            return False, f"Provider '{display}' requires an API key. Set one in Settings."
+        return True, ""
+
     # ── Auto-failover sequence ───────────────────────────────────────
 
     FAILOVER_SEQUENCE = [

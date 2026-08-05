@@ -19,6 +19,7 @@ from core.task_manager import TaskManager
 from core.theme import Fonts, Spacing, Radius
 from operators.script.models import ScriptRequest
 from operators.script.operator import ScriptOperator
+from providers.provider_manager import ProviderManager
 from ..theme_pyside import ThemeManager
 from ..widgets import (
     AutosaveIndicator,
@@ -277,6 +278,11 @@ class ScriptPage(QWidget):
         if not project_data:
             return
 
+        ok, provider_msg = ProviderManager().preflight_check()
+        if not ok:
+            NotificationService.get().warning(provider_msg)
+            return
+
         self._pipeline.mark_stage_started(self.project_name, "Script")
 
         self.generate_btn.setEnabled(False)
@@ -333,7 +339,7 @@ class ScriptPage(QWidget):
         if generated:
             return generated
 
-        _log.info("No stored research for %s; generating automatically", self.project_name)
+        _log.info("ScriptPage", f"No stored research for {self.project_name}; generating automatically")
         topic = project_data.get("topic", "")
         operator = ResearchOperator()
         request = ResearchRequest(

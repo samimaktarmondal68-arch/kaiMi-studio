@@ -487,6 +487,57 @@ class TestProviderConfiguration:
         assert reloaded.get_active_provider_name() == "openrouter"
 
 
+class TestProviderPreflight:
+    """Generation preflight: the active provider must be usable before
+    a Generate task is allowed to start (see ScriptPage.generate_script)."""
+
+    def test_preflight_fails_when_model_missing(self, tmp_path):
+        from providers.provider_manager import ProviderManager
+        pm = ProviderManager(config_path=tmp_path / "providers.json")
+        pm.set_active_provider("ollama")
+        ok, msg = pm.preflight_check()
+        assert ok is False
+        assert "model" in msg.lower()
+        assert "Ollama" in msg
+
+    def test_preflight_fails_when_required_key_missing(self, tmp_path):
+        from providers.provider_manager import ProviderManager
+        pm = ProviderManager(config_path=tmp_path / "providers.json")
+        pm.set_active_provider("openai")
+        pm.set_provider_model("openai", "gpt-4o")
+        ok, msg = pm.preflight_check()
+        assert ok is False
+        assert "API key" in msg
+
+    def test_preflight_passes_for_local_provider_with_model(self, tmp_path):
+        from providers.provider_manager import ProviderManager
+        pm = ProviderManager(config_path=tmp_path / "providers.json")
+        pm.set_active_provider("ollama")
+        pm.set_provider_model("ollama", "llama3")
+        ok, msg = pm.preflight_check()
+        assert ok is True
+        assert msg == ""
+
+    def test_preflight_passes_for_configured_cloud_provider(self, tmp_path):
+        from providers.provider_manager import ProviderManager
+        pm = ProviderManager(config_path=tmp_path / "providers.json")
+        pm.set_active_provider("gemini")
+        pm.save_provider_config("gemini", api_key="test-key", model="gemini-2.0-flash")
+        ok, msg = pm.preflight_check()
+        assert ok is True
+        assert msg == ""
+
+    def test_settings_dropdown_does_not_switch_active_provider(self):
+        """Browsing the provider dropdown must not persist an active-provider
+        change; only Save Provider may call set_active_provider."""
+        import inspect
+        from ui.pages.settings_page import SettingsPage
+        changed_src = inspect.getsource(SettingsPage._on_provider_changed)
+        assert "set_active_provider" not in changed_src
+        save_src = inspect.getsource(SettingsPage._save_provider)
+        assert "set_active_provider" in save_src
+
+
 # =====================================================================
 # PHASE 8 — Keyboard Shortcuts (structural)
 # =====================================================================
