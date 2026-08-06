@@ -19,7 +19,7 @@ from core.task_manager import TaskManager
 from core.theme import Fonts, Spacing, Radius
 from operators.script.models import ScriptRequest
 from operators.script.operator import ScriptOperator
-from providers.provider_manager import ProviderManager
+from providers.provider_manager import get_provider_manager
 from ..theme_pyside import ThemeManager
 from ..widgets import (
     AutosaveIndicator,
@@ -278,7 +278,7 @@ class ScriptPage(QWidget):
         if not project_data:
             return
 
-        ok, provider_msg = ProviderManager().preflight_check()
+        ok, provider_msg = get_provider_manager().preflight_check()
         if not ok:
             NotificationService.get().warning(provider_msg)
             return

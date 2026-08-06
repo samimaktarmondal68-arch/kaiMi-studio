@@ -11,7 +11,7 @@ from operators.image_prompt.models import (
 from operators.image_prompt.prompt_builder import ImagePromptBuilder
 from providers.exceptions import ProviderError, ProviderNotConfiguredError
 from providers.models import GenerationRequest
-from providers.provider_manager import ProviderManager
+from providers.provider_manager import ProviderManager, get_provider_manager
 
 
 class ProviderConfigurationError(RuntimeError):
@@ -26,8 +26,18 @@ class ImagePromptOperator:
         provider_manager: ProviderManager | None = None,
     ) -> None:
         self._prompt_builder = prompt_builder or ImagePromptBuilder()
-        self._provider_manager = provider_manager or ProviderManager()
+        # Store an injected manager (used in tests); None means create fresh per call.
+        self._provider_manager = provider_manager
         self._log = get_logger()
+
+    def _get_provider_manager(self) -> ProviderManager:
+        """Return the injected ProviderManager or a fresh one.
+
+        A fresh instance is created on every generation call so that any
+        provider change saved via Settings takes effect immediately without
+        requiring an application restart.
+        """
+        return self._provider_manager or get_provider_manager()
 
     def execute(self, request: ImagePromptRequest) -> str:
         self._log.info("ImagePromptOperator", f"Starting image prompt generation")
@@ -59,7 +69,7 @@ class ImagePromptOperator:
                 prompt=user_prompt,
                 system_prompt=system_prompt,
             )
-            response = self._provider_manager.generate(generation_request)
+            response = self._get_provider_manager().generate(generation_request)
         except ProviderNotConfiguredError as exc:
             raise ProviderConfigurationError(str(exc)) from exc
         except ProviderError as exc:

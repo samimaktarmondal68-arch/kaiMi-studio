@@ -572,8 +572,14 @@ class ProviderManager:
     def generate(self, request: GenerationRequest) -> GenerationResponse:
         """Generate text using the active provider with automatic failover.
 
-        Tries the active provider first. If it fails with a quota or rate
-        limit error, automatically falls back through the failover sequence.
+        Tries the active provider first. If it fails with a quota, rate-limit,
+        or network error, it automatically falls back through the failover
+        sequence to the next configured provider.
+
+        Configuration errors (missing key, missing model, unknown provider) are
+        surfaced immediately as ProviderNotConfiguredError — they do NOT trigger
+        failover, because silently switching providers would hide mis-configuration
+        and produce output from an unexpected source.
 
         Args:
             request: Standard generation request.
@@ -582,32 +588,37 @@ class ProviderManager:
             Standard generation response with text and metadata.
 
         Raises:
-            ProviderNotConfiguredError: If no provider is configured.
-            ProviderError: For any unrecoverable provider-level failure.
+            ProviderNotConfiguredError: Active provider is missing a key or model.
+            ProviderError: Unrecoverable provider-level failure.
+            GenerationFailedError: All failover candidates exhausted.
         """
         provider_name = self.get_active_provider_name()
         if not provider_name:
             raise ProviderNotConfiguredError("No active provider configured.")
 
-        attempted = set()
+        # Validate configuration before making any network call.
+        # A misconfigured provider is a user error, not a runtime failure —
+        # failing over silently would only mask the problem.
+        ok, msg = self.preflight_check()
+        if not ok:
+            raise ProviderNotConfiguredError(msg)
+
+        attempted: set = set()
+        last_error: Exception = ProviderNotConfiguredError("No provider available.")
 
         while provider_name and provider_name not in attempted:
             attempted.add(provider_name)
 
             provider = self._get_provider(provider_name)
 
-            if not provider.validate_key():
-                last_error = ProviderNotConfiguredError(
-                    f"Provider '{provider_name}' is not configured.",
-                    provider=provider_name,
-                )
-                provider_name = self._get_next_failover(provider_name, attempted)
-                continue
-
             try:
                 if not provider.is_initialized:
                     provider.initialize()
             except Exception as exc:
+                logger.warning(
+                    "[Manager] Failed to initialize '%s', failing over: %s",
+                    provider_name, exc,
+                )
                 last_error = exc
                 provider_name = self._get_next_failover(provider_name, attempted)
                 continue
@@ -656,10 +667,33 @@ class ProviderManager:
         ) from (last_error if isinstance(last_error, Exception) else None)
 
     def _get_next_failover(self, current: str, attempted: set) -> str | None:
-        """Find the next un-attempted provider in the failover sequence."""
+        """Find the next un-attempted, fully-configured provider in the failover sequence.
+
+        A provider is considered viable for failover only when it has both a
+        non-empty API key and a non-empty model.  Skipping half-configured
+        providers prevents failover from silently landing on a provider that
+        would itself immediately fail.
+        """
         for name in self.FAILOVER_SEQUENCE:
             if name not in attempted and self._registry.is_registered(name):
                 cfg = self._config.get("providers", {}).get(name, {})
-                if _decrypt_api_key(cfg.get("api_key", "")).strip():
-                    return name
+                if not _decrypt_api_key(cfg.get("api_key", "")).strip():
+                    continue
+                if not cfg.get("model", "").strip():
+                    continue
+                return name
         return None
+
+
+def get_provider_manager() -> ProviderManager:
+    """Return a fresh ProviderManager.
+
+    This is NOT a singleton.
+
+    Every call must construct a new ProviderManager so that the latest
+    providers.json is always loaded from disk.
+
+    Do not cache.
+    Do not introduce global state.
+    """
+    return ProviderManager()
