@@ -11,10 +11,12 @@ history, export formats, task queue, error handling, workflow state.
 """
 
 import json
+import os
 import shutil
 import time
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -486,6 +488,215 @@ class TestProviderConfiguration:
         reloaded = ProviderManager(config_path=tmp_path / "providers.json")
         assert reloaded.get_active_provider_name() == "openrouter"
 
+    def test_settings_list_matches_registered_provider_metadata(self, tmp_path):
+        from providers.provider_manager import PROVIDER_METADATA, ProviderManager
+
+        pm = ProviderManager(config_path=tmp_path / "providers.json")
+        registered = pm.get_registered_providers()
+
+        assert registered == sorted(PROVIDER_METADATA.keys())
+        for name in registered:
+            meta = pm.get_provider_metadata(name)
+            assert meta["display_name"]
+            assert "requires_key" in meta
+            assert "base_url" in meta
+
+    def test_every_registered_provider_can_be_instantiated(self, tmp_path):
+        from providers.base_provider import BaseProvider
+        from providers.provider_manager import ProviderManager
+
+        pm = ProviderManager(config_path=tmp_path / "providers.json")
+        for name in pm.get_registered_providers():
+            pm.save_provider_config(
+                name,
+                api_key="test-key" if pm.provider_requires_key(name) else "",
+                base_url=pm.get_provider_metadata(name).get("base_url", ""),
+                model="test-model",
+            )
+            provider = pm._get_provider(name)
+            assert isinstance(provider, BaseProvider)
+            assert provider.name == name
+
+    def test_unsupported_active_provider_does_not_fall_back_to_gemini(self, tmp_path):
+        from providers.provider_manager import ProviderManager
+
+        cfg_path = tmp_path / "providers.json"
+        cfg_path.write_text(
+            json.dumps({
+                "active_provider": "missing-provider",
+                "providers": {
+                    "gemini": {"api_key": "test-key", "model": "gemini-2.0-flash"},
+                    "missing-provider": {"api_key": "test-key", "model": "missing-model"},
+                },
+            }),
+            encoding="utf-8",
+        )
+
+        pm = ProviderManager(config_path=cfg_path)
+        assert pm.get_active_provider_name() == ""
+        ok, msg = pm.preflight_check()
+        assert ok is False
+        assert "No active AI provider" in msg
+
+    def test_failover_sequence_covers_every_registered_provider(self, tmp_path):
+        from providers.provider_manager import ProviderManager
+
+        pm = ProviderManager(config_path=tmp_path / "providers.json")
+        assert set(pm.FAILOVER_SEQUENCE) == set(pm.get_registered_providers())
+
+    def test_local_providers_are_failover_candidates_without_api_keys(self, tmp_path):
+        from providers.provider_manager import ProviderManager
+
+        pm = ProviderManager(config_path=tmp_path / "providers.json")
+        local_names = [
+            name for name in pm.get_registered_providers()
+            if not pm.provider_requires_key(name)
+        ]
+
+        for name in local_names:
+            pm.save_provider_config(
+                name,
+                api_key="",
+                base_url=pm.get_provider_metadata(name).get("base_url", ""),
+                model="local-test-model",
+            )
+
+        first_local_index = min(pm.FAILOVER_SEQUENCE.index(name) for name in local_names)
+        attempted = set(pm.FAILOVER_SEQUENCE[:first_local_index])
+
+        assert pm._get_next_failover("", attempted) == pm.FAILOVER_SEQUENCE[first_local_index]
+
+    def test_every_registered_provider_can_test_and_generate(self, tmp_path, monkeypatch):
+        from providers.anthropic_provider import AnthropicProvider
+        from providers.cohere_provider import CohereProvider
+        from providers.gemini_provider import GeminiProvider
+        from providers.models import GenerationRequest
+        from providers.opencode_provider import OpenAICompatibleProvider
+        from providers.provider_manager import ProviderManager
+
+        class FakeOpenAIModels:
+            def list(self):
+                return SimpleNamespace(data=[SimpleNamespace(id="test-model")])
+
+        class FakeOpenAICompletions:
+            def create(self, **kwargs):
+                return SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            message=SimpleNamespace(content="mock openai-compatible output"),
+                            finish_reason="stop",
+                        )
+                    ],
+                    usage=SimpleNamespace(
+                        prompt_tokens=1,
+                        completion_tokens=2,
+                        total_tokens=3,
+                    ),
+                )
+
+        class FakeOpenAIClient:
+            def __init__(self):
+                self.models = FakeOpenAIModels()
+                self.chat = SimpleNamespace(
+                    completions=FakeOpenAICompletions()
+                )
+
+        class FakeGeminiModels:
+            def list(self):
+                return [SimpleNamespace(name="models/test-model")]
+
+            def generate_content(self, **kwargs):
+                return SimpleNamespace(
+                    text="mock gemini output",
+                    usage_metadata=SimpleNamespace(
+                        prompt_token_count=1,
+                        candidates_token_count=2,
+                        total_token_count=3,
+                    ),
+                )
+
+        class FakeGeminiClient:
+            def __init__(self):
+                self.models = FakeGeminiModels()
+
+        class FakeHttpResponse:
+            def __init__(self, data):
+                self.status_code = 200
+                self.text = json.dumps(data)
+                self._data = data
+
+            def json(self):
+                return self._data
+
+        class FakeAnthropicClient:
+            def get(self, path):
+                return FakeHttpResponse({
+                    "data": [{"id": "test-model", "display_name": "Test Model"}],
+                })
+
+            def post(self, path, json):
+                return FakeHttpResponse({
+                    "content": [{"type": "text", "text": "mock anthropic output"}],
+                    "usage": {"input_tokens": 1, "output_tokens": 2},
+                    "stop_reason": "stop",
+                })
+
+        class FakeCohereClient:
+            def get(self, path):
+                return FakeHttpResponse({
+                    "models": [{"name": "test-model"}],
+                })
+
+            def post(self, path, json):
+                return FakeHttpResponse({
+                    "message": {
+                        "content": [{"type": "text", "text": "mock cohere output"}],
+                    },
+                    "usage": {
+                        "tokens": {"input_tokens": 1, "output_tokens": 2},
+                    },
+                    "finish_reason": "stop",
+                })
+
+        def initialize_openai_compatible(provider):
+            provider._client = FakeOpenAIClient()
+            provider._initialized = True
+
+        def initialize_gemini(provider):
+            provider._client = FakeGeminiClient()
+            provider._initialized = True
+
+        def initialize_anthropic(provider):
+            provider._client = FakeAnthropicClient()
+            provider._initialized = True
+
+        def initialize_cohere(provider):
+            provider._client = FakeCohereClient()
+            provider._initialized = True
+
+        monkeypatch.setattr(OpenAICompatibleProvider, "initialize", initialize_openai_compatible)
+        monkeypatch.setattr(GeminiProvider, "initialize", initialize_gemini)
+        monkeypatch.setattr(AnthropicProvider, "initialize", initialize_anthropic)
+        monkeypatch.setattr(CohereProvider, "initialize", initialize_cohere)
+
+        pm = ProviderManager(config_path=tmp_path / "providers.json")
+        for name in pm.get_registered_providers():
+            pm.save_provider_config(
+                name,
+                api_key="test-key" if pm.provider_requires_key(name) else "",
+                base_url=pm.get_provider_metadata(name).get("base_url", ""),
+                model="test-model",
+            )
+            pm.set_active_provider(name)
+
+            ok, msg = pm.test_provider_connection(name)
+            assert ok is True, msg
+
+            response = pm.generate(GenerationRequest(prompt="Generate a test response."))
+            assert response.provider == name
+            assert response.model == "test-model"
+            assert response.text.startswith("mock ")
+
 
 class TestProviderPreflight:
     """Generation preflight: the active provider must be usable before
@@ -536,6 +747,565 @@ class TestProviderPreflight:
         assert "set_active_provider" not in changed_src
         save_src = inspect.getsource(SettingsPage._save_provider)
         assert "set_active_provider" in save_src
+
+
+class TestScriptGenerationPolish:
+
+    def test_script_operator_continues_and_formats_to_target_length(self):
+        from operators.script.models import ScriptRequest
+        from operators.script.operator import SCRIPT_TARGET_MAX, SCRIPT_TARGET_MIN, ScriptOperator
+        from providers.models import GenerationResponse
+
+        class FakeProviderManager:
+            def __init__(self):
+                self.calls = 0
+
+            def generate(self, request):
+                self.calls += 1
+                if self.calls == 1:
+                    return GenerationResponse(
+                        text="HOOK\n\nSunlight looks simple, but plants turn it into a hidden factory."
+                    )
+                sentence = (
+                    "That factory pulls carbon dioxide from the air, draws water from the roots, "
+                    "and uses sunlight to build the sugars that keep the plant alive. "
+                )
+                return GenerationResponse(text=sentence * 45)
+
+        operator = ScriptOperator(provider_manager=FakeProviderManager())
+        result = operator.execute(ScriptRequest(topic="Photosynthesis"))
+
+        assert SCRIPT_TARGET_MIN <= len(result) <= SCRIPT_TARGET_MAX
+        assert "\n\n\n" not in result
+        assert all(line.strip().upper() not in {"HOOK", "BODY", "ENDING", "PAUSE", "INTRO"} for line in result.splitlines())
+        assert "(pause)" not in result.lower()
+        assert "[breath]" not in result.lower()
+
+    def test_script_page_character_progress_and_copy_button(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from ui.pages.script_page import ScriptPage
+
+        app = QApplication.instance() or QApplication([])
+        page = ScriptPage()
+
+        page.editor.setPlainText("a" * 4380)
+        app.processEvents()
+        assert page.char_count_label.text() == "4380 / 4500 minimum"
+
+        page.editor.setPlainText("b" * 4725)
+        app.processEvents()
+        assert page.char_count_label.text() == "4725 / 4999 maximum"
+
+        page.copy_script()
+        assert QApplication.clipboard().text() == "b" * 4725
+
+
+# =====================================================================
+# PHASE 7C — Voice / Transcript Pipeline
+# =====================================================================
+
+class TestTranscriptStorage:
+
+    def test_save_and_load_round_trip(self, tmp_path, monkeypatch):
+        from core.transcript_storage import TranscriptStorage
+        proj_dir = tmp_path / "projects"
+        proj_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr("core.transcript_storage._PROJECTS_DIR", proj_dir)
+
+        storage = TranscriptStorage()
+        storage.save("Proj", "Hello transcript")
+        data = storage.load("Proj")
+        assert data["text"] == "Hello transcript"
+        assert data["segments"] == []
+
+    def test_load_falls_back_to_voice_json(self, tmp_path, monkeypatch):
+        from core.transcript_storage import TranscriptStorage
+        proj_dir = tmp_path / "projects"
+        proj_dir.mkdir(parents=True, exist_ok=True)
+        _write_json(proj_dir / "Proj" / "voice.json", {
+            "transcript": "From voice",
+            "segments": [{"start": 0, "end": 3, "text": "From voice", "time": "00:00"}],
+        })
+        monkeypatch.setattr("core.transcript_storage._PROJECTS_DIR", proj_dir)
+
+        data = TranscriptStorage().load("Proj")
+        assert data["text"] == "From voice"
+        assert len(data["segments"]) == 1
+
+    def test_prefers_transcript_json_text(self, tmp_path, monkeypatch):
+        from core.transcript_storage import TranscriptStorage
+        proj_dir = tmp_path / "projects"
+        proj_dir.mkdir(parents=True, exist_ok=True)
+        _write_json(proj_dir / "Proj" / "transcript.json", {"text": "Edited text"})
+        _write_json(proj_dir / "Proj" / "voice.json", {
+            "transcript": "Original text",
+            "segments": [{"start": 0, "end": 1, "text": "Original text", "time": "00:00"}],
+        })
+        monkeypatch.setattr("core.transcript_storage._PROJECTS_DIR", proj_dir)
+
+        data = TranscriptStorage().load("Proj")
+        assert data["text"] == "Edited text"
+        assert len(data["segments"]) == 1
+
+
+class TestTranscriptionService:
+
+    @staticmethod
+    def _reset_cache():
+        from core.transcription_service import TranscriptionService
+        TranscriptionService._model = None
+        TranscriptionService._model_name = None
+
+    @staticmethod
+    def _install_fake_whisper(monkeypatch, transcriptions, construct_hook=None):
+        """Inject a fake faster_whisper package and make the service see it."""
+        import sys
+        from types import SimpleNamespace
+
+        calls = {"count": 0}
+
+        def make_seg(start, end, text):
+            return SimpleNamespace(start=start, end=end, text=text)
+
+        class FakeModel:
+            def __init__(self, *args, **kwargs):
+                calls["count"] += 1
+                if construct_hook:
+                    construct_hook(calls["count"])
+
+            def transcribe(self, audio_path, **kwargs):
+                return iter(transcriptions), SimpleNamespace(language="en")
+
+        class FakeWhisper:
+            WhisperModel = FakeModel
+
+        monkeypatch.setitem(sys.modules, "faster_whisper", FakeWhisper)
+        monkeypatch.setattr(
+            "core.transcription_service.importlib.util.find_spec",
+            lambda name: SimpleNamespace() if name == "faster_whisper" else None,
+        )
+        return calls
+
+    @staticmethod
+    def _fake_settings(monkeypatch, data=None, defaults=None):
+        """Replace AppSettings with a dict-backed fake for the service."""
+        defaults = defaults or {}
+
+        class FakeSettings:
+            def __init__(self):
+                self._data = dict(defaults)
+
+            def get(self, key, default=None):
+                return self._data.get(key, default)
+
+            def set(self, key, value):
+                self._data[key] = value
+
+        instance = FakeSettings()
+        monkeypatch.setattr("core.transcription_service.AppSettings", lambda: instance)
+        return instance
+
+    def test_is_available_detects_missing_package(self, monkeypatch):
+        from core.transcription_service import TranscriptionService
+        monkeypatch.setattr(
+            "core.transcription_service.importlib.util.find_spec",
+            lambda name: None,
+        )
+        assert TranscriptionService.is_available() is False
+
+    def test_is_available_true_when_package_present(self, monkeypatch):
+        from core.transcription_service import TranscriptionService
+        monkeypatch.setattr(
+            "core.transcription_service.importlib.util.find_spec",
+            lambda name: SimpleNamespace() if name == "faster_whisper" else None,
+        )
+        assert TranscriptionService.is_available() is True
+
+    def test_transcribe_raises_install_instruction_when_missing(self, tmp_path, monkeypatch):
+        from core.transcription_service import TranscriptionService
+        self._reset_cache()
+        monkeypatch.setattr(
+            "core.transcription_service.importlib.util.find_spec",
+            lambda name: None,
+        )
+        audio_file = tmp_path / "audio.wav"
+        audio_file.write_bytes(b"fake audio")
+        with pytest.raises(RuntimeError) as exc_info:
+            TranscriptionService().transcribe(str(audio_file))
+        assert "faster-whisper" in str(exc_info.value)
+        assert "pip install faster-whisper" in str(exc_info.value)
+
+    def test_transcribe_returns_formatted_text_and_segments(self, tmp_path, monkeypatch):
+        from core.transcription_service import TranscriptionService
+        self._reset_cache()
+        raw = [
+            SimpleNamespace(start=0.0, end=2.0, text="  hello  world "),
+            SimpleNamespace(start=2.5, end=5.0, text="second sentence here"),
+            SimpleNamespace(start=5.5, end=8.0, text="third part"),
+        ]
+        self._install_fake_whisper(monkeypatch, raw)
+        audio_file = tmp_path / "audio.wav"
+        audio_file.write_bytes(b"fake audio")
+
+        text, segments = TranscriptionService().transcribe(str(audio_file))
+        assert text == "Hello world second sentence here third part"
+        assert len(segments) == 3
+        assert segments[0]["time"] == "00:00"
+        assert segments[0]["start"] == 0.0
+        assert segments[2]["time"] == "00:05"
+        assert all(seg["text"] == seg["text"].strip() for seg in segments)
+
+    def test_model_is_loaded_once_and_reused(self, tmp_path, monkeypatch):
+        from core.transcription_service import TranscriptionService
+        self._reset_cache()
+        raw = [SimpleNamespace(start=0.0, end=1.0, text="once")]
+        calls = self._install_fake_whisper(monkeypatch, raw)
+        audio_file = tmp_path / "audio.wav"
+        audio_file.write_bytes(b"fake audio")
+
+        service = TranscriptionService()
+        service.transcribe(str(audio_file))
+        service.transcribe(str(audio_file))
+        TranscriptionService().transcribe(str(audio_file))
+        assert calls["count"] == 1
+
+    def test_transcribe_raises_when_no_speech_detected(self, tmp_path, monkeypatch):
+        from core.transcription_service import TranscriptionService
+        self._reset_cache()
+        self._install_fake_whisper(monkeypatch, [])
+        audio_file = tmp_path / "audio.wav"
+        audio_file.write_bytes(b"fake audio")
+        with pytest.raises(RuntimeError) as exc_info:
+            TranscriptionService().transcribe(str(audio_file))
+        assert "speech" in str(exc_info.value).lower()
+
+    def test_transcribe_raises_when_model_fails_to_load(self, tmp_path, monkeypatch):
+        from core.transcription_service import TranscriptionService
+        self._reset_cache()
+        self._install_fake_whisper(
+            monkeypatch, [], construct_hook=lambda n: (_ for _ in ()).throw(RuntimeError("boom"))
+        )
+        audio_file = tmp_path / "audio.wav"
+        audio_file.write_bytes(b"fake audio")
+        with pytest.raises(RuntimeError) as exc_info:
+            TranscriptionService().transcribe(str(audio_file))
+        assert "could not be initialized" in str(exc_info.value)
+
+    def test_configured_model_defaults_to_small(self, monkeypatch):
+        from core.transcription_service import TranscriptionService, DEFAULT_MODEL
+        self._fake_settings(monkeypatch)
+        assert TranscriptionService().get_configured_model() == DEFAULT_MODEL
+
+    def test_configured_model_round_trip_and_validation(self, monkeypatch):
+        from core.transcription_service import TranscriptionService
+        settings = self._fake_settings(monkeypatch)
+        service = TranscriptionService()
+        service.set_model("tiny")
+        assert settings._data["whisper_model"] == "tiny"
+        assert service.get_configured_model() == "tiny"
+        with pytest.raises(ValueError):
+            service.set_model("gpt-4")
+        assert service.get_configured_model() == "tiny"
+
+    def test_unknown_persisted_model_falls_back_to_default(self, monkeypatch):
+        from core.transcription_service import TranscriptionService, DEFAULT_MODEL
+        self._fake_settings(monkeypatch, defaults={"whisper_model": "not-a-model"})
+        assert TranscriptionService().get_configured_model() == DEFAULT_MODEL
+
+
+class TestTranscriptFormatting:
+
+    def test_collapses_duplicate_spaces(self):
+        from core.transcription_service import format_transcript
+        segments = [
+            {"start": 0.0, "end": 1.0, "text": "this   has   extra   spaces"},
+            {"start": 1.2, "end": 2.0, "text": "and   tabs\t\tinside"},
+        ]
+        assert format_transcript(segments) == "This has extra spaces and tabs inside"
+
+    def test_capitalizes_each_sentence(self):
+        from core.transcription_service import format_transcript
+        segments = [
+            {"start": 0.0, "end": 1.0, "text": "hello there. this is one sentence. and another"},
+        ]
+        assert format_transcript(segments) == "Hello there. This is one sentence. And another"
+
+    def test_paragraphs_split_on_long_pauses_with_single_blank_line(self):
+        from core.transcription_service import format_transcript
+        segments = [
+            {"start": 0.0, "end": 2.0, "text": "first paragraph begins here"},
+            {"start": 2.5, "end": 4.0, "text": "and continues"},
+            {"start": 9.0, "end": 11.0, "text": "second paragraph starts after a pause"},
+            {"start": 12.0, "end": 14.0, "text": "and continues on"},
+        ]
+        result = format_transcript(segments)
+        paragraphs = result.split("\n")
+        assert paragraphs == [
+            "First paragraph begins here and continues",
+            "",
+            "Second paragraph starts after a pause and continues on",
+        ]
+        assert "\n\n\n" not in result
+
+    def test_trims_leading_and_trailing_whitespace(self):
+        from core.transcription_service import format_transcript
+        segments = [
+            {"start": 0.0, "end": 1.0, "text": "   leading text  "},
+            {"start": 1.5, "end": 2.0, "text": "trailing   "},
+        ]
+        assert format_transcript(segments) == "Leading text trailing"
+
+    def test_empty_input_returns_empty_string(self):
+        from core.transcription_service import format_transcript
+        assert format_transcript([]) == ""
+
+
+class TestVoiceLocalBackend:
+
+    @staticmethod
+    def _make_page(pm):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from core.pipeline_service import PipelineService
+        from ui.pages.voice_page import VoicePage
+
+        app = QApplication.instance() or QApplication([])
+        page = VoicePage()
+        page.manager = pm
+        service = PipelineService()
+        service._pm = pm
+        page._pipeline = service
+
+        class _NoopHistory:
+            def record_action(self, *args, **kwargs):
+                return ""
+
+        page._history = _NoopHistory()
+        return page
+
+    def test_page_warns_when_whisper_missing(self, pm, monkeypatch):
+        name = _create_sample_project(pm)
+        _fill_script(pm, name)
+        monkeypatch.setattr("core.script_storage._PROJECTS_DIR", pm.PROJECTS_DIR)
+        from core.workflow import advance_workflow_state
+        data = pm.load_project(name)
+        data["workflow_state"] = advance_workflow_state(data["workflow_state"], "Script")
+        pm.update_project(name, data)
+
+        class FakeService:
+            def is_available(self):
+                return False
+
+            def install_instruction(self):
+                return "faster-whisper missing: pip install faster-whisper"
+
+            def get_configured_model(self):
+                return "small"
+
+            def set_model(self, model_name):
+                pass
+
+        monkeypatch.setattr(
+            "ui.pages.voice_page.get_transcription_service",
+            lambda: FakeService(),
+        )
+
+        page = self._make_page(pm)
+        page.set_project(name)
+        page._audio_path = str(pm.PROJECTS_DIR / name / "audio" / "clip.wav")
+        page.transcribe_audio()
+        assert page._worker_thread is None
+        assert page._transcribing is False
+
+    def test_worker_uses_local_service(self, monkeypatch):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from ui.pages.voice_page import TranscribeWorker
+        captured = {}
+
+        def fake_local(audio_path):
+            captured["path"] = audio_path
+            return "Local transcript", [{"start": 0.0, "end": 1.0, "text": "hi", "time": "00:00"}]
+
+        monkeypatch.setattr("ui.pages.voice_page.transcribe_audio_locally", fake_local)
+        results = []
+        errors = []
+
+        worker = TranscribeWorker("audio.mp3")
+        worker.finished.connect(lambda text, segs: results.append((text, segs)))
+        worker.error.connect(lambda msg: errors.append(msg))
+        worker.run()
+
+        assert captured["path"] == "audio.mp3"
+        assert results == [("Local transcript", [{"start": 0.0, "end": 1.0, "text": "hi", "time": "00:00"}])]
+        assert errors == []
+
+
+class TestVoicePipelinePage:
+
+    @staticmethod
+    def _make_page(pm):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from core.pipeline_service import PipelineService
+        from ui.pages.voice_page import VoicePage
+
+        app = QApplication.instance() or QApplication([])
+        page = VoicePage()
+        page.manager = pm
+        service = PipelineService()
+        service._pm = pm
+        page._pipeline = service
+
+        class _NoopHistory:
+            def record_action(self, *args, **kwargs):
+                return ""
+
+        page._history = _NoopHistory()
+        return page
+
+    def test_transcription_done_writes_storage_and_completes_stage(self, pm):
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.project_name = name
+
+        segments = [
+            {"start": 0.0, "end": 2.5, "text": "Hello", "time": "00:00"},
+            {"start": 2.5, "end": 5.0, "text": "world", "time": "00:02"},
+        ]
+        page._on_transcription_done("Hello world", segments)
+
+        voice = _read_json(pm, name, "voice.json")
+        transcript = _read_json(pm, name, "transcript.json")
+        assert voice["transcript"] == "Hello world"
+        assert len(voice["segments"]) == 2
+        assert transcript["text"] == "Hello world"
+
+        data = pm.load_project(name)
+        assert data["workflow_state"]["Voice"] == "COMPLETED"
+        assert data["workflow_state"]["Image Prompts"] == "AVAILABLE"
+        assert page.next_btn.isEnabled()
+
+    def test_voice_page_reloads_saved_transcript(self, pm):
+        name = _create_sample_project(pm)
+        _write_json(pm.PROJECTS_DIR / name / "transcript.json", {"text": "Saved transcript"})
+        _write_json(pm.PROJECTS_DIR / name / "voice.json", {
+            "transcript": "Saved transcript",
+            "segments": [{"start": 0, "end": 3, "text": "Saved transcript", "time": "00:00"}],
+        })
+
+        page = self._make_page(pm)
+        page.set_project(name)
+        assert page.transcript_box.toPlainText() == "Saved transcript"
+        assert page.next_btn.isEnabled()
+        assert len(page._segments) == 1
+
+    def test_image_prompts_unlock_after_voice(self, pm, monkeypatch):
+        from core.workflow import advance_workflow_state
+        from core.pipeline_service import PipelineService
+
+        name = _create_sample_project(pm)
+        _fill_script(pm, name)
+        monkeypatch.setattr("core.script_storage._PROJECTS_DIR", pm.PROJECTS_DIR)
+
+        data = pm.load_project(name)
+        data["workflow_state"] = advance_workflow_state(data["workflow_state"], "Script")
+        pm.update_project(name, data)
+
+        service = PipelineService()
+        service._pm = pm
+
+        voice_validation = service.validate_stage(name, "Voice")
+        assert voice_validation.passed
+
+        service.mark_stage_completed(name, "Voice")
+        state = service.get_pipeline_state(name)
+        assert state["Voice"].value == "COMPLETED"
+        assert state["Image Prompts"].value == "NOT_STARTED"
+        assert state["Export"].value == "BLOCKED"
+
+
+class TestImagePromptsSourceContext:
+
+    def test_source_context_shows_script_and_transcript(self, pm, monkeypatch):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from ui.pages.image_prompts_page import ImagePromptsPage
+
+        app = QApplication.instance() or QApplication([])
+        name = _create_sample_project(pm)
+        _fill_script(pm, name)
+        _write_json(pm.PROJECTS_DIR / name / "voice.json", {
+            "transcript": "Hello world transcript",
+            "segments": [
+                {"start": 0, "end": 3, "text": "Hello", "time": "00:00"},
+                {"start": 3, "end": 6, "text": "world", "time": "00:03"},
+            ],
+        })
+        _write_json(pm.PROJECTS_DIR / name / "transcript.json", {"text": "Hello world transcript"})
+        monkeypatch.setattr("core.script_storage._PROJECTS_DIR", pm.PROJECTS_DIR)
+        monkeypatch.setattr("core.transcript_storage._PROJECTS_DIR", pm.PROJECTS_DIR)
+
+        page = ImagePromptsPage()
+        page.set_project(name)
+
+        assert "ready" in page.source_script_label.text()
+        assert "ready" in page.source_transcript_label.text()
+        assert "2 segments" in page.source_timestamps_label.text()
+
+    def test_image_prompt_generation_flow_with_stored_transcript(self, pm, monkeypatch):
+        from core.script_storage import ScriptStorage
+        from core.transcript_storage import TranscriptStorage
+        from core.image_prompt_storage import ImagePromptStorage
+        from operators.image_prompt.models import ImagePromptRequest
+        from operators.image_prompt.operator import ImagePromptOperator
+        from operators.image_prompt.parser import ImagePromptParser
+
+        name = _create_sample_project(pm)
+        _fill_script(pm, name)
+        _write_json(pm.PROJECTS_DIR / name / "voice.json", {
+            "transcript": "Segment one. Segment two.",
+            "segments": [
+                {"start": 0, "end": 4, "text": "Segment one.", "time": "00:00"},
+                {"start": 4, "end": 9, "text": "Segment two.", "time": "00:04"},
+            ],
+        })
+        monkeypatch.setattr("core.script_storage._PROJECTS_DIR", pm.PROJECTS_DIR)
+        monkeypatch.setattr("core.transcript_storage._PROJECTS_DIR", pm.PROJECTS_DIR)
+        monkeypatch.setattr("core.image_prompt_storage._PROJECTS_DIR", pm.PROJECTS_DIR)
+
+        script = ScriptStorage().load(name)["script_output"]
+        transcript_data = TranscriptStorage().load(name)
+        assert transcript_data["text"] == "Segment one. Segment two."
+        assert len(transcript_data["segments"]) == 2
+
+        request = ImagePromptRequest(
+            script_text=script,
+            transcript=transcript_data["text"],
+            timestamps=transcript_data["segments"],
+            topic="AI Education",
+        )
+
+        class FakeProviderManager:
+            def generate(self, req):
+                payload = [{
+                    "scene_number": 1,
+                    "timestamp": "00:00",
+                    "prompt_title": "Opening Scene",
+                    "full_image_prompt": "A classroom, photorealistic",
+                }]
+                return SimpleNamespace(text=json.dumps(payload))
+
+        operator = ImagePromptOperator(provider_manager=FakeProviderManager())
+        raw = operator.execute(request)
+        prompts = ImagePromptParser().parse(raw)
+        assert len(prompts) == 1
+
+        ImagePromptStorage().save(name, prompts)
+        reloaded = ImagePromptStorage().load(name)
+        assert len(reloaded["prompts"]) == 1
+        assert reloaded["prompts"][0]["scene_number"] == 1
+        assert reloaded["prompts"][0]["full_image_prompt"] == "A classroom, photorealistic"
 
 
 # =====================================================================

@@ -1,5 +1,6 @@
 from PySide6.QtCore import QObject, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -34,6 +35,9 @@ from ..widgets import (
 
 
 _log = get_logger()
+
+SCRIPT_TARGET_MIN = 4500
+SCRIPT_TARGET_MAX = 4999
 
 
 class _GenerationBridge(QObject):
@@ -166,7 +170,7 @@ class ScriptPage(QWidget):
         row.setContentsMargins(16, 0, 16, 0)
         row.setSpacing(16)
 
-        self.char_count_label = QLabel("0 characters")
+        self.char_count_label = QLabel(f"0 / {SCRIPT_TARGET_MIN} minimum")
         self.char_count_label.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
         row.addWidget(self.char_count_label)
 
@@ -208,6 +212,10 @@ class ScriptPage(QWidget):
         self.save_btn.setEnabled(False)
         actions.addWidget(self.save_btn)
 
+        self.copy_btn = ModernButton("Copy Script", primary=False)
+        self.copy_btn.clicked.connect(self.copy_script)
+        actions.addWidget(self.copy_btn)
+
         actions.addStretch()
         parent.addLayout(actions)
 
@@ -217,8 +225,7 @@ class ScriptPage(QWidget):
     def _on_text_changed(self):
         current = self.editor.toPlainText()
         self._dirty = (current != self._saved_text)
-        self.char_count_label.setText(f"{len(current)} characters")
-        self.word_count_label.setText(f"{self._count_words(current)} words")
+        self._update_text_metrics(current)
         self.save_btn.setEnabled(self._dirty)
         c = ThemeManager.instance().colors()
         if self._dirty:
@@ -229,6 +236,14 @@ class ScriptPage(QWidget):
             self.status_label.setStyleSheet(f"color: {c.SUCCESS}; font-weight: bold;")
         self._autosave.mark_dirty("script")
 
+    def _update_text_metrics(self, text):
+        length = len(text)
+        if length < SCRIPT_TARGET_MIN:
+            self.char_count_label.setText(f"{length} / {SCRIPT_TARGET_MIN} minimum")
+        else:
+            self.char_count_label.setText(f"{length} / {SCRIPT_TARGET_MAX} maximum")
+        self.word_count_label.setText(f"{self._count_words(text)} words")
+
     def _load_project_data(self):
         if not self.project_name:
             return
@@ -237,15 +252,13 @@ class ScriptPage(QWidget):
             topic = project_data.get("topic", "")
             platform = project_data.get("platform", "")
             language = project_data.get("language", "")
-            script_min = project_data.get("script_min", 4500)
-            script_max = project_data.get("script_max", 5000)
 
             c = ThemeManager.instance().colors()
             self.info_topic.setText(f"Topic: {topic}")
             self.info_topic.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
             self.info_platform.setText(f"Platform: {platform}")
             self.info_language.setText(f"Language: {language}")
-            self.info_target.setText(f"Target: {script_min}-{script_max} chars")
+            self.info_target.setText(f"Target: {SCRIPT_TARGET_MIN}-{SCRIPT_TARGET_MAX} chars")
 
             self.project_label.setText(f"/ {self.project_name}")
             self.status_badge.setText("Script")
@@ -260,8 +273,7 @@ class ScriptPage(QWidget):
             c = ThemeManager.instance().colors()
             self.status_label.setText("Saved")
             self.status_label.setStyleSheet(f"color: {c.SUCCESS}; font-weight: bold;")
-            self.char_count_label.setText(f"{len(output)} characters")
-            self.word_count_label.setText(f"{self._count_words(output)} words")
+            self._update_text_metrics(output)
 
     def generate_script(self):
         if not self.project_name:
@@ -300,8 +312,8 @@ class ScriptPage(QWidget):
                 video_type=project_data.get("video_type", "Educational"),
                 language=project_data.get("language", "English"),
                 script_mode=project_data.get("script_mode", "characters"),
-                script_min=project_data.get("script_min", 4500),
-                script_max=project_data.get("script_max", 5000),
+                script_min=SCRIPT_TARGET_MIN,
+                script_max=SCRIPT_TARGET_MAX,
                 duration_preset=project_data.get("duration_preset", ""),
                 research_sources=research_context,
                 keywords=project_data.get("keywords", ""),
@@ -392,11 +404,11 @@ class ScriptPage(QWidget):
         QTimer.singleShot(2000, lambda: self.progress_widget.setVisible(False))
 
         self.generate_btn.setEnabled(True)
+        self.save_btn.setEnabled(False)
         c = ThemeManager.instance().colors()
         self.status_label.setText("Saved")
         self.status_label.setStyleSheet(f"color: {c.SUCCESS}; font-weight: bold;")
-        self.char_count_label.setText(f"{len(result)} characters")
-        self.word_count_label.setText(f"{self._count_words(result)} words")
+        self._update_text_metrics(result)
         self._history.record_action(
             self.project_name, "Generated",
             f"Generated script ({self._count_words(result)} words)"
@@ -446,6 +458,11 @@ class ScriptPage(QWidget):
         c = ThemeManager.instance().colors()
         self.status_label.setText("Saved")
         self.status_label.setStyleSheet(f"color: {c.SUCCESS}; font-weight: bold;")
+
+    def copy_script(self):
+        text = self.editor.toPlainText()
+        QApplication.clipboard().setText(text)
+        NotificationService.get().success("Script copied.")
 
     def _start_progress_animation(self):
         self._progress_timer = QTimer(self)

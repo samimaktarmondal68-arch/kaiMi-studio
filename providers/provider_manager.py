@@ -406,7 +406,8 @@ class ProviderManager:
         active = str(self._config.get("active_provider", "gemini")).strip().lower()
         if self._registry.is_registered(active):
             return active
-        return "gemini" if self._registry.is_registered("gemini") else ""
+        logger.warning("[Manager] Active provider '%s' is not registered.", active)
+        return ""
 
     def set_active_provider(self, provider_name: str, persist: bool = True) -> None:
         """Switch the active provider."""
@@ -561,10 +562,17 @@ class ProviderManager:
         "groq",
         "deepseek",
         "openai",
+        "opencode",
         "anthropic",
         "mistral",
         "xai",
         "cohere",
+        "ollama",
+        "lmstudio",
+        "localai",
+        "vllm",
+        "llamacpp",
+        "textgenwebui",
     ]
 
     # ── Core generation ──────────────────────────────────────────────
@@ -669,20 +677,32 @@ class ProviderManager:
     def _get_next_failover(self, current: str, attempted: set) -> str | None:
         """Find the next un-attempted, fully-configured provider in the failover sequence.
 
-        A provider is considered viable for failover only when it has both a
-        non-empty API key and a non-empty model.  Skipping half-configured
-        providers prevents failover from silently landing on a provider that
-        would itself immediately fail.
+        A provider is considered viable for failover only when it has the
+        configuration required for generation. Cloud providers need both an API
+        key and model; local providers need a model and may run without a key.
+        Skipping half-configured providers prevents failover from silently
+        landing on a provider that would itself immediately fail.
         """
         for name in self.FAILOVER_SEQUENCE:
-            if name not in attempted and self._registry.is_registered(name):
-                cfg = self._config.get("providers", {}).get(name, {})
-                if not _decrypt_api_key(cfg.get("api_key", "")).strip():
-                    continue
-                if not cfg.get("model", "").strip():
-                    continue
+            if name not in attempted and self._is_provider_ready_for_generation(name):
                 return name
         return None
+
+    def _is_provider_ready_for_generation(self, provider_name: str) -> bool:
+        """Return True when a registered provider has enough config to generate."""
+        name = provider_name.strip().lower()
+        if not self._registry.is_registered(name):
+            return False
+
+        cfg = self._config.get("providers", {}).get(name, {})
+        if not cfg.get("model", "").strip():
+            return False
+
+        meta = self.get_provider_metadata(name)
+        if meta.get("requires_key", True):
+            return bool(_decrypt_api_key(cfg.get("api_key", "")).strip())
+
+        return True
 
 
 def get_provider_manager() -> ProviderManager:

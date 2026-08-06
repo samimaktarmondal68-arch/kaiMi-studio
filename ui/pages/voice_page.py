@@ -4,10 +4,12 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
+    QComboBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPlainTextEdit,
     QVBoxLayout,
     QWidget,
@@ -19,6 +21,7 @@ from core.notifications import NotificationService
 from core.pipeline_service import get_pipeline_service
 from core.project_manager import ProjectManager
 from core.theme import Fonts, Spacing, Radius
+from core.transcription_service import WHISPER_MODELS, get_transcription_service
 from ..theme_pyside import ThemeManager
 from ..widgets import (
     AutosaveIndicator,
@@ -34,6 +37,31 @@ from ..widgets import (
 
 AUDIO_EXTENSIONS = (".mp3", ".wav", ".m4a")
 
+TRANSCRIPTION_STATUSES = [
+    (10, "Preparing audio..."),
+    (30, "Loading Whisper model..."),
+    (55, "Transcribing speech locally..."),
+    (75, "Building timestamps..."),
+    (90, "Finalizing transcript..."),
+]
+
+
+def transcribe_audio_locally(audio_path: str) -> tuple[str, list[dict]]:
+    """Transcribe an audio file with the local faster-whisper engine.
+
+    Delegates to the shared TranscriptionService so the Whisper model is loaded
+    once and reused. Never falls back to a hosted API; a clear error is raised
+    when local Whisper is unavailable.
+
+    Returns:
+        (transcript_text, segments) where each segment is a dict with
+        {"start", "end", "text", "time"} keys.
+
+    Raises:
+        RuntimeError: When faster-whisper is missing or transcription fails.
+    """
+    return get_transcription_service().transcribe(audio_path)
+
 
 class TranscribeWorker(QObject):
     finished = Signal(str, list)
@@ -45,11 +73,7 @@ class TranscribeWorker(QObject):
 
     def run(self):
         try:
-            import whisper
-            model = whisper.load_model("base")
-            result = model.transcribe(self.audio_path)
-            transcript = result.get("text", "").strip()
-            segments = result.get("segments", [])
+            transcript, segments = transcribe_audio_locally(self.audio_path)
             self.finished.emit(transcript, segments)
         except Exception as e:
             self.error.emit(str(e))
@@ -69,6 +93,8 @@ class VoicePage(QWidget):
         self._transcribing = False
         self._worker_thread = None
         self._worker = None
+        self._transcription_timer = None
+        self._progress_index = 0
         self._history = HistoryManager()
         self._autosave = get_autosave_manager()
         self._autosave.register("voice", self._autosave_save)
@@ -82,6 +108,7 @@ class VoicePage(QWidget):
             self._load_project_data()
 
     def cleanup(self):
+        self._stop_progress_animation()
         if self._worker_thread and self._worker_thread.isRunning():
             self._worker_thread.quit()
             self._worker_thread.wait(3000)
@@ -172,6 +199,26 @@ class VoicePage(QWidget):
 
         btn_row.addStretch()
         card.content_layout.addLayout(btn_row)
+
+        model_row = QHBoxLayout()
+        model_row.setContentsMargins(0, 0, 0, 0)
+        model_row.setSpacing(8)
+
+        model_label = MutedLabel("Whisper model:")
+        model_row.addWidget(model_label)
+
+        self.model_combo = QComboBox()
+        self.model_combo.addItems(list(WHISPER_MODELS))
+        self.model_combo.setCurrentText(get_transcription_service().get_configured_model())
+        self.model_combo.currentTextChanged.connect(self._on_model_changed)
+        model_row.addWidget(self.model_combo)
+
+        self.setup_btn = ModernButton("Whisper Setup", primary=False)
+        self.setup_btn.clicked.connect(self.show_whisper_setup)
+        model_row.addWidget(self.setup_btn)
+
+        model_row.addStretch()
+        card.content_layout.addLayout(model_row)
 
         self.progress_widget = ProgressWidget()
         self.progress_widget.setVisible(False)
@@ -339,8 +386,42 @@ class VoicePage(QWidget):
             shutil.copy2(file_path, str(dest))
             self._audio_path = str(dest)
 
+    def _on_model_changed(self, model_name: str):
+        service = get_transcription_service()
+        try:
+            service.set_model(model_name)
+            NotificationService.get().info(
+                f"Whisper model set to '{model_name}'. It will load on the next transcription."
+            )
+        except ValueError as exc:
+            NotificationService.get().error(str(exc))
+
+    def show_whisper_setup(self):
+        service = get_transcription_service()
+        if service.is_available():
+            model = service.get_configured_model()
+            QMessageBox.information(
+                self,
+                "Local Whisper",
+                f"Local Whisper (faster-whisper) is installed.\n\n"
+                f"Active model: {model}\n"
+                f"Transcription runs entirely on this computer.",
+            )
+            return
+        QMessageBox.warning(
+            self,
+            "Whisper Setup Required",
+            service.install_instruction(),
+        )
+
     def transcribe_audio(self):
-        if not self._audio_path or not self.project_name:
+        if not self.project_name:
+            NotificationService.get().warning("Select a project first.")
+            return
+        if not self._audio_path:
+            NotificationService.get().warning(
+                "No audio file selected. Choose an MP3, WAV, or M4A file first."
+            )
             return
 
         validation = self._pipeline.validate_stage(self.project_name, "Voice")
@@ -349,12 +430,9 @@ class VoicePage(QWidget):
                 NotificationService.get().warning(msg)
             return
 
-        try:
-            import whisper
-        except ImportError:
-            NotificationService.get().error(
-                "Whisper not installed. Run: pip install openai-whisper"
-            )
+        transcription_service = get_transcription_service()
+        if not transcription_service.is_available():
+            NotificationService.get().warning(transcription_service.install_instruction())
             return
 
         self._pipeline.mark_stage_started(self.project_name, "Voice")
@@ -364,7 +442,7 @@ class VoicePage(QWidget):
         self.upload_btn.setEnabled(False)
         self.progress_widget.setVisible(True)
         self.progress_widget.reset()
-        self.progress_widget.set_progress(0, "Loading speech recognition model...", "Preparing", "")
+        self._start_progress_animation()
 
         self._worker_thread = QThread()
         self._worker = TranscribeWorker(self._audio_path)
@@ -379,6 +457,32 @@ class VoicePage(QWidget):
 
         self._worker_thread.start()
 
+    def _start_progress_animation(self):
+        self._progress_index = 0
+        self._transcription_timer = QTimer(self)
+        self._transcription_timer.timeout.connect(self._animate_progress)
+        self._transcription_timer.start(1200)
+        self._animate_progress()
+
+    def _animate_progress(self):
+        if not self._transcribing:
+            self._stop_progress_animation()
+            return
+        if self._progress_index >= len(TRANSCRIPTION_STATUSES):
+            self.progress_widget.set_progress(95, "Finalizing transcript...")
+            if self._transcription_timer:
+                self._transcription_timer.stop()
+            return
+        pct, status = TRANSCRIPTION_STATUSES[self._progress_index]
+        self.progress_widget.set_progress(pct, status)
+        self._progress_index += 1
+
+    def _stop_progress_animation(self):
+        if self._transcription_timer:
+            self._transcription_timer.stop()
+            self._transcription_timer.deleteLater()
+            self._transcription_timer = None
+
     def _cleanup_thread(self):
         if self._worker:
             self._worker.deleteLater()
@@ -389,6 +493,7 @@ class VoicePage(QWidget):
 
     def _on_transcription_done(self, transcript, segments):
         self._transcribing = False
+        self._stop_progress_animation()
         self._transcript_text = transcript
         self._segments = segments
 
@@ -443,6 +548,7 @@ class VoicePage(QWidget):
 
     def _on_transcription_error(self, error_msg):
         self._transcribing = False
+        self._stop_progress_animation()
         self.progress_widget.setVisible(False)
         self.transcribe_btn.setEnabled(True)
         self.upload_btn.setEnabled(True)

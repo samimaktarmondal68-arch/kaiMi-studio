@@ -19,9 +19,13 @@ class ScriptPromptBuilder:
         target_instruction = ""
         if request.script_mode == "characters":
             target_instruction = (
-                f"The final script MUST be between {request.script_min} and {request.script_max} characters. "
-                f"Count the characters precisely. If needed, expand or compress the script "
-                f"until it falls within this range."
+                "The final script MUST be between 4500 and 4999 characters. "
+                "Never stop below 4500 characters and never exceed 4999 characters. "
+                "Write in natural narration paragraphs with one blank line between paragraphs. "
+                "Use a strong curiosity hook, conversational documentary pacing, smooth transitions, "
+                "interesting explanations, and a strong ending. "
+                "Do not use section labels, headings, stage directions, SSML, pause markers, "
+                "breath markers, bullet points, or markdown."
             )
         else:
             dur = request.duration_preset
@@ -40,7 +44,7 @@ class ScriptPromptBuilder:
             f"{'Research Sources: ' + sources if sources else ''}\n"
             f"{'Keywords: ' + keywords if keywords else ''}\n\n"
             f"{target_instruction}\n\n"
-            f"Return ONLY the script text. No commentary, no explanation, no markdown formatting."
+            "Return ONLY the script text. No commentary, no explanation, no markdown formatting."
         )
 
         return system, user

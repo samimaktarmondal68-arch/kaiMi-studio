@@ -32,6 +32,7 @@ from ui.widgets import (
     ModernCard,
     MutedLabel,
     ProgressWidget,
+    SectionHeader,
     StatusBadge,
 )
 
@@ -49,6 +50,13 @@ class _GenerationBridge(QObject):
 
 
 _log = get_logger()
+
+
+def _format_timestamp(segment: dict) -> str:
+    """Format a raw segment start as MM:SS for display."""
+    raw = segment.get("start", 0) or 0
+    total = int(raw)
+    return f"{total // 60:02d}:{total % 60:02d}"
 
 
 class ImagePromptsPage(QWidget):
@@ -90,6 +98,8 @@ class ImagePromptsPage(QWidget):
         self._build_project_header(layout)
 
         self._build_controls(layout)
+
+        self._build_source_context(layout)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -161,6 +171,23 @@ class ImagePromptsPage(QWidget):
 
         parent.addWidget(controls_card)
 
+    def _build_source_context(self, parent):
+        """Show which source data reached this stage (script, transcript, timestamps)."""
+        c = ThemeManager.instance().colors()
+        card = ModernCard()
+        card.content_layout.setSpacing(8)
+
+        card.content_layout.addWidget(SectionHeader("Source Context"))
+
+        self.source_script_label = MutedLabel("Script: not found")
+        self.source_transcript_label = MutedLabel("Transcript: not found")
+        self.source_timestamps_label = MutedLabel("Timestamps: none")
+        card.content_layout.addWidget(self.source_script_label)
+        card.content_layout.addWidget(self.source_transcript_label)
+        card.content_layout.addWidget(self.source_timestamps_label)
+
+        parent.addWidget(card)
+
     def _load_project_data(self):
         if not self.project_name:
             return
@@ -168,6 +195,41 @@ class ImagePromptsPage(QWidget):
         stored = self.prompt_storage.load(self.project_name)
         self._prompts = stored.get("prompts", [])
         self._render_prompts()
+        self._load_source_context()
+
+    def _load_source_context(self):
+        """Refresh the source-context summary from stored script and transcript."""
+        script_text = ""
+        script_data = self.script_storage.load(self.project_name)
+        if script_data:
+            script_text = (script_data.get("script_output") or "").strip()
+
+        transcript_data = self.transcript_storage.load(self.project_name)
+        transcript = (transcript_data.get("text") or "").strip()
+        segments = transcript_data.get("segments") or []
+
+        if script_text:
+            self.source_script_label.setText(
+                f"Script: {len(script_text):,} characters ready"
+            )
+        else:
+            self.source_script_label.setText("Script: not found")
+
+        if transcript:
+            self.source_transcript_label.setText(
+                f"Transcript: {len(transcript):,} characters ready"
+            )
+        else:
+            self.source_transcript_label.setText("Transcript: not found")
+
+        if segments:
+            first_ts = segments[0].get("time", _format_timestamp(segments[0]))
+            last_ts = segments[-1].get("time", _format_timestamp(segments[-1]))
+            self.source_timestamps_label.setText(
+                f"Timestamps: {len(segments)} segments ({first_ts} -> {last_ts})"
+            )
+        else:
+            self.source_timestamps_label.setText("Timestamps: none")
 
     def _render_prompts(self):
         while self.prompts_layout.count():
