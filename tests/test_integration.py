@@ -1224,6 +1224,268 @@ class TestVoicePipelinePage:
         assert state["Image Prompts"].value == "NOT_STARTED"
         assert state["Export"].value == "BLOCKED"
 
+    # ------------------------------------------------------------------
+    # Sprint 3.3B UI behaviour (mode toggle, selection, speed, library)
+    # ------------------------------------------------------------------
+
+    def test_default_mode_is_ai(self, pm):
+        from ui.pages.voice_page import VOICE_SOURCE_AI
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+        assert page._voice_source == VOICE_SOURCE_AI
+        assert not page._ai_card.isHidden()
+        assert page._upload_card.isHidden()
+
+    def test_mode_toggle_switches_sections(self, pm):
+        from ui.pages.voice_page import VOICE_SOURCE_AI, VOICE_SOURCE_IMPORT
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+        page._mode_options[VOICE_SOURCE_IMPORT].clicked.emit(VOICE_SOURCE_IMPORT)
+        assert page._voice_source == VOICE_SOURCE_IMPORT
+        assert page._ai_card.isHidden()
+        assert not page._upload_card.isHidden()
+        page._mode_options[VOICE_SOURCE_AI].clicked.emit(VOICE_SOURCE_AI)
+        assert page._voice_source == VOICE_SOURCE_AI
+        assert not page._ai_card.isHidden()
+        assert page._upload_card.isHidden()
+
+    def test_voice_selection_indicator_updates(self, pm):
+        from core.voice_generation_service import DEFAULT_VOICE_ID
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+        page._select_voice("am_michael")
+        card = page._voice_cards["am_michael"]
+        assert card.select_btn.text() == "Selected"
+        assert not card.select_btn.isEnabled()
+        assert not card.selected_badge.isHidden()
+        assert "James" in page.selected_voice_label.text()
+        page._select_voice(DEFAULT_VOICE_ID)
+        assert card.select_btn.text() == "Select"
+        assert card.select_btn.isEnabled()
+        assert card.selected_badge.isHidden()
+
+    def test_speed_options_are_exactly_expected(self, pm):
+        from ui.pages.voice_page import SPEED_OPTIONS
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+        values = [page.speed_combo.itemData(i) for i in range(page.speed_combo.count())]
+        assert values == list(SPEED_OPTIONS)
+        assert page._current_speed() == 1.0
+
+    def test_all_voices_expand_toggle(self, pm):
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+        assert page.all_voices_scroll.isHidden()
+        page._toggle_all_voices()
+        assert not page.all_voices_scroll.isHidden()
+        assert page.all_voices_toggle.text() == "Hide"
+        page._toggle_all_voices()
+        assert page.all_voices_scroll.isHidden()
+        assert page.all_voices_toggle.text() == "Show All"
+
+    def test_search_filters_voice_library(self, pm):
+        from PySide6.QtWidgets import QApplication
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+        page.voice_search.setText("Xiaoxiao")
+        QApplication.processEvents()
+        assert page._voice_cards
+        for voice_id, _card in page._voice_cards.items():
+            voice_name, description = page._voice_catalog_entry(voice_id)
+            assert "xiaoxiao" in (voice_name + " " + description).lower()
+        assert "0 shown" in page.recommended_count.text()
+
+    def test_import_flow_requires_file_then_enables_transcribe(self, pm):
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+        assert not page.transcribe_btn.isEnabled()
+        page._audio_path = "C:\\tmp\\clip.wav"
+        page._refresh_import_ui()
+        assert page.transcribe_btn.isEnabled()
+        assert "clip.wav" in page.file_label.text()
+
+
+class TestVoiceLibraryCatalog:
+    """Sprint 3.3B: the full Kokoro voice catalogue and search filtering."""
+
+    @staticmethod
+    def _make_page(pm):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from ui.pages.voice_page import VoicePage
+        app = QApplication.instance() or QApplication([])
+        page = VoicePage()
+        page.manager = pm
+        return page
+
+    def test_catalogue_has_54_entries(self):
+        from ui.pages.voice_page import KOKORO_VOICE_CATALOG
+        assert len(KOKORO_VOICE_CATALOG) == 54
+
+    def test_catalogue_entries_have_display_metadata(self):
+        from ui.pages.voice_page import KOKORO_VOICE_CATALOG
+        for voice_id, (name, description) in KOKORO_VOICE_CATALOG.items():
+            assert voice_id
+            assert name and isinstance(name, str)
+            assert description and isinstance(description, str)
+
+    def test_catalogue_covers_all_installed_voices(self):
+        from ui.pages.voice_page import KOKORO_VOICE_CATALOG, _load_installed_voice_ids
+        installed = _load_installed_voice_ids()
+        if not installed:
+            pytest.skip("Kokoro voices file not present on disk")
+        missing = [voice_id for voice_id in installed
+                   if voice_id not in KOKORO_VOICE_CATALOG]
+        assert missing == []
+
+    def test_catalogue_covers_recommended_profiles(self):
+        from core.voice_generation_service import VOICE_PROFILES
+        from ui.pages.voice_page import KOKORO_VOICE_CATALOG
+        for profile in VOICE_PROFILES:
+            assert profile.id in KOKORO_VOICE_CATALOG
+
+    def test_fallback_entry_for_unknown_id(self):
+        from ui.pages.voice_page import _fallback_voice_entry
+        name, desc = _fallback_voice_entry("xx_mystery")
+        assert name == "Mystery"
+        assert "International" in desc
+        name, desc = _fallback_voice_entry("plainvoice")
+        assert name == "Plainvoice"
+        assert desc == "Local Kokoro voice"
+
+    def test_voice_match_is_case_insensitive(self):
+        from ui.pages.voice_page import VoicePage
+        assert VoicePage._voice_matches("Emma", "Calm Documentary", "calm")
+        assert VoicePage._voice_matches("Emma", "Calm Documentary", "emma")
+        assert VoicePage._voice_matches("Emma", "Calm Documentary", "doc")
+        assert not VoicePage._voice_matches("Emma", "Calm Documentary", "rocket")
+
+    def test_empty_query_matches_everything(self):
+        from ui.pages.voice_page import VoicePage
+        assert VoicePage._voice_matches("Anything", "description here", "")
+
+    def test_search_box_is_case_insensitive(self, pm):
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+        page.voice_search.setText("XIAOXIAO")
+        for voice_id, _card in page._voice_cards.items():
+            voice_name, description = page._voice_catalog_entry(voice_id)
+            assert "xiaoxiao" in (voice_name + " " + description).lower()
+
+    def test_library_exposes_all_installed_voice_ids(self, pm):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from ui.pages.voice_page import VoicePage, _load_installed_voice_ids
+
+        app = QApplication.instance() or QApplication([])
+        name = _create_sample_project(pm)
+        page = VoicePage()
+        page.manager = pm
+        page.set_project(name)
+        installed = _load_installed_voice_ids()
+        visible = set(page._voice_cards.keys())
+        if installed:
+            assert set(installed).issubset(visible)
+        else:
+            assert len(visible) == 54
+
+
+class TestVoicePrefsPersistence:
+    """Sprint 3.3B: voice.json persistence round-trip and backward compat."""
+
+    @staticmethod
+    def _make_page(pm):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from ui.pages.voice_page import VoicePage
+        app = QApplication.instance() or QApplication([])
+        page = VoicePage()
+        page.manager = pm
+        return page
+
+    def test_voice_prefs_round_trip(self, pm):
+        from ui.pages.voice_page import VOICE_SOURCE_IMPORT
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+        page._voice_source = VOICE_SOURCE_IMPORT
+        page._selected_voice_id = "am_michael"
+        page._set_speed(1.2)
+        page._persist_voice_prefs()
+
+        stored = _read_json(pm, name, "voice.json")
+        assert stored["voice_source"] == "import"
+        assert stored["voice_id"] == "am_michael"
+        assert stored["voice_speed"] == 1.2
+
+        reloaded = self._make_page(pm)
+        reloaded.set_project(name)
+        assert reloaded._voice_source == VOICE_SOURCE_IMPORT
+        assert reloaded._selected_voice_id == "am_michael"
+        assert reloaded._current_speed() == 1.2
+
+    def test_legacy_voice_json_restores_defaults(self, pm):
+        from core.voice_generation_service import DEFAULT_SPEED, DEFAULT_VOICE_ID
+        from ui.pages.voice_page import VOICE_SOURCE_AI
+        name = _create_sample_project(pm)
+        _write_json(pm.PROJECTS_DIR / name / "voice.json", {
+            "transcript": "Old transcript",
+            "segments": [],
+            "audio_file": "old.wav",
+        })
+        page = self._make_page(pm)
+        page.set_project(name)
+        assert page._voice_source == VOICE_SOURCE_AI
+        assert page._selected_voice_id == DEFAULT_VOICE_ID
+        assert page._current_speed() == DEFAULT_SPEED
+        assert page.transcript_box.toPlainText() == "Old transcript"
+
+    def test_invalid_voice_prefs_fall_back_to_defaults(self, pm):
+        from core.voice_generation_service import DEFAULT_SPEED, DEFAULT_VOICE_ID
+        from ui.pages.voice_page import VOICE_SOURCE_AI
+        name = _create_sample_project(pm)
+        _write_json(pm.PROJECTS_DIR / name / "voice.json", {
+            "voice_source": "banana",
+            "voice_id": "",
+            "voice_speed": 99,
+        })
+        page = self._make_page(pm)
+        page.set_project(name)
+        assert page._voice_source == VOICE_SOURCE_AI
+        assert page._selected_voice_id == DEFAULT_VOICE_ID
+        assert page._current_speed() == DEFAULT_SPEED
+
+    def test_select_voice_persists_to_disk(self, pm):
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+        page._select_voice("am_michael")
+        stored = _read_json(pm, name, "voice.json")
+        assert stored["voice_id"] == "am_michael"
+        assert stored["voice_source"] == "ai"
+
+    def test_persist_keeps_existing_transcript_fields(self, pm):
+        name = _create_sample_project(pm)
+        _write_json(pm.PROJECTS_DIR / name / "voice.json", {
+            "transcript": "Kept",
+            "segments": [{"start": 0, "end": 1, "text": "Kept", "time": "00:00"}],
+        })
+        page = self._make_page(pm)
+        page.set_project(name)
+        page._select_voice("bf_emma")
+        stored = _read_json(pm, name, "voice.json")
+        assert stored["transcript"] == "Kept"
+        assert len(stored["segments"]) == 1
+        assert stored["voice_id"] == "bf_emma"
+
 
 class TestImagePromptsSourceContext:
 
@@ -1551,3 +1813,298 @@ class TestCodeQuality:
         import operators.script.operator
         import operators.storyboard.operator
         import operators.image_prompt.operator
+
+    def test_voice_generation_service_imports(self):
+        import core.voice_generation_service
+        from core.voice_generation_service import (
+            VoiceGenerationService,
+            VoiceProfile,
+            VOICE_PROFILES,
+            PREVIEW_TEXT,
+            DEFAULT_VOICE_ID,
+            DEFAULT_SPEED,
+            get_voice_generation_service,
+        )
+
+
+# =====================================================================
+# PHASE 14 — Voice Generation Backend (Sprint 3.3A)
+# =====================================================================
+
+
+class TestVoiceGenerationService:
+    """Backend-only tests for the local Kokoro-ONNX TTS service.
+
+    Tests that require the model to be downloaded are gated with a skip
+    condition so CI without model files still passes the structural tests.
+    """
+
+    @staticmethod
+    def _reset_model_cache():
+        from core.voice_generation_service import VoiceGenerationService
+        VoiceGenerationService._kokoro = None
+
+    @staticmethod
+    def _model_available():
+        from core.voice_generation_service import get_voice_generation_service
+        svc = get_voice_generation_service()
+        return svc.is_available() and svc.is_model_ready()
+
+    # ------------------------------------------------------------------
+    # Structural / availability tests (no model required)
+    # ------------------------------------------------------------------
+
+    def test_service_is_importable(self):
+        from core.voice_generation_service import VoiceGenerationService
+        assert VoiceGenerationService is not None
+
+    def test_singleton_returns_same_instance(self):
+        from core.voice_generation_service import get_voice_generation_service
+        a = get_voice_generation_service()
+        b = get_voice_generation_service()
+        assert a is b
+
+    def test_exactly_eight_voices_registered(self):
+        from core.voice_generation_service import VOICE_PROFILES
+        assert len(VOICE_PROFILES) == 8
+
+    def test_voice_profiles_have_required_fields(self):
+        from core.voice_generation_service import VOICE_PROFILES
+        for v in VOICE_PROFILES:
+            assert v.id and isinstance(v.id, str)
+            assert v.name and isinstance(v.name, str)
+            assert v.description and isinstance(v.description, str)
+
+    def test_expected_voice_names_present(self):
+        from core.voice_generation_service import VOICE_PROFILES
+        names = {v.name for v in VOICE_PROFILES}
+        assert names == {"Emma", "James", "Sophia", "Alex",
+                         "Daniel", "Olivia", "Ethan", "Mia"}
+
+    def test_expected_kokoro_ids_present(self):
+        from core.voice_generation_service import VOICE_PROFILES
+        ids = {v.id for v in VOICE_PROFILES}
+        assert ids == {
+            "af_heart", "am_michael", "af_bella", "am_adam",
+            "bm_george", "af_sarah", "bm_lewis", "bf_isabella",
+        }
+
+    def test_get_available_voices_returns_list_copy(self):
+        from core.voice_generation_service import get_voice_generation_service
+        svc = get_voice_generation_service()
+        a = svc.get_available_voices()
+        b = svc.get_available_voices()
+        assert a == b
+        assert a is not b   # defensive copy — mutations don't affect internals
+
+    def test_get_voice_by_id_known(self):
+        from core.voice_generation_service import get_voice_generation_service
+        svc = get_voice_generation_service()
+        v = svc.get_voice_by_id("bm_george")
+        assert v is not None
+        assert v.name == "Daniel"
+        assert v.description == "Professional Presenter"
+
+    def test_get_voice_by_id_unknown_returns_none(self):
+        from core.voice_generation_service import get_voice_generation_service
+        svc = get_voice_generation_service()
+        assert svc.get_voice_by_id("nonexistent_voice_xyz") is None
+
+    def test_default_voice_id_is_in_catalogue(self):
+        from core.voice_generation_service import DEFAULT_VOICE_ID, VOICE_PROFILES
+        ids = {v.id for v in VOICE_PROFILES}
+        assert DEFAULT_VOICE_ID in ids
+
+    def test_preview_text_is_nonempty_string(self):
+        from core.voice_generation_service import PREVIEW_TEXT
+        assert isinstance(PREVIEW_TEXT, str)
+        assert len(PREVIEW_TEXT) > 10
+
+    def test_is_available_detects_package(self, monkeypatch):
+        from core.voice_generation_service import VoiceGenerationService
+        import sys
+        from types import SimpleNamespace
+        monkeypatch.setattr(
+            "core.voice_generation_service.importlib.util.find_spec",
+            lambda name: None,
+        )
+        assert VoiceGenerationService.is_available() is False
+        monkeypatch.setattr(
+            "core.voice_generation_service.importlib.util.find_spec",
+            lambda name: SimpleNamespace(),
+        )
+        assert VoiceGenerationService.is_available() is True
+
+    def test_install_instruction_mentions_package_name(self):
+        from core.voice_generation_service import VoiceGenerationService
+        msg = VoiceGenerationService.install_instruction()
+        assert "kokoro-onnx" in msg
+        assert "pip install" in msg
+
+    def test_is_model_ready_false_when_files_missing(self, tmp_path, monkeypatch):
+        import core.voice_generation_service as mod
+        monkeypatch.setattr(mod, "_CACHE_DIR", tmp_path / "empty")
+        from core.voice_generation_service import VoiceGenerationService
+        assert VoiceGenerationService().is_model_ready() is False
+
+    def test_is_model_ready_true_when_both_files_present(self, tmp_path, monkeypatch):
+        import core.voice_generation_service as mod
+        cache = tmp_path / "kokoro"
+        cache.mkdir()
+        (cache / mod._MODEL_FILE_NAME).write_bytes(b"fake-model")
+        (cache / mod._VOICES_FILE_NAME).write_bytes(b"fake-voices")
+        monkeypatch.setattr(mod, "_CACHE_DIR", cache)
+        from core.voice_generation_service import VoiceGenerationService
+        assert VoiceGenerationService().is_model_ready() is True
+
+    def test_ensure_model_ready_raises_when_package_missing(self, monkeypatch):
+        from core.voice_generation_service import VoiceGenerationService
+        monkeypatch.setattr(
+            "core.voice_generation_service.importlib.util.find_spec",
+            lambda name: None,
+        )
+        with pytest.raises(RuntimeError) as exc_info:
+            VoiceGenerationService().ensure_model_ready()
+        assert "kokoro-onnx" in str(exc_info.value)
+
+    def test_synthesize_raises_when_model_not_downloaded(self, monkeypatch):
+        import core.voice_generation_service as mod
+        from core.voice_generation_service import VoiceGenerationService
+        self._reset_model_cache()
+        monkeypatch.setattr(mod, "_CACHE_DIR", Path("/nonexistent/__kaimi_test__"))
+        with pytest.raises(RuntimeError) as exc_info:
+            VoiceGenerationService().generate_preview()
+        assert "not downloaded" in str(exc_info.value)
+        self._reset_model_cache()
+
+    def test_generate_to_file_raises_when_model_not_downloaded(
+        self, tmp_path, monkeypatch
+    ):
+        import core.voice_generation_service as mod
+        from core.voice_generation_service import VoiceGenerationService
+        self._reset_model_cache()
+        monkeypatch.setattr(mod, "_CACHE_DIR", tmp_path / "missing_cache")
+        with pytest.raises(RuntimeError) as exc_info:
+            VoiceGenerationService().generate_to_file(
+                "test", "af_heart", 1.0, tmp_path / "out.wav"
+            )
+        assert "not downloaded" in str(exc_info.value)
+        self._reset_model_cache()
+
+    # ------------------------------------------------------------------
+    # WAV encoding helper (no model required)
+    # ------------------------------------------------------------------
+
+    def test_float32_to_wav_bytes_produces_valid_wav(self):
+        import io
+        import wave
+        import numpy as np
+        from core.voice_generation_service import _float32_to_wav_bytes
+
+        samples = np.sin(
+            np.linspace(0, 2 * np.pi * 440, 24000, dtype=np.float32)
+        )  # 1 s of 440 Hz tone
+        wav_bytes = _float32_to_wav_bytes(samples, 24000)
+
+        with wave.open(io.BytesIO(wav_bytes)) as wf:
+            assert wf.getnchannels() == 1
+            assert wf.getsampwidth() == 2
+            assert wf.getframerate() == 24000
+            assert wf.getnframes() == 24000
+
+    def test_float32_to_wav_bytes_clips_out_of_range(self):
+        import io
+        import wave
+        import numpy as np
+        from core.voice_generation_service import _float32_to_wav_bytes
+
+        samples = np.array([2.0, -3.0, 0.5], dtype=np.float32)
+        wav_bytes = _float32_to_wav_bytes(samples, 24000)
+        with wave.open(io.BytesIO(wav_bytes)) as wf:
+            assert wf.getnframes() == 3   # no crash, correct frame count
+
+    # ------------------------------------------------------------------
+    # Live generation tests (require model to be downloaded)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.skipif(
+        not _model_available.__func__(),
+        reason="Kokoro model not downloaded — skipping live generation tests",
+    )
+    def test_generate_preview_returns_valid_wav(self):
+        import io
+        import wave
+        from core.voice_generation_service import get_voice_generation_service
+
+        svc = get_voice_generation_service()
+        wav_bytes = svc.generate_preview("af_heart", speed=1.0)
+        assert isinstance(wav_bytes, bytes)
+        assert len(wav_bytes) > 1000
+
+        with wave.open(io.BytesIO(wav_bytes)) as wf:
+            assert wf.getnchannels() == 1
+            assert wf.getsampwidth() == 2
+            assert wf.getframerate() == 24000
+            assert wf.getnframes() > 0
+
+    @pytest.mark.skipif(
+        not _model_available.__func__(),
+        reason="Kokoro model not downloaded — skipping live generation tests",
+    )
+    def test_generate_to_file_creates_wav_on_disk(self, tmp_path):
+        import wave
+        from core.voice_generation_service import get_voice_generation_service, PREVIEW_TEXT
+
+        svc = get_voice_generation_service()
+        out = tmp_path / "audio" / "output.wav"
+        svc.generate_to_file(PREVIEW_TEXT, "am_michael", 1.0, out)
+
+        assert out.exists()
+        assert out.stat().st_size > 1000
+        with wave.open(str(out)) as wf:
+            assert wf.getnchannels() == 1
+            assert wf.getframerate() == 24000
+
+    @pytest.mark.skipif(
+        not _model_available.__func__(),
+        reason="Kokoro model not downloaded — skipping live generation tests",
+    )
+    def test_generate_to_file_creates_parent_directories(self, tmp_path):
+        from core.voice_generation_service import get_voice_generation_service, PREVIEW_TEXT
+
+        svc = get_voice_generation_service()
+        nested = tmp_path / "deep" / "nested" / "path" / "voice.wav"
+        svc.generate_to_file(PREVIEW_TEXT, "af_bella", 1.0, nested)
+        assert nested.exists()
+
+    @pytest.mark.skipif(
+        not _model_available.__func__(),
+        reason="Kokoro model not downloaded — skipping live generation tests",
+    )
+    def test_all_eight_voices_synthesize_without_error(self, tmp_path):
+        from core.voice_generation_service import get_voice_generation_service
+
+        svc = get_voice_generation_service()
+        short_text = "Testing voice."
+        for profile in svc.get_available_voices():
+            out = tmp_path / f"{profile.id}.wav"
+            svc.generate_to_file(short_text, profile.id, 1.0, out)
+            assert out.exists(), f"No output for voice {profile.id}"
+            assert out.stat().st_size > 500, f"Empty output for voice {profile.id}"
+
+    @pytest.mark.skipif(
+        not _model_available.__func__(),
+        reason="Kokoro model not downloaded — skipping live generation tests",
+    )
+    def test_model_loaded_once_and_reused(self):
+        from core.voice_generation_service import VoiceGenerationService, PREVIEW_TEXT
+
+        self._reset_model_cache()
+        svc = VoiceGenerationService()
+        svc.generate_preview("af_heart")
+        first_instance = VoiceGenerationService._kokoro
+
+        svc.generate_preview("am_adam")
+        second_instance = VoiceGenerationService._kokoro
+
+        assert first_instance is second_instance   # model loaded exactly once

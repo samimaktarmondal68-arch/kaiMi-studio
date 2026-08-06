@@ -6,3 +6,10 @@ Pillow>=10.0.0,<13.0
 openai>=1.0.0,<3.0
 google-genai>=1.0.0,<3.0
 faster-whisper>=1.0.0,<2.0
+
+# Sprint 3.3A — Local TTS (built-in voice generation)
+# kokoro-onnx: Kokoro-82M quality via ONNX Runtime — no PyTorch required.
+# numpy is already a transitive dep of onnxruntime/faster-whisper.
+# Python 3.13+ can only install kokoro-onnx 0.4.x (earlier versions
+# declared Requires-Python <3.13; latest available for 3.14 is 0.4.7).
+kokoro-onnx>=0.4.4,<1.0
