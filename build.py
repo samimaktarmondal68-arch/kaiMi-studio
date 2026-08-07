@@ -21,8 +21,47 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from core.version import APP_NAME, VERSION
+
 DIST = ROOT / "dist"
 BUILD = ROOT / "build"
+
+
+def write_release_metadata():
+    """Regenerate build resources from core.version (single source of truth).
+
+    ``file_version_info.txt``, ``installer_metadata.iss``, and
+    ``build_manifest.json`` are derived artifacts and must never be
+    hand-edited — always regenerate them through this function.
+    """
+    from core.version import (
+        render_iss_defines,
+        render_manifest_json,
+        render_version_info,
+    )
+    (ROOT / "file_version_info.txt").write_text(render_version_info(), encoding="utf-8")
+    (ROOT / "installer_metadata.iss").write_text(render_iss_defines(), encoding="utf-8")
+    (ROOT / "build_manifest.json").write_text(render_manifest_json(), encoding="utf-8")
+    print(
+        "Release metadata regenerated: "
+        "file_version_info.txt, installer_metadata.iss, build_manifest.json"
+    )
+
+
+def write_branding_icon():
+    """Regenerate app_icon.ico from the official app_icon.png (Pillow).
+
+    The .ico is a build-time-only artifact: PyInstaller and the Inno
+    installer consume it, while the running app uses app_icon.png directly.
+    It is kept fresh from the single branding source so a swapped official
+    icon is always picked up without touching build code.
+    """
+    # generate_icon.py already fails loudly with a Pillow install hint.
+    from generate_icon import ensure_app_icon_ico
+    ensure_app_icon_ico()
 
 
 def clean():
@@ -32,7 +71,7 @@ def clean():
             shutil.rmtree(d)
             print(f"Cleaned: {d}")
     for f in ROOT.glob("*.spec"):
-        if f.name != "KaiMi Studio.spec":
+        if f.name != f"{APP_NAME}.spec":
             f.unlink()
     print("Clean complete.")
 
@@ -51,15 +90,18 @@ def build(onefile: bool = False):
     """Run PyInstaller with production hardening."""
     os.environ["PYTHONDONTWRITEBYTECODE"] = "0"
 
+    write_release_metadata()
+    write_branding_icon()
+
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--noconfirm",
         "--clean",
-        "--name", "KaiMi Studio",
+        "--name", APP_NAME,
         "--windowed",
-        "--icon", str(ROOT / "assets" / "icons" / "kaimi.ico"),
+        "--icon", str(ROOT / "resources" / "branding" / "app_icon.ico"),
         "--version", str(ROOT / "file_version_info.txt"),
-        "--add-data", f"assets{os.pathsep}assets",
+        "--add-data", f"resources{os.pathsep}resources",
         "--add-data", f"config{os.pathsep}config",
         "--strip",
         "--exclude-module", "tkinter.test",
@@ -125,14 +167,14 @@ def build(onefile: bool = False):
     if onefile:
         cmd.insert(cmd.index("main.py"), "--onefile")
 
-    print(f"Building KaiMi Studio (production)...")
+    print(f"Building {APP_NAME} v{VERSION} (production)...")
     print(f"Command: {' '.join(cmd[-5:])}")
     result = subprocess.run(cmd, cwd=str(ROOT))
 
     if result.returncode == 0:
-        exe_path = DIST / "KaiMi Studio" / "KaiMi Studio.exe"
+        exe_path = DIST / APP_NAME / f"{APP_NAME}.exe"
         if not exe_path.exists():
-            exe_path = DIST / "KaiMi Studio.exe"
+            exe_path = DIST / f"{APP_NAME}.exe"
         print(f"\nBuild successful!")
         print(f"Output: {exe_path}")
         print(f"Build is production-hardened with bytecode compilation and symbol stripping.")

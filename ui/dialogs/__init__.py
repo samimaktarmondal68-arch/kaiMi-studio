@@ -98,7 +98,7 @@ def _dialog_styles():
             background-color: {c.PRIMARY};
             color: {c.TEXT_ON_PRIMARY};
             border: none;
-            border-radius: 10px;
+            border-radius: 12px;
             padding: 8px 20px;
             font-size: 13px;
             font-weight: 600;
@@ -110,7 +110,7 @@ def _dialog_styles():
             background-color: transparent;
             color: {c.TEXT};
             border: 1px solid {c.BORDER};
-            border-radius: 10px;
+            border-radius: 12px;
             padding: 8px 20px;
             font-size: 13px;
         }}

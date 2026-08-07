@@ -1,0 +1,6 @@
+#define MyAppName "KaiMi Studio"
+#define MyAppVersion "1.0.0"
+#define MyAppPublisher "Md Samim Aktar Mondal"
+#define MyAppURL "https://github.com/kaimi-studio/kaimi-studio"
+#define MyAppExeName "KaiMi Studio.exe"
+#define MyAppCopyright "© 2026 Md Samim Aktar Mondal. All rights reserved."

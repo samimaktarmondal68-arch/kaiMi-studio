@@ -101,8 +101,36 @@ class ScriptPage(QWidget):
         self._build()
 
     def _on_theme_changed(self):
+        self._refresh_theme_static()
         if self.project_name:
             self._load_project_data()
+
+    def _refresh_theme_static(self):
+        """Re-apply theme tokens to chrome built once in ``_build``.
+
+        Header info, status-bar metrics, and the length-panel labels keep the
+        colors they were constructed with unless restyled here (Light-theme
+        contrast regression after a runtime theme switch).
+        """
+        c = ThemeManager.instance().colors()
+        self.info_topic.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
+        self.info_platform.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
+        self.info_language.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
+        self.char_count_label.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
+        self.word_count_label.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
+        self.target_label.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
+        self.length_label.setStyleSheet(f"{Fonts.caption_bold(c.TEXT_SECONDARY)}")
+        self.selection_title.setStyleSheet(f"{Fonts.caption_bold(c.TEXT_SECONDARY)}")
+        for lbl in self.summary_caption_labels:
+            lbl.setStyleSheet(f"{Fonts.caption(c.TEXT_MUTED)}")
+        self.status_badge.refresh_theme()
+        self.preset_name_label.setStyleSheet(f"{Fonts.css(13, '600', c.PRIMARY)}")
+        self.preset_range_label.setStyleSheet(f"{Fonts.caption(c.TEXT_SECONDARY)}")
+        self.preset_duration_label.setStyleSheet(f"{Fonts.caption(c.TEXT_SECONDARY)}")
+        self.selection_frame.setStyleSheet(
+            f"background-color: {c.SURFACE}; border: 1px solid {c.BORDER}; border-radius: 10px;"
+        )
+        self.status_badge.update_colors(c.PRIMARY, c.PRIMARY_LIGHT)
 
     def cleanup(self):
         self._stop_progress_animation()
@@ -148,7 +176,7 @@ class ScriptPage(QWidget):
         row = QHBoxLayout()
         row.setSpacing(16)
 
-        name_label = CardTitle("")
+        name_label = CardTitle("Script")
         row.addWidget(name_label)
 
         self.status_badge = StatusBadge("")
@@ -174,9 +202,9 @@ class ScriptPage(QWidget):
         # Script Length preset selector (Sprint 3.4D).
         length_row = QHBoxLayout()
         length_row.setSpacing(8)
-        length_label = QLabel("Script Length")
-        length_label.setStyleSheet(f"{Fonts.caption_bold(c.TEXT_SECONDARY)}")
-        length_row.addWidget(length_label)
+        self.length_label = QLabel("Script Length")
+        self.length_label.setStyleSheet(f"{Fonts.caption_bold(c.TEXT_SECONDARY)}")
+        length_row.addWidget(self.length_label)
 
         self.script_length_combo = QComboBox()
         for preset in SCRIPT_LENGTH_PRESETS:
@@ -189,24 +217,27 @@ class ScriptPage(QWidget):
 
         # "Selected Script Length" summary panel; updates instantly on
         # selection change.
-        selection = QFrame()
-        selection.setAttribute(Qt.WA_StyledBackground, True)
-        selection.setStyleSheet(
+        self.selection_frame = QFrame()
+        self.selection_frame.setAttribute(Qt.WA_StyledBackground, True)
+        self.selection_frame.setStyleSheet(
             f"background-color: {c.SURFACE}; border: 1px solid {c.BORDER}; border-radius: 10px;"
         )
-        selection_layout = QVBoxLayout(selection)
+        selection_layout = QVBoxLayout(self.selection_frame)
         selection_layout.setContentsMargins(12, 10, 12, 10)
         selection_layout.setSpacing(4)
 
-        selection_title = QLabel("Selected Script Length")
-        selection_title.setStyleSheet(f"{Fonts.caption_bold(c.TEXT_SECONDARY)}")
-        selection_layout.addWidget(selection_title)
+        self.selection_title = QLabel("Selected Script Length")
+        self.selection_title.setStyleSheet(f"{Fonts.caption_bold(c.TEXT_SECONDARY)}")
+        selection_layout.addWidget(self.selection_title)
+
+        self.summary_caption_labels = []
 
         def make_summary_row(caption, value_style):
             row = QHBoxLayout()
             row.setSpacing(8)
             caption_label = QLabel(caption)
             caption_label.setStyleSheet(f"{Fonts.caption(c.TEXT_MUTED)}")
+            self.summary_caption_labels.append(caption_label)
             value_label = QLabel("")
             value_label.setStyleSheet(value_style)
             row.addWidget(caption_label)
@@ -223,7 +254,7 @@ class ScriptPage(QWidget):
             "Estimated Duration", Fonts.caption(c.TEXT_SECONDARY)
         )
 
-        card.content_layout.addWidget(selection)
+        card.content_layout.addWidget(self.selection_frame)
 
         self.project_label = MutedLabel("")
         card.content_layout.addWidget(self.project_label)

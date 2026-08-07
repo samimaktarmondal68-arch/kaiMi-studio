@@ -54,7 +54,9 @@ class _ProjectCard(ModernCard):
         self._project = project
         self._navigate_callback = navigate_callback
         self._generate_script_callback = generate_script_callback
-        self.setFixedHeight(170)
+        # Tall enough for the badge plus up to three 36px action buttons
+        # (RC-5 button-height standardization).
+        self.setFixedHeight(180)
         self._outer_layout.setContentsMargins(0, 0, 0, 0)
         self._build()
 
@@ -201,19 +203,19 @@ class _ProjectCard(ModernCard):
             and script_status in (StageStatus.NOT_STARTED, StageStatus.FAILED)
         ):
             gen_btn = ModernButton(action.label, primary=True)
-            gen_btn.setFixedSize(150, 30)
+            gen_btn.setFixedSize(150, 36)
             gen_btn.clicked.connect(
                 lambda checked, n=name: self._generate_script_callback(n)
             )
             actions.addWidget(gen_btn)
 
         open_btn = ModernButton("Resume", primary=True)
-        open_btn.setFixedSize(80, 30)
+        open_btn.setFixedSize(80, 36)
         open_btn.clicked.connect(lambda checked, n=name: self._navigate_callback(n))
         actions.addWidget(open_btn)
 
         history_btn = ModernButton("History", primary=False)
-        history_btn.setFixedSize(80, 30)
+        history_btn.setFixedSize(80, 36)
         history_btn.clicked.connect(lambda checked, n=name: self._show_history(n))
         actions.addWidget(history_btn)
 

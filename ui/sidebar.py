@@ -1,4 +1,4 @@
-from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QSize
+from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QSize, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QFrame, QGraphicsDropShadowEffect, QHBoxLayout,
@@ -33,6 +33,22 @@ NAV_GLOBAL = [
 
 BUTTON_HEIGHT = 36
 STAGE_BUTTON_HEIGHT = 30
+
+
+class _AboutLabel(QLabel):
+    """Clickable version label that opens the About dialog."""
+
+    clicked = Signal()
+
+    def __init__(self, text: str):
+        super().__init__(text)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip("About KaiMi Studio")
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
 
 
 class Sidebar(QFrame):
@@ -125,23 +141,37 @@ class Sidebar(QFrame):
         self._nav_buttons["Settings"] = settings_btn
         layout.addWidget(settings_btn)
 
-        version = QLabel(f"v{VERSION}")
+        version = _AboutLabel(f"v{VERSION}")
         version.setObjectName("muted")
         version.setAlignment(Qt.AlignCenter)
         c = ThemeManager.instance().colors()
         version.setStyleSheet(f"{Fonts.tiny(c.TEXT_MUTED)} padding: 2px;")
+        version.clicked.connect(self._open_about)
         layout.addWidget(version)
 
     def _build_brand(self, layout):
         c = ThemeManager.instance().colors()
+
+        # Official logo lockup above the wordmark (56px, aspect ratio
+        # preserved, never oversized — navigation stays the primary focus).
+        from core.branding import logo_pixmap
+        logo_label = QLabel()
+        logo_label.setPixmap(logo_pixmap(56))
+        logo_label.setFixedSize(56, 56)
+        logo_label.setAlignment(Qt.AlignCenter)
+        logo_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+        layout.addWidget(logo_label, 0, Qt.AlignHCenter)
+        layout.addSpacing(2)
+
         brand = QLabel("KaiMi Studio")
+        brand.setAlignment(Qt.AlignCenter)
         brand.setStyleSheet(
-            f"{Fonts.css(18, 'bold', c.PRIMARY)} "
-            f"padding: 0px 12px; letter-spacing: -0.3px;"
+            f"{Fonts.css(18, 'bold', c.PRIMARY)} letter-spacing: -0.3px;"
         )
         layout.addWidget(brand)
 
         subtitle = QLabel("AI Creator Workspace")
+        subtitle.setAlignment(Qt.AlignCenter)
         subtitle.setStyleSheet(
             f"{Fonts.tiny(c.TEXT_MUTED)} "
             f"padding: 0px 12px; letter-spacing: 0.2px;"
@@ -270,6 +300,17 @@ class Sidebar(QFrame):
 
             self._nav_buttons[stage] = item
 
+    def _open_about(self):
+        """Open the About dialog on the owning MainWindow."""
+        parent = self.parent()
+        for _ in range(8):
+            if hasattr(parent, "show_about_dialog"):
+                parent.show_about_dialog()
+                return
+            parent = parent.parent() if parent else None
+            if parent is None:
+                return
+
     def _on_nav_click(self, label):
         if label not in self._page_map:
             return
@@ -321,8 +362,7 @@ class Sidebar(QFrame):
             text = lbl.text()
             if text == "KaiMi Studio":
                 lbl.setStyleSheet(
-                    f"{Fonts.css(18, 'bold', c.PRIMARY)} "
-                    f"padding: 0px 12px; letter-spacing: -0.3px;"
+                    f"{Fonts.css(18, 'bold', c.PRIMARY)} letter-spacing: -0.3px;"
                 )
             elif text == "AI Creator Workspace":
                 lbl.setStyleSheet(

@@ -1,6 +1,7 @@
 """Version History page — view, preview, and restore project versions."""
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QDialog, QFrame, QHBoxLayout, QHeaderView, QLabel,
     QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
@@ -102,17 +103,19 @@ class VersionHistoryDialog(QDialog):
             self.version_table.insertRow(row)
 
             date_item = QTableWidgetItem(action.get("datetime", ""))
-            date_item.setForeground(c.TEXT)
+            date_item.setForeground(QColor(c.TEXT))
             self.version_table.setItem(row, 0, date_item)
 
             action_text = action.get("action", "")
             action_item = QTableWidgetItem(action_text)
-            action_item.setForeground(c.PRIMARY if "Restore" in action_text else c.TEXT)
+            action_item.setForeground(
+                QColor(c.PRIMARY if "Restore" in action_text else c.TEXT)
+            )
             self.version_table.setItem(row, 1, action_item)
 
             desc = action.get("description", "")
             desc_item = QTableWidgetItem(desc)
-            desc_item.setForeground(c.TEXT_SECONDARY)
+            desc_item.setForeground(QColor(c.TEXT_SECONDARY))
             self.version_table.setItem(row, 2, desc_item)
 
             stage = "General"
@@ -122,7 +125,7 @@ class VersionHistoryDialog(QDialog):
                     break
             stage_item = QTableWidgetItem(stage)
             stage_color = Theme.get_stage_color(c, stage)
-            stage_item.setForeground(stage_color)
+            stage_item.setForeground(QColor(stage_color))
             self.version_table.setItem(row, 3, stage_item)
 
             self.version_table.setRowHeight(row, 36)

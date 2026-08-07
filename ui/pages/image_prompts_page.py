@@ -83,8 +83,22 @@ class ImagePromptsPage(QWidget):
         self._build()
 
     def _on_theme_changed(self):
+        self._refresh_theme_static()
         if self.project_name:
             self._load_project_data()
+
+    def _refresh_theme_static(self):
+        """Re-apply theme tokens to chrome built once in ``_build``.
+
+        The controls description and the empty state keep the colors they
+        were constructed with unless restyled here (Light-theme contrast
+        regression after a runtime theme switch).
+        """
+        c = ThemeManager.instance().colors()
+        self.controls_desc_label.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
+        self.status_badge.refresh_theme()
+        if self.empty_state is not None:
+            self.empty_state.refresh_theme()
 
     def set_project(self, name):
         self.project_name = name
@@ -153,9 +167,11 @@ class ImagePromptsPage(QWidget):
         controls_card = ModernCard()
         controls_card.content_layout.setSpacing(8)
 
-        desc = QLabel("Uses your script and transcript to generate production-ready image prompts for each scene.")
-        desc.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
-        controls_card.content_layout.addWidget(desc)
+        self.controls_desc_label = QLabel(
+            "Uses your script and transcript to generate production-ready image prompts for each scene."
+        )
+        self.controls_desc_label.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
+        controls_card.content_layout.addWidget(self.controls_desc_label)
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)
@@ -243,14 +259,15 @@ class ImagePromptsPage(QWidget):
                 widget.deleteLater()
 
         if not self._prompts:
-            empty_state = EmptyState(
+            self.empty_state = EmptyState(
                 title="No Prompts Yet",
                 description="No prompts yet. Generate prompts from your script.",
             )
-            self.prompts_layout.addWidget(empty_state)
+            self.prompts_layout.addWidget(self.empty_state)
             self.prompts_layout.addStretch()
             return
 
+        self.empty_state = None
         for prompt in self._prompts:
             self._add_prompt_card(prompt)
 
@@ -277,7 +294,7 @@ class ImagePromptsPage(QWidget):
         header.addStretch()
 
         copy_btn = ModernButton("Copy", primary=False)
-        copy_btn.setFixedSize(80, 32)
+        copy_btn.setFixedSize(80, 36)
         copy_btn.clicked.connect(lambda p=prompt: self._copy_prompt(p))
         header.addWidget(copy_btn)
 

@@ -15,7 +15,7 @@ from core.theme import Fonts, Theme
 from ui.theme_pyside import ThemeManager
 from ui.widgets import (
     EmptyState, IconProvider, ModernButton, ModernCard, MutedLabel,
-    PageTitle, SectionHeader, StatusBadge,
+    PageTitle, rebuild_page_layout, SectionHeader, StatusBadge,
 )
 from ui.dialogs import NewProjectDialog
 
@@ -504,10 +504,10 @@ class DashboardPage(QWidget):
         NotificationService.get().success(f"Project '{name}' created.")
 
     def set_project(self, name=None):
-        for i in reversed(range(self._content_layout.count())):
-            item = self._content_layout.itemAt(i)
-            widget = item.widget()
-            if widget:
-                widget.setParent(None)
-                widget.deleteLater()
+        # Dispose the previous root layout first: a QWidget accepts only one
+        # layout, and ``_build()`` must be able to install a fresh one.
+        # ``rebuild_page_layout`` also removes nested grid layouts, so the
+        # quick-action/stat/recent grids never leak widgets that keep stale
+        # theme colors (Light-theme contrast regression).
+        rebuild_page_layout(self)
         self._build()

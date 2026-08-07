@@ -64,13 +64,16 @@ def _show_error_dialog(exc_type, exc_value, log_path: str) -> None:
         root = tk.Tk()
         root.withdraw()
 
-        title = "KaiMi Studio — Unexpected Error"
+        from core.version import APP_NAME, OFFICIAL_EMAIL
+
+        title = f"{APP_NAME} — Unexpected Error"
         message = (
-            f"KaiMi Studio encountered an unexpected error.\n\n"
+            f"{APP_NAME} encountered an unexpected error.\n\n"
             f"Error: {exc_type.__name__}: {exc_value}\n\n"
             f"A crash log has been saved to:\n{log_path}\n\n"
             f"Please restart the application.\n"
-            f"If this problem persists, report the issue with the crash log."
+            f"If this problem persists, report the issue with the crash log "
+            f"to {OFFICIAL_EMAIL}."
         )
 
         messagebox.showerror(title, message)

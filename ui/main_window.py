@@ -15,15 +15,18 @@ from core.notifications import NotificationService
 from core.pipeline_events import get_pipeline_events
 from core.pipeline_service import get_pipeline_service
 from core.project_manager import ProjectManager
+from core.branding import app_icon
 from core.settings import AppSettings
 from core.shortcuts import KeyboardShortcuts
+from core.version import APP_NAME, VERSION
 
 
 class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("KaiMi Studio")
+        self.setWindowTitle(f"{APP_NAME} v{VERSION}")
+        self.setWindowIcon(app_icon())
         self.setMinimumSize(1200, 700)
         self._current_page = None
         self._project_name = None
@@ -140,6 +143,12 @@ class MainWindow(QMainWindow):
 
     def _on_theme_changed(self):
         self.sidebar.update_theme()
+
+    def show_about_dialog(self):
+        """Open the application About dialog."""
+        from ui.dialogs.about_dialog import AboutDialog
+        dialog = AboutDialog(self)
+        dialog.exec()
 
     def get_project_context(self):
         return self._project_name

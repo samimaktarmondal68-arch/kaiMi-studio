@@ -4,9 +4,10 @@ import shutil
 from pathlib import Path
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QHeaderView, QLabel,
-    QTableWidget, QTableWidgetItem, QTreeWidget,
+    QStackedWidget, QTableWidget, QTableWidgetItem, QTreeWidget,
     QTreeWidgetItem, QVBoxLayout, QWidget, QMessageBox,
     QFileDialog, QAbstractItemView, QInputDialog,
 )
@@ -49,8 +50,19 @@ class AssetManagerPage(QWidget):
         self._build()
 
     def _on_theme_changed(self):
+        self._refresh_theme_static()
         if self.project_name:
             self._load_project_data()
+
+    def _refresh_theme_static(self):
+        """Re-apply theme tokens to the static empty states.
+
+        Empty states are built once in ``_build`` and would keep the colors
+        they were constructed with after a runtime theme switch (Light-theme
+        contrast regression).
+        """
+        self.empty_state.refresh_theme()
+        self.assets_empty.refresh_theme()
 
     def _on_assets_changed(self, project_name):
         if project_name == self.project_name:
@@ -134,6 +146,9 @@ class AssetManagerPage(QWidget):
 
         v.addWidget(SectionHeader("Files"))
 
+        # Table + empty state stacked: a project with no assets must show a
+        # helpful message instead of a blank table (RC-5 consistency pass).
+        self.assets_stack = QStackedWidget()
         self.asset_table = QTableWidget(0, 5)
         self.asset_table.setHorizontalHeaderLabels(["Name", "Type", "Modified", "Size", "Status"])
         self.asset_table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -153,8 +168,17 @@ class AssetManagerPage(QWidget):
         header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
         self.asset_table.itemSelectionChanged.connect(self._on_selection_changed)
+        self.assets_stack.addWidget(self.asset_table)
 
-        v.addWidget(self.asset_table, 1)
+        self.assets_empty = EmptyState(
+            icon="assets",
+            title="No Assets Imported",
+            description="Import or generate files in the Script, Voice, and Export stages "
+            "to see them here.",
+        )
+        self.assets_stack.addWidget(self.assets_empty)
+
+        v.addWidget(self.assets_stack, 1)
         parent.addWidget(container, 1)
 
     def _build_action_bar(self, parent):
@@ -204,14 +228,14 @@ class AssetManagerPage(QWidget):
         font = root_item.font(0)
         font.setBold(True)
         root_item.setFont(0, font)
-        root_item.setForeground(0, c.TEXT)
+        root_item.setForeground(0, QColor(c.TEXT))
         self.folder_tree.addTopLevelItem(root_item)
 
         folders = ["Script", "Voice", "Transcript", "Image Prompts", "Images", "Videos", "Exports", "Temp", "Logs"]
         for folder in folders:
             child = QTreeWidgetItem([f"  {folder}"])
             child.setData(0, Qt.UserRole, folder.lower())
-            child.setForeground(0, c.TEXT_SECONDARY)
+            child.setForeground(0, QColor(c.TEXT_SECONDARY))
             root_item.addChild(child)
 
         root_item.setExpanded(True)
@@ -232,28 +256,29 @@ class AssetManagerPage(QWidget):
 
             name_item = QTableWidgetItem(asset["name"])
             name_item.setData(Qt.UserRole, asset["path"])
-            name_item.setForeground(c.TEXT)
+            name_item.setForeground(QColor(c.TEXT))
             self.asset_table.setItem(row, 0, name_item)
 
             type_item = QTableWidgetItem(asset["type"].upper())
-            type_item.setForeground(c.TEXT_SECONDARY)
+            type_item.setForeground(QColor(c.TEXT_SECONDARY))
             self.asset_table.setItem(row, 1, type_item)
 
             date_item = QTableWidgetItem(_format_date(asset["modified"]))
-            date_item.setForeground(c.TEXT_SECONDARY)
+            date_item.setForeground(QColor(c.TEXT_SECONDARY))
             self.asset_table.setItem(row, 2, date_item)
 
             size_item = QTableWidgetItem(_format_size(asset["size"]))
-            size_item.setForeground(c.TEXT_SECONDARY)
+            size_item.setForeground(QColor(c.TEXT_SECONDARY))
             self.asset_table.setItem(row, 3, size_item)
 
             status_item = QTableWidgetItem("Synced")
-            status_item.setForeground(c.SUCCESS)
+            status_item.setForeground(QColor(c.SUCCESS))
             self.asset_table.setItem(row, 4, status_item)
 
         self.status_label.setText(
             f"Project: {self.project_name}  |  {len(self._assets)} assets"
         )
+        self.assets_stack.setCurrentIndex(0 if self._assets else 1)
 
     def _on_selection_changed(self):
         has_selection = len(self.asset_table.selectedItems()) > 0
@@ -278,20 +303,22 @@ class AssetManagerPage(QWidget):
             self.asset_table.insertRow(row)
             name_item = QTableWidgetItem(asset["name"])
             name_item.setData(Qt.UserRole, asset["path"])
-            name_item.setForeground(c.TEXT)
+            name_item.setForeground(QColor(c.TEXT))
             self.asset_table.setItem(row, 0, name_item)
             type_item = QTableWidgetItem(asset["type"].upper())
-            type_item.setForeground(c.TEXT_SECONDARY)
+            type_item.setForeground(QColor(c.TEXT_SECONDARY))
             self.asset_table.setItem(row, 1, type_item)
             date_item = QTableWidgetItem(_format_date(asset["modified"]))
-            date_item.setForeground(c.TEXT_SECONDARY)
+            date_item.setForeground(QColor(c.TEXT_SECONDARY))
             self.asset_table.setItem(row, 2, date_item)
             size_item = QTableWidgetItem(_format_size(asset["size"]))
-            size_item.setForeground(c.TEXT_SECONDARY)
+            size_item.setForeground(QColor(c.TEXT_SECONDARY))
             self.asset_table.setItem(row, 3, size_item)
             status_item = QTableWidgetItem("Synced")
-            status_item.setForeground(c.SUCCESS)
+            status_item.setForeground(QColor(c.SUCCESS))
             self.asset_table.setItem(row, 4, status_item)
+
+        self.assets_stack.setCurrentIndex(0 if assets else 1)
 
     def _open_asset(self):
         row = self.asset_table.currentRow()

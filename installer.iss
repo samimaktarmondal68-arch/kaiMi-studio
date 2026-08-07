@@ -1,13 +1,8 @@
-; KaiMi Studio v1.0.0 — Inno Setup Configuration
-; Copyright 2026 KaiMi. All rights reserved.
+; KaiMi Studio — Inno Setup Configuration
 ; Requires Inno Setup 6.3+
-
-#define MyAppName "KaiMi Studio"
-#define MyAppVersion "1.0.0"
-#define MyAppPublisher "KaiMi"
-#define MyAppURL "https://github.com/kaimi-studio/kaimi-studio"
-#define MyAppExeName "KaiMi Studio.exe"
-#define MyAppCopyright "© 2026 KaiMi. All rights reserved."
+; Installer metadata is generated from core.version by build.py
+; (see installer_metadata.iss). Do not hand-edit the defines below.
+#include "installer_metadata.iss"
 
 [Setup]
 AppId={{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
@@ -22,7 +17,7 @@ DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 OutputDir=installer_output
 OutputBaseFilename=KaiMiStudio-Setup-{#MyAppVersion}
-SetupIconFile=assets\icons\kaimi.ico
+SetupIconFile=resources\branding\app_icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2/ultra64
 SolidCompression=yes

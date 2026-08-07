@@ -13,7 +13,7 @@ from core.logger import get_logger
 from core.crash_handler import install_crash_handler
 from core.settings import AppSettings
 
-CRITICAL_ASSETS = ["assets/icons/kaimi.ico"]
+CRITICAL_ASSETS = ["resources/branding/app_icon.png", "resources/branding/logo.png"]
 CRITICAL_CONFIGS = ["config/providers.json"]
 
 
@@ -35,8 +35,8 @@ def _verify_integrity(log) -> bool:
         except (json.JSONDecodeError, OSError) as e:
             log.error("Integrity", f"Corrupted config file: {config} ({e})")
             all_ok = False
-    from core.version import APP_NAME, VERSION, AUTHOR
-    if not APP_NAME or not VERSION or not AUTHOR:
+    from core.version import APP_NAME, VERSION, AUTHOR, OFFICIAL_EMAIL
+    if not APP_NAME or not VERSION or not AUTHOR or not OFFICIAL_EMAIL:
         log.error("Integrity", "Version metadata is incomplete.")
         all_ok = False
     if not all_ok:
@@ -60,7 +60,9 @@ def main():
     install_crash_handler()
     log = get_logger()
 
-    log.startup(f"KaiMi Studio launching (Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro})")
+    from core.version import APP_NAME, APP_NAME_SHORT, VERSION
+
+    log.startup(f"{APP_NAME} v{VERSION} launching (Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro})")
     log.startup(f"Executable: {sys.executable}")
     log.startup(f"CWD: {Path.cwd()}")
 
@@ -69,8 +71,12 @@ def main():
     t0 = time.perf_counter()
 
     app = QApplication(sys.argv)
-    app.setApplicationName("KaiMi Studio")
-    app.setOrganizationName("KaiMi")
+    app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(VERSION)
+    app.setOrganizationName(APP_NAME_SHORT)
+
+    from core.branding import app_icon
+    app.setWindowIcon(app_icon())
 
     from ui.main_window import MainWindow
 

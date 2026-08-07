@@ -9,7 +9,17 @@ from core.notifications import NotificationService
 from core.settings import AppSettings
 from core.task_manager import TaskManager
 from core.theme import Fonts
-from core.version import APP_NAME, APP_DESCRIPTION, COPYRIGHT, VERSION
+from core.version import (
+    APP_NAME,
+    APP_DESCRIPTION,
+    AUTHOR,
+    BUILD,
+    COPYRIGHT,
+    ENGINE_VERSION,
+    OFFICIAL_EMAIL,
+    VERSION,
+    WORKFLOW_VERSION,
+)
 from ui.theme_pyside import ThemeManager
 from ui.widgets import CardTitle, ModernButton, MutedLabel, ModernCard, PageTitle, SectionLabel
 
@@ -195,20 +205,95 @@ class SettingsPage(QWidget):
         title = SectionLabel("About")
         card.content_layout.addWidget(title)
 
+        brand_row = QHBoxLayout()
+        brand_row.setSpacing(12)
+
+        from core.branding import logo_pixmap
+        brand_logo = QLabel()
+        brand_logo.setPixmap(logo_pixmap(96))
+        brand_logo.setFixedSize(96, 96)
+        brand_logo.setAttribute(Qt.WA_TransparentForMouseEvents)
+        brand_row.addWidget(brand_logo)
+
+        brand_text = QVBoxLayout()
+        brand_text.setSpacing(2)
         name = CardTitle(APP_NAME)
-        card.content_layout.addWidget(name)
-
-        ver = QLabel(f"Version {VERSION}")
-        ver.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
-        card.content_layout.addWidget(ver)
-
+        brand_text.addWidget(name)
         desc = MutedLabel(APP_DESCRIPTION)
-        card.content_layout.addWidget(desc)
+        brand_text.addWidget(desc)
+        brand_row.addLayout(brand_text, 1)
+        card.content_layout.addLayout(brand_row)
+
+        card.content_layout.addLayout(
+            self._make_identity_row("Version", VERSION)
+        )
+        card.content_layout.addLayout(
+            self._make_identity_row("Build", BUILD)
+        )
+        card.content_layout.addLayout(
+            self._make_identity_row("Engine", ENGINE_VERSION)
+        )
+        card.content_layout.addLayout(
+            self._make_identity_row("Workflow", WORKFLOW_VERSION)
+        )
+        card.content_layout.addLayout(
+            self._make_identity_row("Author", AUTHOR)
+        )
+
+        email_row = QHBoxLayout()
+        email_row.setSpacing(16)
+        email_lbl = QLabel("Official Email")
+        email_lbl.setStyleSheet(f"{Fonts.label(c.TEXT)} min-width: 100px;")
+        email_row.addWidget(email_lbl)
+        email_value = QLabel(OFFICIAL_EMAIL)
+        email_value.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
+        email_row.addWidget(email_value)
+        email_row.addStretch()
+        self.email_copy_btn = ModernButton("Copy", primary=False)
+        self.email_copy_btn.clicked.connect(self._copy_official_email)
+        email_row.addWidget(self.email_copy_btn)
+        card.content_layout.addLayout(email_row)
 
         copyright_lbl = MutedLabel(COPYRIGHT)
         card.content_layout.addWidget(copyright_lbl)
 
+        buttons = QHBoxLayout()
+        buttons.setSpacing(12)
+        self.about_dialog_btn = ModernButton("About KaiMi Studio", primary=False)
+        self.about_dialog_btn.clicked.connect(self._open_about_dialog)
+        buttons.addWidget(self.about_dialog_btn)
+        buttons.addStretch()
+        card.content_layout.addLayout(buttons)
+
         self._scroll_layout.addWidget(card)
+
+    def _make_identity_row(self, label_text: str, value_text: str) -> QHBoxLayout:
+        """Read-only identity row used by the About card."""
+        c = ThemeManager.instance().colors()
+        row = QHBoxLayout()
+        row.setSpacing(16)
+
+        lbl = QLabel(label_text)
+        lbl.setStyleSheet(f"{Fonts.label(c.TEXT)} min-width: 100px;")
+        row.addWidget(lbl)
+
+        value = QLabel(value_text)
+        value.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
+        row.addWidget(value)
+        row.addStretch()
+        return row
+
+    def _copy_official_email(self):
+        """Copy the official email to the clipboard with feedback."""
+        from PySide6.QtWidgets import QApplication
+        QApplication.clipboard().setText(OFFICIAL_EMAIL)
+        NotificationService.get().info("Official email copied to clipboard.")
+
+    def _open_about_dialog(self):
+        """Open the professional About dialog."""
+        from ui.dialogs.about_dialog import AboutDialog
+        dialog = AboutDialog(self)
+        dialog.exec()
 
     def _on_theme_selected(self, value):
         mode = value.lower()

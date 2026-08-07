@@ -1,36 +1,41 @@
 import json
 import shutil
+import struct
+import threading
+import time
 from pathlib import Path
 
-from PySide6.QtCore import QBuffer, QIODevice, QObject, QThread, QTimer, Qt, Signal
+from PySide6.QtCore import QBuffer, QIODevice, QObject, QThread, QTimer, Qt, QUrl, Signal
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPlainTextEdit,
-    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
 from core.autosave import get_autosave_manager
 from core.history_manager import HistoryManager
+from core.logger import get_logger
 from core.notifications import NotificationService
 from core.pipeline_service import get_pipeline_service
 from core.project_manager import ProjectManager
 from core.script_storage import ScriptStorage
-from core.theme import Fonts, Spacing, Radius
+from core.theme import Fonts
 from core.transcription_service import WHISPER_MODELS, get_transcription_service
 from core.voice_generation_service import (
     DEFAULT_SPEED,
     DEFAULT_VOICE_ID,
+    STAGE_MESSAGES,
+    VoiceGenerationCancelled,
     get_voice_generation_service,
 )
+from ..dialogs.voice_selection import VoiceSelectionDialog
 from ..theme_pyside import ThemeManager
 from ..widgets import (
     AutosaveIndicator,
@@ -40,7 +45,6 @@ from ..widgets import (
     ModernCard,
     MutedLabel,
     ProgressWidget,
-    SearchInput,
     SectionHeader,
     StatusBadge,
 )
@@ -144,8 +148,6 @@ _LOCALE_NAMES = {
     "z": "Chinese",
 }
 
-_VOICE_GRID_COLUMNS = 3
-
 
 def _load_installed_voice_ids() -> list[str]:
     """Return the exact list of Kokoro speaker ids installed on disk.
@@ -168,16 +170,29 @@ def _load_installed_voice_ids() -> list[str]:
         return []
 
 
+def _voice_locale(voice_id: str) -> tuple[str, str]:
+    """Return (locale, gender) parsed from a Kokoro speaker id (e.g. bf_emma)."""
+    prefix = voice_id.split("_")[0] if "_" in voice_id else ""
+    locale = _LOCALE_NAMES.get(prefix[:1], "International")
+    gender = "Female" if len(prefix) > 1 and prefix[1] == "f" else "Male"
+    return locale, gender
+
+
 def _fallback_voice_entry(voice_id: str) -> tuple[str, str]:
     """Derive a display name and description for an unknown Kokoro id."""
     if "_" in voice_id:
         prefix, _, raw = voice_id.partition("_")
         name = " ".join(word.capitalize() for word in raw.split("_"))
-        locale = _LOCALE_NAMES.get(prefix[0] if prefix else "", "International")
-        gender = "Female" if len(prefix) > 1 and prefix[1] == "f" else "Male"
+        locale, gender = _voice_locale(voice_id)
         desc = f"{locale} — {gender} voice"
         return name, desc
     return voice_id.capitalize(), "Local Kokoro voice"
+
+
+def _voice_language(voice_id: str) -> str:
+    """Derive a human language label from a Kokoro speaker id (e.g. bf_emma)."""
+    locale, gender = _voice_locale(voice_id)
+    return f"{locale} \u00b7 {gender}"
 
 
 def transcribe_audio_locally(audio_path: str) -> tuple[str, list[dict]]:
@@ -234,34 +249,80 @@ class PreviewWorker(QObject):
 
 
 class VoiceGenWorker(QObject):
-    """Synthesize the narration for a project on a background thread."""
+    """Synthesize the narration for a project on a background thread.
 
+    Reports the real pipeline stage (model init, text prep, synthesis, WAV
+    encoding, file save) through :attr:`stage` with measured fractions, and
+    supports cooperative cancellation between stages via a shared
+    ``threading.Event``.
+    """
+
+    #: (stage_key, human_message, fraction) — real pipeline stage updates.
+    stage = Signal(str, str, float)
+    #: Download progress (message, percent) when the model files are missing.
     progress = Signal(str, int)
     finished = Signal(str)
-    error = Signal(str)
+    #: (failed_stage, human-readable error) — stage named for diagnostics.
+    error = Signal(str, str)
+    cancelled = Signal()
 
-    def __init__(self, text, voice_id, speed, output_path):
+    def __init__(self, text, voice_id, speed, output_path, cancel_event=None):
         super().__init__()
         self.text = text
         self.voice_id = voice_id
         self.speed = speed
         self.output_path = output_path
+        self.cancel_event = cancel_event or threading.Event()
+        self._started = time.monotonic()
+        self._log = get_logger()
+        self._failed_stage = "unknown"
 
     def run(self):
+        service = get_voice_generation_service()
+        self._log.info(
+            "Voice",
+            f"Generation started — voice={self.voice_id}, "
+            f"speed={self.speed:.2f}, chars={len(self.text)}, "
+            f"output={self.output_path}",
+        )
         try:
-            service = get_voice_generation_service()
-            service.ensure_model_ready(self._report_progress)
-            self.progress.emit("Synthesizing narration...", 75)
-            service.generate_to_file(
-                self.text, self.voice_id, self.speed, self.output_path
+            self.stage.emit("init", "Initializing Voice Engine", 0.02)
+            service.ensure_model_ready(
+                self._report_progress, cancel_event=self.cancel_event
             )
-            self.progress.emit("Voice generated.", 100)
+            self.stage.emit("ready", "Voice Engine Ready", 0.05)
+            service.generate_to_file(
+                self.text,
+                self.voice_id,
+                self.speed,
+                self.output_path,
+                progress_callback=self._report_stage,
+                cancel_event=self.cancel_event,
+            )
+            self.stage.emit("done", "Voice generated", 1.0)
+            self._log.info(
+                "Voice",
+                f"Generation finished — output={self.output_path}, "
+                f"total={time.monotonic() - self._started:.2f}s",
+            )
             self.finished.emit(str(self.output_path))
+        except VoiceGenerationCancelled:
+            self._log.info("Voice", "Generation cancelled by user.")
+            self.cancelled.emit()
         except Exception as e:
-            self.error.emit(str(e))
+            self._log.error(
+                "Voice",
+                f"Generation failed at '{self._failed_stage}' — {e} "
+                f"(total={time.monotonic() - self._started:.2f}s)",
+            )
+            self.error.emit(self._failed_stage, str(e))
 
     def _report_progress(self, message, percent):
         self.progress.emit(message, percent)
+
+    def _report_stage(self, stage, message, fraction):
+        self._failed_stage = stage
+        self.stage.emit(stage, message, fraction)
 
 
 class _ModeOption(QFrame):
@@ -272,6 +333,7 @@ class _ModeOption(QFrame):
     def __init__(self, source, title, description, icon_name, parent=None):
         super().__init__(parent)
         self.source = source
+        self._selected = False
         self.setObjectName("card")
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setCursor(Qt.PointingHandCursor)
@@ -313,6 +375,7 @@ class _ModeOption(QFrame):
         super().mousePressEvent(event)
 
     def set_selected(self, selected: bool):
+        self._selected = selected
         c = ThemeManager.instance().colors()
         if selected:
             self.setStyleSheet(
@@ -324,74 +387,21 @@ class _ModeOption(QFrame):
             self.setStyleSheet("")
             self.selected_badge.setVisible(False)
 
+    def refresh_theme(self):
+        """Re-apply current theme colors to this card's labels and border.
 
-class _VoiceCard(QFrame):
-    """A single voice card: name, description, preview and select buttons."""
-
-    def __init__(self, voice_id, name, description, selected, on_select, on_preview,
-                 parent=None):
-        super().__init__(parent)
-        self.voice_id = voice_id
-        self.setObjectName("card")
-        self.setAttribute(Qt.WA_StyledBackground, True)
-
+        The mode cards are static chrome built once in ``_build``; without a
+        refresh they keep the theme colors they were constructed with after a
+        runtime theme switch (Light-theme contrast regression).
+        """
         c = ThemeManager.instance().colors()
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 12, 14, 12)
-        layout.setSpacing(6)
-
-        header = QHBoxLayout()
-        header.setSpacing(6)
-        self.name_label = QLabel(name)
-        self.name_label.setStyleSheet(f"{Fonts.body_bold(c.TEXT)}")
-        header.addWidget(self.name_label)
-        header.addStretch()
-        self.selected_badge = QLabel("Selected")
+        self.title_label.setStyleSheet(f"{Fonts.body_bold(c.TEXT)}")
+        self.desc_label.setStyleSheet(f"{Fonts.caption(c.TEXT_SECONDARY)}")
         self.selected_badge.setStyleSheet(
             f"{Fonts.tiny(c.SUCCESS)} padding: 2px 8px; border-radius: 6px; "
             f"background-color: {c.SUCCESS_LIGHT};"
         )
-        self.selected_badge.setVisible(False)
-        header.addWidget(self.selected_badge)
-        layout.addLayout(header)
-
-        self.desc_label = QLabel(description)
-        self.desc_label.setStyleSheet(f"{Fonts.caption(c.TEXT_SECONDARY)}")
-        self.desc_label.setWordWrap(True)
-        layout.addWidget(self.desc_label)
-
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(8)
-        self.preview_btn = ModernButton("Preview", primary=False)
-        self.preview_btn.setFixedHeight(30)
-        self.preview_btn.clicked.connect(lambda: on_preview(self.voice_id))
-        btn_row.addWidget(self.preview_btn)
-
-        self.select_btn = ModernButton("Select", primary=True)
-        self.select_btn.setFixedHeight(30)
-        self.select_btn.clicked.connect(lambda: on_select(self.voice_id))
-        btn_row.addWidget(self.select_btn)
-        btn_row.addStretch()
-        layout.addLayout(btn_row)
-
-        self.set_selected(selected)
-
-    def set_selected(self, selected: bool):
-        c = ThemeManager.instance().colors()
-        if selected:
-            self.setStyleSheet(
-                f"QFrame#card {{ border: 1px solid {c.PRIMARY}; "
-                f"background-color: {c.CARD}; }}"
-            )
-            self.selected_badge.setVisible(True)
-            self.select_btn.setText("Selected")
-            self.select_btn.setEnabled(False)
-        else:
-            self.setStyleSheet("")
-            self.selected_badge.setVisible(False)
-            self.select_btn.setText("Select")
-            self.select_btn.setEnabled(True)
+        self.set_selected(self._selected)
 
 
 class VoicePage(QWidget):
@@ -409,6 +419,7 @@ class VoicePage(QWidget):
         self._dirty = False
         self._transcribing = False
         self._auto_advance = False
+        self._generating = False
         self._worker_thread = None
         self._worker = None
         self._transcription_timer = None
@@ -420,25 +431,55 @@ class VoicePage(QWidget):
         self._autosave.on_status_change(self._autosave_indicator.set_status)
         self._voice_source = VOICE_SOURCE_AI
         self._selected_voice_id = DEFAULT_VOICE_ID
-        self._all_voices_expanded = False
-        self._voice_cards = {}
+        self._voice_dialog = None
         self._preview_cache = {}
-        self._preview_loading_id = None
         self._preview_thread = None
         self._preview_worker = None
         self._gen_thread = None
         self._gen_worker = None
+        self._gen_cancel_event = None
+        self._gen_started_at = None
+        self._synthesis_started_at = None
+        self._reassurance_shown = False
+        self._elapsed_timer = QTimer(self)
+        self._elapsed_timer.setInterval(1000)
+        self._elapsed_timer.timeout.connect(self._update_elapsed_display)
         self._media_player = None
         self._audio_output = None
         self._media_buffer = None
+        self._narration_duration_ms = 0
+        #: True while the media player is bound to the narration file. When
+        #: False a preview clip is the active source, so Play must switch to
+        #: the narration file instead of toggling the preview.
+        self._playing_narration = False
         self._installed_voice_ids = _load_installed_voice_ids()
         self._recommended_profiles = self._voice_service.get_available_voices()
         ThemeManager.instance().on_change(lambda _: self._on_theme_changed())
         self._build()
 
     def _on_theme_changed(self):
+        self._refresh_theme_static()
         if self.project_name:
             self._load_project_data()
+
+    def _refresh_theme_static(self):
+        """Re-apply theme tokens to chrome built once in ``_build``.
+
+        Static labels (mode cards, voice summary, project info) keep the
+        colors they were constructed with unless restyled here; without this
+        they render as near-white Dark-theme text on Light backgrounds after
+        a runtime theme switch.
+        """
+        c = ThemeManager.instance().colors()
+        for option in self._mode_options.values():
+            option.refresh_theme()
+        self.selected_voice_name_label.setStyleSheet(f"{Fonts.body_bold(c.TEXT)}")
+        self.selected_voice_desc_label.setStyleSheet(f"{Fonts.caption(c.TEXT_SECONDARY)}")
+        self.selected_voice_lang_label.setStyleSheet(f"{Fonts.tiny(c.TEXT_MUTED)}")
+        self.info_project.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
+        self.info_topic.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
+        self.info_language.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
+        self.status_badge.refresh_theme()
 
     def cleanup(self):
         """Stop background workers and wait for their threads to finish.
@@ -448,6 +489,9 @@ class VoicePage(QWidget):
         QThread would abort the application on exit (Sprint 3.4B / C3).
         """
         self._stop_progress_animation()
+        self._elapsed_timer.stop()
+        if self._gen_cancel_event is not None:
+            self._gen_cancel_event.set()
         if self._media_player:
             self._media_player.stop()
         for thread in (self._worker_thread, self._preview_thread, self._gen_thread):
@@ -501,13 +545,27 @@ class VoicePage(QWidget):
 
         self._build_mode_selector(layout)
 
-        self._build_ai_voice_section(layout)
+        self._build_narration_section(layout)
 
         self._build_upload_section(layout)
 
         self.progress_widget = ProgressWidget()
         self.progress_widget.setVisible(False)
         layout.addWidget(self.progress_widget)
+
+        self.gen_actions = QWidget()
+        gen_actions_row = QHBoxLayout(self.gen_actions)
+        gen_actions_row.setContentsMargins(0, 0, 0, 0)
+        gen_actions_row.setSpacing(8)
+        self.cancel_gen_btn = ModernButton("Cancel Generation", primary=False)
+        self.cancel_gen_btn.clicked.connect(self._cancel_generation)
+        gen_actions_row.addWidget(self.cancel_gen_btn)
+        self.retry_gen_btn = ModernButton("Retry", primary=True)
+        self.retry_gen_btn.clicked.connect(self._retry_voice)
+        gen_actions_row.addWidget(self.retry_gen_btn)
+        gen_actions_row.addStretch()
+        self.gen_actions.setVisible(False)
+        layout.addWidget(self.gen_actions)
 
         self._build_transcript_section(layout)
 
@@ -516,7 +574,7 @@ class VoicePage(QWidget):
         layout.addStretch()
 
         self._set_mode_ui(self._voice_source)
-        self._rebuild_voice_library()
+        self._update_voice_summary()
 
     def _build_project_header(self, parent):
         card = ModernCard()
@@ -580,81 +638,69 @@ class VoicePage(QWidget):
         parent.addWidget(card)
         self._mode_card = card
 
-    def _build_ai_voice_section(self, parent):
+    def _build_narration_section(self, parent):
+        """One unified module: selected voice, status, and narration playback."""
+        c = ThemeManager.instance().colors()
         card = ModernCard()
         card.content_layout.setSpacing(10)
-        card.content_layout.addWidget(SectionHeader("Built-in AI Voice"))
 
-        self.voice_search = SearchInput("Search voices by name or description...")
-        self.voice_search.textChanged.connect(self._on_voice_search)
-        card.content_layout.addWidget(self.voice_search)
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(8)
+        header_row.addWidget(SectionHeader("Narration"))
+        header_row.addStretch()
+        self.narration_status_badge = StatusBadge("Ready")
+        header_row.addWidget(self.narration_status_badge, 0, Qt.AlignVCenter)
+        card.content_layout.addLayout(header_row)
 
-        rec_header = QHBoxLayout()
-        rec_header.setSpacing(8)
-        rec_title = QLabel("Recommended")
-        rec_title.setStyleSheet(
-            f"{Fonts.caption_bold(ThemeManager.instance().colors().TEXT)}"
-        )
-        rec_header.addWidget(rec_title)
-        self.recommended_count = MutedLabel("")
-        rec_header.addWidget(self.recommended_count)
-        rec_header.addStretch()
-        card.content_layout.addLayout(rec_header)
+        summary_row = QHBoxLayout()
+        summary_row.setSpacing(12)
 
-        self.recommended_scroll = QScrollArea()
-        self.recommended_scroll.setWidgetResizable(True)
-        self.recommended_scroll.setFrameShape(QScrollArea.NoFrame)
-        self.recommended_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.recommended_scroll.setMaximumHeight(300)
-        self.recommended_container = QWidget()
-        self.recommended_grid = QGridLayout(self.recommended_container)
-        self.recommended_grid.setContentsMargins(0, 0, 0, 0)
-        self.recommended_grid.setSpacing(10)
-        self.recommended_scroll.setWidget(self.recommended_container)
-        card.content_layout.addWidget(self.recommended_scroll)
+        voice_icon = IconProvider.icon_label("voice", 26, c.SECONDARY)
+        summary_row.addWidget(voice_icon)
 
-        all_header = QHBoxLayout()
-        all_header.setSpacing(8)
-        all_title = QLabel("All Voices")
-        all_title.setStyleSheet(
-            f"{Fonts.caption_bold(ThemeManager.instance().colors().TEXT)}"
-        )
-        all_header.addWidget(all_title)
-        self.all_voices_count = MutedLabel("")
-        all_header.addWidget(self.all_voices_count)
-        all_header.addStretch()
-        self.all_voices_toggle = ModernButton("Show All", primary=False)
-        self.all_voices_toggle.setFixedHeight(30)
-        self.all_voices_toggle.clicked.connect(self._toggle_all_voices)
-        all_header.addWidget(self.all_voices_toggle)
-        card.content_layout.addLayout(all_header)
+        text_col = QVBoxLayout()
+        text_col.setSpacing(2)
+        self.selected_voice_name_label = QLabel("")
+        self.selected_voice_name_label.setStyleSheet(f"{Fonts.body_bold(c.TEXT)}")
+        text_col.addWidget(self.selected_voice_name_label)
 
-        self.all_voices_scroll = QScrollArea()
-        self.all_voices_scroll.setWidgetResizable(True)
-        self.all_voices_scroll.setFrameShape(QScrollArea.NoFrame)
-        self.all_voices_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.all_voices_scroll.setMaximumHeight(240)
-        self.all_voices_container = QWidget()
-        self.all_voices_grid = QGridLayout(self.all_voices_container)
-        self.all_voices_grid.setContentsMargins(0, 0, 0, 0)
-        self.all_voices_grid.setSpacing(10)
-        self.all_voices_scroll.setWidget(self.all_voices_container)
-        card.content_layout.addWidget(self.all_voices_scroll)
+        self.selected_voice_desc_label = QLabel("")
+        self.selected_voice_desc_label.setStyleSheet(f"{Fonts.caption(c.TEXT_SECONDARY)}")
+        text_col.addWidget(self.selected_voice_desc_label)
 
-        speed_row = QHBoxLayout()
-        speed_row.setSpacing(8)
-        speed_row.addWidget(MutedLabel("Voice speed:"))
+        self.selected_voice_lang_label = QLabel("")
+        self.selected_voice_lang_label.setStyleSheet(f"{Fonts.tiny(c.TEXT_MUTED)}")
+        text_col.addWidget(self.selected_voice_lang_label)
+        summary_row.addLayout(text_col, 1)
+
+        self.preview_btn = ModernButton("Preview", primary=False)
+        self.preview_btn.clicked.connect(self._preview_selected_voice)
+        summary_row.addWidget(self.preview_btn)
+
+        self.change_voice_btn = ModernButton("Change Voice", primary=False)
+        self.change_voice_btn.clicked.connect(self._open_voice_dialog)
+        summary_row.addWidget(self.change_voice_btn)
+
+        card.content_layout.addLayout(summary_row)
+
+        meta_row = QHBoxLayout()
+        meta_row.setSpacing(8)
+        meta_row.addWidget(MutedLabel("Voice speed:"))
         self.speed_combo = QComboBox()
         for speed in SPEED_OPTIONS:
             self.speed_combo.addItem(f"{speed:.1f}\u00d7", float(speed))
         idx = self.speed_combo.findData(float(DEFAULT_SPEED))
         self.speed_combo.setCurrentIndex(max(idx, 0))
         self.speed_combo.currentIndexChanged.connect(self._on_speed_changed)
-        speed_row.addWidget(self.speed_combo)
-        self.selected_voice_label = MutedLabel("")
-        speed_row.addWidget(self.selected_voice_label)
-        speed_row.addStretch()
-        card.content_layout.addLayout(speed_row)
+        meta_row.addWidget(self.speed_combo)
+        meta_row.addSpacing(16)
+        self.narration_duration_label = MutedLabel("Duration: \u2014")
+        meta_row.addWidget(self.narration_duration_label)
+        self.narration_size_label = MutedLabel("File size: \u2014")
+        meta_row.addWidget(self.narration_size_label)
+        meta_row.addStretch()
+        card.content_layout.addLayout(meta_row)
 
         gen_row = QHBoxLayout()
         gen_row.setSpacing(8)
@@ -669,9 +715,46 @@ class VoicePage(QWidget):
         gen_row.addStretch()
         card.content_layout.addLayout(gen_row)
 
+        self.playback_container = QWidget()
+        play_row = QHBoxLayout(self.playback_container)
+        play_row.setContentsMargins(0, 0, 0, 0)
+        play_row.setSpacing(8)
+
+        self.play_btn = ModernButton("\u25b6 Play", primary=True)
+        self.play_btn.setFixedWidth(100)
+        self.play_btn.clicked.connect(self._play_narration)
+        play_row.addWidget(self.play_btn)
+
+        self.pause_btn = ModernButton("\u23f8 Pause", primary=False)
+        self.pause_btn.setFixedWidth(100)
+        self.pause_btn.clicked.connect(self._pause_narration)
+        play_row.addWidget(self.pause_btn)
+
+        self.stop_btn = ModernButton("\u23f9 Stop", primary=False)
+        self.stop_btn.setFixedWidth(90)
+        self.stop_btn.clicked.connect(self._stop_audio)
+        play_row.addWidget(self.stop_btn)
+
+        self.download_audio_btn = ModernButton("\u2b07 Download", primary=False)
+        self.download_audio_btn.clicked.connect(self._download_audio)
+        play_row.addWidget(self.download_audio_btn)
+
+        self.regenerate_btn = ModernButton("\U0001f501 Regenerate", primary=False)
+        self.regenerate_btn.clicked.connect(self._regenerate_voice)
+        play_row.addWidget(self.regenerate_btn)
+
+        play_row.addStretch()
+        card.content_layout.addWidget(self.playback_container)
+
+        self.narration_empty_label = MutedLabel(
+            "No narration generated yet. Generate a voice to enable playback."
+        )
+        card.content_layout.addWidget(self.narration_empty_label)
+
         parent.addWidget(card)
         self._ai_card = card
         self._refresh_tts_status()
+        self._refresh_narration_ui()
 
     def _build_upload_section(self, parent):
         card = ModernCard()
@@ -738,7 +821,7 @@ class VoicePage(QWidget):
         self.transcript_box = QPlainTextEdit()
         self.transcript_box.setPlaceholderText("No transcript yet. Upload audio and generate.")
         self.transcript_box.textChanged.connect(self._on_text_edit)
-        self.transcript_box.setMinimumHeight(160)
+        self.transcript_box.setMinimumHeight(220)
         parent.addWidget(self.transcript_box, 1)
 
         self.timestamps_label = MutedLabel("")
@@ -803,9 +886,12 @@ class VoicePage(QWidget):
         for key, option in self._mode_options.items():
             option.set_selected(key == self._voice_source)
         ai_visible = self._voice_source == VOICE_SOURCE_AI
-        self._ai_card.setVisible(ai_visible)
+        self.generate_btn.setVisible(ai_visible)
+        self.tts_status_label.setVisible(ai_visible)
+        self.tts_setup_btn.setVisible(ai_visible)
         self._upload_card.setVisible(not ai_visible)
         self._refresh_import_ui()
+        self._refresh_narration_ui()
 
     def _refresh_import_ui(self):
         if self._transcribing:
@@ -819,17 +905,8 @@ class VoicePage(QWidget):
             self.transcribe_btn.setEnabled(False)
 
     # ------------------------------------------------------------------
-    # Voice library
+    # Voice selection (summary + dialog)
     # ------------------------------------------------------------------
-
-    def _on_voice_search(self, _text):
-        self._rebuild_voice_library()
-
-    @staticmethod
-    def _voice_matches(name, description, query):
-        if not query:
-            return True
-        return query in name.lower() or query in description.lower()
 
     def _current_speed(self):
         if self.speed_combo is None:
@@ -870,94 +947,48 @@ class VoicePage(QWidget):
                 return profile.name
         return self._voice_catalog_entry(voice_id)[0]
 
-    def _rebuild_voice_library(self):
-        query = self.voice_search.text().strip().lower()
-        self._clear_layout(self.recommended_grid)
-        self._clear_layout(self.all_voices_grid)
-        self._voice_cards = {}
-
-        recommended_count = 0
-        for profile in self._recommended_profiles:
-            if not self._voice_matches(profile.name, profile.description, query):
-                continue
-            card = self._make_voice_card(
-                profile.id, profile.name, profile.description
-            )
-            self._voice_cards[profile.id] = card
-            self._grid_add(self.recommended_grid, card, _VOICE_GRID_COLUMNS)
-            recommended_count += 1
-
-        remaining_count = 0
-        for voice_id, name, description in self._remaining_voices():
-            if not self._voice_matches(name, description, query):
-                continue
-            card = self._make_voice_card(voice_id, name, description)
-            self._voice_cards[voice_id] = card
-            self._grid_add(self.all_voices_grid, card, _VOICE_GRID_COLUMNS)
-            remaining_count += 1
-
-        self.recommended_count.setText(
-            f"{recommended_count} shown \u00b7 "
-            f"{len(self._recommended_profiles)} total"
+    def _open_voice_dialog(self):
+        """Open the modal voice picker, pre-selecting the current voice."""
+        recommended = [
+            (p.id, p.name, p.description, _voice_language(p.id))
+            for p in self._recommended_profiles
+        ]
+        remaining = [
+            (voice_id, name, description, _voice_language(voice_id))
+            for voice_id, name, description in self._remaining_voices()
+        ]
+        dialog = VoiceSelectionDialog(
+            current_voice_id=self._selected_voice_id,
+            recommended=recommended,
+            remaining=remaining,
+            parent=self,
         )
-        self.all_voices_count.setText(
-            f"{remaining_count} shown \u00b7 "
-            f"{len(self._remaining_voices())} available"
-        )
+        dialog.preview_requested.connect(self._preview_voice)
+        dialog.voice_selected.connect(self._on_dialog_voice_selected)
+        self._voice_dialog = dialog
+        dialog.exec()
+        self._voice_dialog = None
 
-        if query:
-            self._set_all_voices_expanded(True)
-        else:
-            self._set_all_voices_expanded(self._all_voices_expanded)
-
-        self._sync_selected()
-
-    def _make_voice_card(self, voice_id, name, description):
-        return _VoiceCard(
-            voice_id,
-            name,
-            description,
-            selected=(voice_id == self._selected_voice_id),
-            on_select=self._select_voice,
-            on_preview=self._preview_voice,
-        )
-
-    @staticmethod
-    def _clear_layout(layout):
-        while layout.count():
-            item = layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-
-    @staticmethod
-    def _grid_add(layout, widget, columns):
-        index = layout.count()
-        layout.addWidget(widget, index // columns, index % columns)
-
-    def _toggle_all_voices(self):
-        self._set_all_voices_expanded(not self._all_voices_expanded)
-
-    def _set_all_voices_expanded(self, expanded):
-        self._all_voices_expanded = expanded
-        self.all_voices_scroll.setVisible(expanded)
-        self.all_voices_toggle.setText("Hide" if expanded else "Show All")
-
-    def _sync_selected(self):
-        for voice_id, card in self._voice_cards.items():
-            card.set_selected(voice_id == self._selected_voice_id)
-        self._update_selected_voice_label()
-
-    def _update_selected_voice_label(self):
-        if self.selected_voice_label is not None:
-            self.selected_voice_label.setText(
-                f"Selected: {self._display_name(self._selected_voice_id)}"
-            )
+    def _on_dialog_voice_selected(self, voice_id):
+        self._select_voice(voice_id)
 
     def _select_voice(self, voice_id):
         self._selected_voice_id = voice_id
-        self._sync_selected()
+        self._update_voice_summary()
         self._persist_voice_prefs()
+
+    def _update_voice_summary(self):
+        voice_id = self._selected_voice_id
+        profile = self._voice_service.get_voice_by_id(voice_id)
+        if profile is not None:
+            name = profile.name
+            description = profile.description
+        else:
+            name = self._display_name(voice_id)
+            description = self._voice_catalog_entry(voice_id)[1]
+        self.selected_voice_name_label.setText(name)
+        self.selected_voice_desc_label.setText(description)
+        self.selected_voice_lang_label.setText(_voice_language(voice_id))
 
     def _on_speed_changed(self, _index):
         self._persist_voice_prefs()
@@ -965,6 +996,9 @@ class VoicePage(QWidget):
     # ------------------------------------------------------------------
     # Preview
     # ------------------------------------------------------------------
+
+    def _preview_selected_voice(self):
+        self._preview_voice(self._selected_voice_id)
 
     def _preview_voice(self, voice_id):
         speed = self._current_speed()
@@ -978,12 +1012,7 @@ class VoicePage(QWidget):
             )
             return
 
-        card = self._voice_cards.get(voice_id)
-        if card:
-            card.preview_btn.setText("Generating...")
-            card.preview_btn.setEnabled(False)
-
-        self._preview_loading_id = voice_id
+        self._set_preview_loading(voice_id, True)
         self._preview_thread = QThread()
         self._preview_worker = PreviewWorker(voice_id, speed)
         self._preview_worker.moveToThread(self._preview_thread)
@@ -999,18 +1028,17 @@ class VoicePage(QWidget):
 
     def _on_preview_ready(self, voice_id, wav_bytes):
         self._preview_cache[(voice_id, self._current_speed())] = wav_bytes
-        self._restore_preview_button(voice_id)
+        self._set_preview_loading(voice_id, False)
         self._play_wav_bytes(wav_bytes)
 
     def _on_preview_error(self, voice_id, message):
-        self._restore_preview_button(voice_id)
+        self._set_preview_loading(voice_id, False)
         NotificationService.get().error(f"Preview failed: {message}")
 
-    def _restore_preview_button(self, voice_id):
-        card = self._voice_cards.get(voice_id)
-        if card:
-            card.preview_btn.setText("Preview")
-            card.preview_btn.setEnabled(True)
+    def _set_preview_loading(self, voice_id, loading: bool):
+        dialog = self._voice_dialog
+        if dialog is not None:
+            dialog.set_preview_loading(voice_id, loading)
 
     def _cleanup_preview_thread(self):
         if self._preview_worker:
@@ -1020,19 +1048,282 @@ class VoicePage(QWidget):
             self._preview_thread.deleteLater()
             self._preview_thread = None
 
-    def _play_wav_bytes(self, data: bytes):
+    # ------------------------------------------------------------------
+    # Audio playback
+    # ------------------------------------------------------------------
+
+    def _ensure_media_player(self):
         if self._media_player is None:
             self._media_player = QMediaPlayer(self)
             self._audio_output = QAudioOutput(self)
             self._media_player.setAudioOutput(self._audio_output)
+            self._media_player.playbackStateChanged.connect(
+                self._on_playback_state_changed
+            )
+            self._media_player.durationChanged.connect(self._on_duration_changed)
+
+    def _play_wav_bytes(self, data: bytes):
+        """Play an in-memory preview clip (short built-in sample).
+
+        Starting a preview stops narration playback first so that only one
+        audio source ever plays at a time.
+        """
+        self._ensure_media_player()
+        if self._playing_narration:
+            self._media_player.stop()
+        self._media_player.setSource(QUrl())
         if self._media_buffer is not None:
             self._media_buffer.close()
             self._media_buffer.deleteLater()
+            self._media_buffer = None
         self._media_buffer = QBuffer(self)
         self._media_buffer.setData(data)
         self._media_buffer.open(QIODevice.ReadOnly)
         self._media_player.setSourceDevice(self._media_buffer)
+        self._playing_narration = False
         self._media_player.play()
+
+    def _play_audio_file(self, path):
+        """Play the generated or imported narration file directly."""
+        self._ensure_media_player()
+        if self._media_buffer is not None:
+            self._media_buffer.close()
+            self._media_buffer.deleteLater()
+            self._media_buffer = None
+        self._media_player.setSource(QUrl.fromLocalFile(str(path)))
+        self._playing_narration = True
+        self._media_player.play()
+
+    def _play_narration(self):
+        """Start or resume narration playback (never the preview clip)."""
+        if not self._audio_path or not Path(self._audio_path).exists():
+            NotificationService.get().warning("No narration audio available.")
+            return
+        if self._media_player is None:
+            self._play_audio_file(self._audio_path)
+            return
+        state = self._media_player.playbackState()
+        if self._playing_narration and state == QMediaPlayer.PlaybackState.PausedState:
+            self._media_player.play()
+        else:
+            self._play_audio_file(self._audio_path)
+
+    def _pause_narration(self):
+        if self._media_player is not None:
+            self._media_player.pause()
+
+    def _stop_audio(self):
+        if self._media_player is not None:
+            self._media_player.stop()
+
+    def _on_playback_state_changed(self, state):
+        """Update the narration status badge; previews never touch it."""
+        if not self._playing_narration:
+            return
+        if state == QMediaPlayer.PlaybackState.PlayingState:
+            self._set_narration_status("playing")
+        elif state == QMediaPlayer.PlaybackState.PausedState:
+            self._set_narration_status("paused")
+        else:
+            self._refresh_narration_ui()
+
+    def _on_duration_changed(self, ms):
+        if not self._audio_path:
+            return
+        try:
+            if self._media_player.source() != QUrl.fromLocalFile(str(self._audio_path)):
+                return  # a preview clip's duration
+        except Exception:
+            return
+        self._narration_duration_ms = ms
+        self._update_narration_meta()
+
+    def _download_audio(self):
+        if not self._audio_path or not Path(self._audio_path).exists():
+            NotificationService.get().warning("No narration audio available.")
+            return
+        src = Path(self._audio_path)
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Download Narration Audio",
+            f"{self.project_name or 'project'}_narration{src.suffix}",
+            "Audio Files (*.mp3 *.wav *.m4a);;All Files (*.*)",
+        )
+        if not file_path:
+            return
+        try:
+            shutil.copy2(str(src), file_path)
+            NotificationService.get().success("Narration saved successfully.")
+        except Exception as e:
+            NotificationService.get().error(f"Download failed: {e}")
+
+    def _confirm_regenerate(self) -> bool:
+        """Ask before replacing an existing narration. Returns True on Regenerate."""
+        box = QMessageBox(self)
+        box.setWindowTitle("Regenerate Narration")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText("This will replace the current narration.\n\nContinue?")
+        regenerate_btn = box.addButton(
+            "Regenerate", QMessageBox.ButtonRole.DestructiveRole
+        )
+        cancel_btn = box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(cancel_btn)
+        box.exec()
+        return box.clickedButton() is regenerate_btn
+
+    def _regenerate_voice(self):
+        """Regenerate narration with the current script, voice, and speed."""
+        if self._audio_path and Path(self._audio_path).exists():
+            if not self._confirm_regenerate():
+                return
+        if self._voice_source == VOICE_SOURCE_IMPORT:
+            NotificationService.get().info(
+                "Switching to Built-in AI Voice to regenerate narration."
+            )
+            self._on_mode_selected(VOICE_SOURCE_AI)
+        self.generate_voice()
+
+    # ------------------------------------------------------------------
+    # Narration module state
+    # ------------------------------------------------------------------
+
+    #: (label, theme color attr, theme background attr) per status key.
+    _STATUS_BADGE = {
+        "ready": ("Ready", "TEXT_MUTED", "SURFACE"),
+        "generated": ("Generated", "SUCCESS", "SUCCESS_LIGHT"),
+        "imported": ("Imported", "SECONDARY", "SECONDARY_LIGHT"),
+        "generating": ("Generating...", "WARNING", "WARNING_LIGHT"),
+        "playing": ("Playing", "SUCCESS", "SUCCESS_LIGHT"),
+        "paused": ("Paused", "WARNING", "WARNING_LIGHT"),
+        "error": ("Error", "ERROR", "ERROR_LIGHT"),
+    }
+
+    def _set_narration_status(self, status: str):
+        label, color_attr, bg_attr = self._STATUS_BADGE[status]
+        c = ThemeManager.instance().colors()
+        self.narration_status_badge.setText(label)
+        self.narration_status_badge.update_colors(
+            getattr(c, color_attr), getattr(c, bg_attr)
+        )
+
+    def _set_playback_enabled(self, enabled: bool):
+        for btn in (
+            self.play_btn,
+            self.pause_btn,
+            self.stop_btn,
+            self.download_audio_btn,
+            self.regenerate_btn,
+        ):
+            btn.setEnabled(enabled)
+
+    def _set_mode_options_enabled(self, enabled: bool):
+        for option in self._mode_options.values():
+            option.setEnabled(enabled)
+
+    def _refresh_narration_status_from_player(self):
+        """Badge by audio source, preserving live Playing/Paused states.
+
+        A refresh (mode switch, theme change, project reload) must not
+        overwrite "Playing"/"Paused" while the narration is actually
+        playing or paused.
+        """
+        if self._playing_narration and self._media_player is not None:
+            state = self._media_player.playbackState()
+            if state == QMediaPlayer.PlaybackState.PlayingState:
+                self._set_narration_status("playing")
+                return
+            if state == QMediaPlayer.PlaybackState.PausedState:
+                self._set_narration_status("paused")
+                return
+        if self._voice_source == VOICE_SOURCE_IMPORT:
+            self._set_narration_status("imported")
+        else:
+            self._set_narration_status("generated")
+
+    def _refresh_narration_ui(self):
+        """Show the empty state or the playback controls + status."""
+        has_audio = bool(self._audio_path) and Path(self._audio_path).exists()
+        self.playback_container.setVisible(has_audio)
+        self.narration_empty_label.setVisible(not has_audio)
+        self.narration_duration_label.setVisible(has_audio)
+        self.narration_size_label.setVisible(has_audio)
+        if not has_audio:
+            self._set_narration_status("ready")
+            if self._voice_source == VOICE_SOURCE_IMPORT:
+                self.narration_empty_label.setText(
+                    "No narration audio yet. Import an audio file to enable playback."
+                )
+            else:
+                self.narration_empty_label.setText(
+                    "No narration generated yet. Generate a voice to enable playback."
+                )
+            self._update_narration_meta()
+            return
+        if self._generating:
+            self._set_narration_status("generating")
+        else:
+            self._refresh_narration_status_from_player()
+        self._update_narration_meta()
+
+    def _update_narration_meta(self):
+        if not self._audio_path or not Path(self._audio_path).exists():
+            self.narration_duration_label.setText("Duration: \u2014")
+            self.narration_size_label.setText("File size: \u2014")
+            return
+        ms = self._wav_duration_ms(self._audio_path) or self._narration_duration_ms
+        if ms > 0:
+            total_sec = ms // 1000
+            self.narration_duration_label.setText(
+                f"Duration: {total_sec // 60}:{total_sec % 60:02d}"
+            )
+        else:
+            self.narration_duration_label.setText("Duration: \u2014")
+        try:
+            size = Path(self._audio_path).stat().st_size
+        except OSError:
+            size = 0
+        self.narration_size_label.setText(f"File size: {self._format_file_size(size)}")
+
+    @staticmethod
+    def _format_file_size(size_bytes) -> str:
+        if size_bytes < 1024:
+            return f"{size_bytes} B"
+        if size_bytes < 1024 * 1024:
+            return f"{size_bytes / 1024:.0f} KB"
+        return f"{size_bytes / (1024 * 1024):.1f} MB"
+
+    @staticmethod
+    def _wav_duration_ms(path) -> int:
+        """Return the duration of a PCM WAV file in ms, or 0 when unknown."""
+        try:
+            with open(path, "rb") as f:
+                head = f.read(12)
+                if head[:4] != b"RIFF" or head[8:12] != b"WAVE":
+                    return 0
+                byte_rate = 0
+                while True:
+                    header = f.read(8)
+                    if len(header) < 8:
+                        break
+                    chunk_id = header[:4]
+                    (chunk_size,) = struct.unpack("<I", header[4:8])
+                    if chunk_id == b"fmt ":
+                        fmt_data = f.read(min(chunk_size, 1024))
+                        if len(fmt_data) >= 12:
+                            byte_rate = struct.unpack("<I", fmt_data[8:12])[0]
+                        if chunk_size % 2:
+                            f.read(1)
+                    elif chunk_id == b"data":
+                        if byte_rate > 0:
+                            return int(chunk_size * 1000 / byte_rate)
+                        break
+                    else:
+                        f.seek(chunk_size, 1)
+                        if chunk_size % 2:
+                            f.read(1)
+        except Exception:
+            return 0
+        return 0
 
     # ------------------------------------------------------------------
     # Voice generation
@@ -1105,12 +1396,26 @@ class VoicePage(QWidget):
 
         self._pipeline.mark_stage_started(self.project_name, "Voice")
 
+        self._generating = True
+        self._set_narration_status("generating")
+        self._set_playback_enabled(False)
+        self._set_mode_options_enabled(False)
         self.generate_btn.setEnabled(False)
         self.upload_btn.setEnabled(False)
         self.transcribe_btn.setEnabled(False)
         self.progress_widget.setVisible(True)
         self.progress_widget.reset()
-        self.progress_widget.set_progress(2, "Preparing local TTS...")
+        self.progress_widget.set_progress(2, "Initializing Voice Engine...")
+
+        self._gen_cancel_event = threading.Event()
+        self._gen_started_at = time.monotonic()
+        self._synthesis_started_at = None
+        self._reassurance_shown = False
+        self.gen_actions.setVisible(True)
+        self.cancel_gen_btn.setEnabled(True)
+        self.cancel_gen_btn.setText("Cancel Generation")
+        self.retry_gen_btn.setVisible(False)
+        self._elapsed_timer.start()
 
         self._gen_thread = QThread()
         self._gen_worker = VoiceGenWorker(
@@ -1118,18 +1423,33 @@ class VoicePage(QWidget):
             self._selected_voice_id,
             self._current_speed(),
             str(output_path),
+            cancel_event=self._gen_cancel_event,
         )
         self._gen_worker.moveToThread(self._gen_thread)
 
         self._gen_thread.started.connect(self._gen_worker.run)
+        self._gen_worker.stage.connect(self._on_voice_stage)
         self._gen_worker.progress.connect(self._on_voice_progress)
         self._gen_worker.finished.connect(self._on_voice_generated)
         self._gen_worker.error.connect(self._on_voice_error)
+        self._gen_worker.cancelled.connect(self._on_voice_cancelled)
         self._gen_worker.finished.connect(self._gen_thread.quit)
         self._gen_worker.error.connect(self._gen_thread.quit)
+        self._gen_worker.cancelled.connect(self._gen_thread.quit)
         self._gen_thread.finished.connect(self._cleanup_gen_thread)
 
         self._gen_thread.start()
+
+    def _on_voice_stage(self, stage, message, fraction):
+        """Update the progress bar to the real pipeline stage.
+
+        ``fraction`` is the measured position of the completed stage, so the
+        bar lands on the actual stage instead of a fake percentage.
+        """
+        if stage == "synthesis" and self._synthesis_started_at is None:
+            self._synthesis_started_at = time.monotonic()
+        pct = int(max(0.0, min(1.0, fraction)) * 100)
+        self.progress_widget.set_progress(pct, status=message)
 
     def _on_voice_progress(self, message, percent):
         if percent is None or percent < 0:
@@ -1137,20 +1457,105 @@ class VoicePage(QWidget):
             return
         self.progress_widget.set_progress(min(60, percent), message)
 
-    def _on_voice_generated(self, output_path):
-        self._audio_path = output_path
-        self.generate_btn.setEnabled(True)
-        self.upload_btn.setEnabled(True)
-        self._auto_advance = True
-        self.transcribe_audio()
+    def _update_elapsed_display(self):
+        """Refresh the elapsed-time readout every second during generation.
 
-    def _on_voice_error(self, message):
+        Once synthesis has been running for more than five seconds, show the
+        reassurance hint so the user knows the app is still working.
+        """
+        if not self._generating or self._gen_started_at is None:
+            self._elapsed_timer.stop()
+            return
+        elapsed = time.monotonic() - self._gen_started_at
+        self.progress_widget.set_elapsed(elapsed)
+        if (
+            not self._reassurance_shown
+            and self._synthesis_started_at is not None
+            and time.monotonic() - self._synthesis_started_at > 5.0
+        ):
+            self._reassurance_shown = True
+            self.progress_widget.set_hint(
+                "Large narrations may take a little longer. "
+                "KaiMi Studio is still generating your voice."
+            )
+
+    def _cancel_generation(self):
+        """Ask the running worker to stop at the next stage boundary.
+
+        The project (script, voice prefs, transcript) is left untouched; only
+        the in-flight WAV is discarded.
+        """
+        if self._gen_cancel_event is None or self._gen_cancel_event.is_set():
+            return
+        self._gen_cancel_event.set()
+        self.cancel_gen_btn.setEnabled(False)
+        self.cancel_gen_btn.setText("Cancelling...")
+        self.progress_widget.set_progress(
+            self.progress_widget.progress_bar.value(),
+            status="Stopping voice generation...",
+        )
+
+    def _on_voice_cancelled(self):
+        """Restore the page after a user-initiated cancellation.
+
+        The pipeline stage is reset to its previous state (not marked failed)
+        so the project stays intact and can be retried at any time.
+        """
+        self._generating = False
+        self._elapsed_timer.stop()
+        self.gen_actions.setVisible(False)
+        self.progress_widget.setVisible(False)
         self.generate_btn.setEnabled(True)
         self.upload_btn.setEnabled(True)
         self.transcribe_btn.setEnabled(True)
-        self.progress_widget.setVisible(False)
-        self._pipeline.mark_stage_failed(self.project_name, "Voice", message)
-        NotificationService.get().error(f"Voice generation failed: {message}")
+        self._set_playback_enabled(True)
+        self._set_mode_options_enabled(True)
+        self._pipeline.mark_stage_reset(self.project_name, "Voice")
+        self._refresh_narration_ui()
+        NotificationService.get().info(
+            "Voice generation cancelled. The project was not modified."
+        )
+
+    def _on_voice_generated(self, output_path):
+        self._audio_path = output_path
+        self._generating = False
+        self._elapsed_timer.stop()
+        self.gen_actions.setVisible(False)
+        self.generate_btn.setEnabled(True)
+        self.upload_btn.setEnabled(True)
+        self._set_playback_enabled(True)
+        self._set_mode_options_enabled(True)
+        self._refresh_narration_ui()
+        self._auto_advance = True
+        self.transcribe_audio()
+
+    def _on_voice_error(self, stage, message):
+        self._generating = False
+        self._elapsed_timer.stop()
+        self.generate_btn.setEnabled(True)
+        self.upload_btn.setEnabled(True)
+        self.transcribe_btn.setEnabled(True)
+        self._set_playback_enabled(True)
+        self._set_mode_options_enabled(True)
+        self.cancel_gen_btn.setVisible(False)
+        self.retry_gen_btn.setVisible(True)
+        self.progress_widget.setVisible(True)
+        stage_label = STAGE_MESSAGES.get(stage, stage)
+        self.progress_widget.show_error(
+            f"Failed at {stage_label} — {message}"
+        )
+        self._pipeline.mark_stage_failed(
+            self.project_name, "Voice", f"[{stage}] {message}"
+        )
+        self._set_narration_status("error")
+        NotificationService.get().error(
+            f"Voice generation failed: {message}"
+        )
+
+    def _retry_voice(self):
+        """Restart generation with the current script, voice, and speed."""
+        self.retry_gen_btn.setVisible(False)
+        self.generate_voice()
 
     def _cleanup_gen_thread(self):
         if self._gen_worker:
@@ -1159,6 +1564,7 @@ class VoicePage(QWidget):
         if self._gen_thread:
             self._gen_thread.deleteLater()
             self._gen_thread = None
+        self._gen_cancel_event = None
 
     # ------------------------------------------------------------------
     # Persistence
@@ -1206,7 +1612,7 @@ class VoicePage(QWidget):
         self._selected_voice_id = voice_id
         self._set_mode_ui(source)
         self._set_speed(speed)
-        self._rebuild_voice_library()
+        self._update_voice_summary()
 
     # ------------------------------------------------------------------
     # Project data / transcript (existing import workflow preserved)
@@ -1234,6 +1640,7 @@ class VoicePage(QWidget):
 
         self._restore_voice_settings()
         self._refresh_import_ui()
+        self._refresh_narration_ui()
 
         if self._transcript_text and not self._dirty:
             # Never overwrite unsaved user edits (Sprint 3.4B / C2). Pipeline
@@ -1314,6 +1721,8 @@ class VoicePage(QWidget):
             shutil.copy2(file_path, str(dest))
             self._audio_path = str(dest)
 
+        self._refresh_narration_ui()
+
     def _on_model_changed(self, model_name: str):
         service = get_transcription_service()
         try:
@@ -1366,6 +1775,7 @@ class VoicePage(QWidget):
         self._pipeline.mark_stage_started(self.project_name, "Voice")
 
         self._transcribing = True
+        self._set_mode_options_enabled(False)
         self.transcribe_btn.setEnabled(False)
         self.upload_btn.setEnabled(False)
         self.progress_widget.setVisible(True)
@@ -1472,6 +1882,8 @@ class VoicePage(QWidget):
         self.transcribe_btn.setEnabled(True)
         self.upload_btn.setEnabled(True)
         self.generate_btn.setEnabled(True)
+        self._set_mode_options_enabled(True)
+        self._refresh_narration_ui()
         self._history.record_action(
             self.project_name, "Transcribed",
             f"Generated transcript from audio ({len(segs_out)} segments)"
@@ -1489,7 +1901,9 @@ class VoicePage(QWidget):
         self.transcribe_btn.setEnabled(True)
         self.upload_btn.setEnabled(True)
         self.generate_btn.setEnabled(True)
+        self._set_mode_options_enabled(True)
         self._pipeline.mark_stage_failed(self.project_name, "Voice", error_msg)
+        self._set_narration_status("error")
         NotificationService.get().error(f"Transcription failed: {error_msg}")
 
     def _autosave_save(self):

@@ -949,7 +949,9 @@ class TestTranscriptionService:
         audio_file.write_bytes(b"fake audio")
 
         text, segments = TranscriptionService().transcribe(str(audio_file))
-        assert text == "Hello world second sentence here third part"
+        assert text == (
+            "[0:00] Hello world\n\n[0:02] second sentence here\n\n[0:05] third part"
+        )
         assert len(segments) == 3
         assert segments[0]["time"] == "00:00"
         assert segments[0]["start"] == 0.0
@@ -1022,14 +1024,18 @@ class TestTranscriptFormatting:
             {"start": 0.0, "end": 1.0, "text": "this   has   extra   spaces"},
             {"start": 1.2, "end": 2.0, "text": "and   tabs\t\tinside"},
         ]
-        assert format_transcript(segments) == "This has extra spaces and tabs inside"
+        assert format_transcript(segments) == (
+            "[0:00] This has extra spaces\n\n[0:01] and tabs inside"
+        )
 
     def test_capitalizes_each_sentence(self):
         from core.transcription_service import format_transcript
         segments = [
             {"start": 0.0, "end": 1.0, "text": "hello there. this is one sentence. and another"},
         ]
-        assert format_transcript(segments) == "Hello there. This is one sentence. And another"
+        assert format_transcript(segments) == (
+            "[0:00] Hello there. This is one sentence. And another"
+        )
 
     def test_paragraphs_split_on_long_pauses_with_single_blank_line(self):
         from core.transcription_service import format_transcript
@@ -1040,12 +1046,12 @@ class TestTranscriptFormatting:
             {"start": 12.0, "end": 14.0, "text": "and continues on"},
         ]
         result = format_transcript(segments)
-        paragraphs = result.split("\n")
-        assert paragraphs == [
-            "First paragraph begins here and continues",
-            "",
-            "Second paragraph starts after a pause and continues on",
-        ]
+        blocks = result.split("\n\n")
+        assert len(blocks) == 4
+        assert blocks[0] == "[0:00] First paragraph begins here"
+        assert blocks[1] == "[0:02] and continues"
+        assert blocks[2] == "[0:09] second paragraph starts after a pause"
+        assert blocks[3] == "[0:12] and continues on"
         assert "\n\n\n" not in result
 
     def test_trims_leading_and_trailing_whitespace(self):
@@ -1054,7 +1060,7 @@ class TestTranscriptFormatting:
             {"start": 0.0, "end": 1.0, "text": "   leading text  "},
             {"start": 1.5, "end": 2.0, "text": "trailing   "},
         ]
-        assert format_transcript(segments) == "Leading text trailing"
+        assert format_transcript(segments) == "[0:00] Leading text\n\n[0:01] trailing"
 
     def test_empty_input_returns_empty_string(self):
         from core.transcription_service import format_transcript
@@ -1234,7 +1240,8 @@ class TestVoicePipelinePage:
         page = self._make_page(pm)
         page.set_project(name)
         assert page._voice_source == VOICE_SOURCE_AI
-        assert not page._ai_card.isHidden()
+        assert not page.generate_btn.isHidden()
+        assert not page.tts_setup_btn.isHidden()
         assert page._upload_card.isHidden()
 
     def test_mode_toggle_switches_sections(self, pm):
@@ -1244,28 +1251,25 @@ class TestVoicePipelinePage:
         page.set_project(name)
         page._mode_options[VOICE_SOURCE_IMPORT].clicked.emit(VOICE_SOURCE_IMPORT)
         assert page._voice_source == VOICE_SOURCE_IMPORT
-        assert page._ai_card.isHidden()
+        assert page.generate_btn.isHidden()  # narration card stays, AI actions hide
         assert not page._upload_card.isHidden()
         page._mode_options[VOICE_SOURCE_AI].clicked.emit(VOICE_SOURCE_AI)
         assert page._voice_source == VOICE_SOURCE_AI
-        assert not page._ai_card.isHidden()
+        assert not page.generate_btn.isHidden()
         assert page._upload_card.isHidden()
 
-    def test_voice_selection_indicator_updates(self, pm):
+    def test_voice_selection_updates_summary(self, pm):
         from core.voice_generation_service import DEFAULT_VOICE_ID
         name = _create_sample_project(pm)
         page = self._make_page(pm)
         page.set_project(name)
         page._select_voice("am_michael")
-        card = page._voice_cards["am_michael"]
-        assert card.select_btn.text() == "Selected"
-        assert not card.select_btn.isEnabled()
-        assert not card.selected_badge.isHidden()
-        assert "James" in page.selected_voice_label.text()
+        assert page._selected_voice_id == "am_michael"
+        assert page.selected_voice_name_label.text() == "James"
+        assert "Deep Educational Voice" in page.selected_voice_desc_label.text()
+        assert "American English" in page.selected_voice_lang_label.text()
         page._select_voice(DEFAULT_VOICE_ID)
-        assert card.select_btn.text() == "Select"
-        assert card.select_btn.isEnabled()
-        assert card.selected_badge.isHidden()
+        assert page.selected_voice_name_label.text() == "Emma"
 
     def test_speed_options_are_exactly_expected(self, pm):
         from ui.pages.voice_page import SPEED_OPTIONS
@@ -1276,30 +1280,245 @@ class TestVoicePipelinePage:
         assert values == list(SPEED_OPTIONS)
         assert page._current_speed() == 1.0
 
-    def test_all_voices_expand_toggle(self, pm):
+    def test_playback_controls_visible_when_narration_exists(self, pm):
         name = _create_sample_project(pm)
         page = self._make_page(pm)
         page.set_project(name)
-        assert page.all_voices_scroll.isHidden()
-        page._toggle_all_voices()
-        assert not page.all_voices_scroll.isHidden()
-        assert page.all_voices_toggle.text() == "Hide"
-        page._toggle_all_voices()
-        assert page.all_voices_scroll.isHidden()
-        assert page.all_voices_toggle.text() == "Show All"
+        assert page.playback_container.isHidden()
+        audio_file = pm.PROJECTS_DIR / name / "audio" / "clip.wav"
+        audio_file.parent.mkdir(parents=True, exist_ok=True)
+        audio_file.write_bytes(b"RIFF fake audio")
+        page._audio_path = str(audio_file)
+        page._refresh_narration_ui()
+        assert not page.playback_container.isHidden()
+        assert page.narration_empty_label.isHidden()
+        for btn in (page.play_btn, page.pause_btn, page.stop_btn,
+                    page.download_audio_btn, page.regenerate_btn):
+            assert btn.isEnabled()
+        assert page.narration_status_badge.text() == "Generated"
+        assert "File size:" in page.narration_size_label.text()
+        assert not page.narration_duration_label.isHidden()
 
-    def test_search_filters_voice_library(self, pm):
-        from PySide6.QtWidgets import QApplication
+    def test_empty_state_without_narration(self, pm):
         name = _create_sample_project(pm)
         page = self._make_page(pm)
         page.set_project(name)
-        page.voice_search.setText("Xiaoxiao")
-        QApplication.processEvents()
-        assert page._voice_cards
-        for voice_id, _card in page._voice_cards.items():
-            voice_name, description = page._voice_catalog_entry(voice_id)
-            assert "xiaoxiao" in (voice_name + " " + description).lower()
-        assert "0 shown" in page.recommended_count.text()
+        assert page.playback_container.isHidden()
+        assert not page.narration_empty_label.isHidden()
+        assert "No narration generated yet" in page.narration_empty_label.text()
+        assert page.narration_status_badge.text() == "Ready"
+        assert not page.generate_btn.isHidden()
+
+    def test_play_switches_from_preview_to_narration(self, pm):
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+        audio_file = pm.PROJECTS_DIR / name / "audio" / "clip.wav"
+        audio_file.parent.mkdir(parents=True, exist_ok=True)
+        audio_file.write_bytes(b"RIFF fake audio")
+        page._audio_path = str(audio_file)
+
+        from PySide6.QtMultimedia import QMediaPlayer
+        PLAYING = QMediaPlayer.PlaybackState.PlayingState
+        PAUSED = QMediaPlayer.PlaybackState.PausedState
+
+        sources = []
+        state = {"value": QMediaPlayer.PlaybackState.StoppedState}
+
+        class FakePlayer:
+            def playbackState(self):
+                return state["value"]
+
+            def play(self):
+                state["value"] = PLAYING
+
+            def pause(self):
+                state["value"] = PAUSED
+
+            def stop(self):
+                state["value"] = QMediaPlayer.PlaybackState.StoppedState
+
+            def setSource(self, url):
+                sources.append(str(url.toString()))
+
+            def setSourceDevice(self, device):
+                pass
+
+        page._media_player = FakePlayer()
+        page._audio_output = None
+
+        # Preview clip is the active source (paused) -> Play must load narration.
+        page._playing_narration = False
+        state["value"] = PAUSED
+        page._play_narration()
+        assert state["value"] == PLAYING
+        assert any("clip.wav" in src for src in sources)
+
+        # Narration is paused -> Play resumes it without re-loading.
+        page._playing_narration = True
+        state["value"] = PAUSED
+        page._play_narration()
+        assert state["value"] == PLAYING
+        assert len(sources) == 1  # no new source load
+
+        # Narration is playing -> Pause pauses it.
+        state["value"] = PLAYING
+        page._pause_narration()
+        assert state["value"] == PAUSED
+
+    def test_regenerate_switches_to_ai_mode(self, pm, monkeypatch):
+        from ui.pages.voice_page import VOICE_SOURCE_AI, VOICE_SOURCE_IMPORT
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+        page._on_mode_selected(VOICE_SOURCE_IMPORT)
+        assert page._voice_source == VOICE_SOURCE_IMPORT
+        monkeypatch.setattr(page._voice_service, "is_available", lambda: False)
+        page._regenerate_voice()
+        assert page._voice_source == VOICE_SOURCE_AI
+
+    def test_regenerate_asks_confirmation_when_narration_exists(self, pm):
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+        audio_file = pm.PROJECTS_DIR / name / "audio" / "clip.wav"
+        audio_file.parent.mkdir(parents=True, exist_ok=True)
+        audio_file.write_bytes(b"RIFF fake audio")
+        page._audio_path = str(audio_file)
+        asked = []
+        page._confirm_regenerate = lambda: asked.append(True) or False
+        page._regenerate_voice()
+        assert asked == [True]  # confirmation shown, cancelled
+
+    def test_regenerate_skips_confirmation_without_narration(self, pm, monkeypatch):
+        from ui.pages.voice_page import VOICE_SOURCE_AI, VOICE_SOURCE_IMPORT
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+        page._on_mode_selected(VOICE_SOURCE_IMPORT)
+
+        def _must_not_ask():
+            raise AssertionError("confirmation must not be shown without narration")
+
+        page._confirm_regenerate = _must_not_ask
+        monkeypatch.setattr(page._voice_service, "is_available", lambda: False)
+        page._regenerate_voice()
+        assert page._voice_source == VOICE_SOURCE_AI
+
+    def test_status_badge_tracks_playback_state(self, pm):
+        from PySide6.QtMultimedia import QMediaPlayer
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+        audio_file = pm.PROJECTS_DIR / name / "audio" / "clip.wav"
+        audio_file.parent.mkdir(parents=True, exist_ok=True)
+        audio_file.write_bytes(b"RIFF fake audio")
+        page._audio_path = str(audio_file)
+        page._refresh_narration_ui()
+        assert page.narration_status_badge.text() == "Generated"
+
+        page._playing_narration = True
+        page._on_playback_state_changed(QMediaPlayer.PlaybackState.PlayingState)
+        assert page.narration_status_badge.text() == "Playing"
+        page._on_playback_state_changed(QMediaPlayer.PlaybackState.PausedState)
+        assert page.narration_status_badge.text() == "Paused"
+        page._on_playback_state_changed(QMediaPlayer.PlaybackState.StoppedState)
+        assert page.narration_status_badge.text() == "Generated"
+
+        # A preview's playback must never change the narration badge.
+        page._playing_narration = False
+        page._on_playback_state_changed(QMediaPlayer.PlaybackState.PlayingState)
+        assert page.narration_status_badge.text() == "Generated"
+
+    def test_imported_audio_shows_imported_status(self, pm):
+        from ui.pages.voice_page import VOICE_SOURCE_IMPORT
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+        audio_file = pm.PROJECTS_DIR / name / "audio" / "clip.wav"
+        audio_file.parent.mkdir(parents=True, exist_ok=True)
+        audio_file.write_bytes(b"RIFF fake audio")
+        page._audio_path = str(audio_file)
+        page._on_mode_selected(VOICE_SOURCE_IMPORT)
+        assert page.narration_status_badge.text() == "Imported"
+
+    def test_regenerate_confirmation_decision(self, pm, monkeypatch):
+        import ui.pages.voice_page as vp
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+        audio_file = pm.PROJECTS_DIR / name / "audio" / "clip.wav"
+        audio_file.parent.mkdir(parents=True, exist_ok=True)
+        audio_file.write_bytes(b"RIFF fake audio")
+        page._audio_path = str(audio_file)
+
+        class _Btn:
+            pass
+
+        class FakeMessageBox:
+            result = "cancel"  # which button clickedButton() reports
+
+            class Icon:
+                Warning = object()
+
+            class ButtonRole:
+                DestructiveRole = 3
+                RejectRole = 5
+
+            def __init__(self, parent=None):
+                self._regenerate_btn = None
+                self._cancel_btn = None
+
+            def setWindowTitle(self, text):
+                pass
+
+            def setIcon(self, icon):
+                pass
+
+            def setText(self, text):
+                pass
+
+            def setDefaultButton(self, button):
+                pass
+
+            def addButton(self, text, role):
+                btn = _Btn()
+                if text == "Regenerate":
+                    self._regenerate_btn = btn
+                else:
+                    self._cancel_btn = btn
+                return btn
+
+            def exec(self):
+                return 0
+
+            def clickedButton(self):
+                if FakeMessageBox.result == "regenerate" and self._regenerate_btn:
+                    return self._regenerate_btn
+                return self._cancel_btn
+
+        monkeypatch.setattr(vp, "QMessageBox", FakeMessageBox)
+
+        generated = []
+        page.generate_voice = lambda: generated.append(True)
+
+        # Cancel keeps the existing narration and does not regenerate.
+        FakeMessageBox.result = "cancel"
+        page._regenerate_voice()
+        assert generated == []
+
+        # Regenerate proceeds to generation.
+        FakeMessageBox.result = "regenerate"
+        page._regenerate_voice()
+        assert generated == [True]
+
+    def test_page_no_longer_embeds_voice_library(self, pm):
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+        assert not hasattr(page, "voice_search")
+        assert not hasattr(page, "_voice_cards")
+        assert not hasattr(page, "all_voices_scroll")
 
     def test_import_flow_requires_file_then_enables_transcribe(self, pm):
         name = _create_sample_project(pm)
@@ -1361,41 +1580,144 @@ class TestVoiceLibraryCatalog:
         assert desc == "Local Kokoro voice"
 
     def test_voice_match_is_case_insensitive(self):
-        from ui.pages.voice_page import VoicePage
-        assert VoicePage._voice_matches("Emma", "Calm Documentary", "calm")
-        assert VoicePage._voice_matches("Emma", "Calm Documentary", "emma")
-        assert VoicePage._voice_matches("Emma", "Calm Documentary", "doc")
-        assert not VoicePage._voice_matches("Emma", "Calm Documentary", "rocket")
+        from ui.dialogs.voice_selection import VoiceSelectionDialog
+        lang = "British English · Female"
+        assert VoiceSelectionDialog._matches("Emma", "Calm Documentary", lang, "calm")
+        assert VoiceSelectionDialog._matches("Emma", "Calm Documentary", lang, "emma")
+        assert VoiceSelectionDialog._matches("Emma", "Calm Documentary", lang, "doc")
+        assert VoiceSelectionDialog._matches("Emma", "Calm Documentary", lang, "british")
+        assert not VoiceSelectionDialog._matches("Emma", "Calm Documentary", lang, "rocket")
 
     def test_empty_query_matches_everything(self):
-        from ui.pages.voice_page import VoicePage
-        assert VoicePage._voice_matches("Anything", "description here", "")
+        from ui.dialogs.voice_selection import VoiceSelectionDialog
+        assert VoiceSelectionDialog._matches("Anything", "description here", "Language", "")
 
     def test_search_box_is_case_insensitive(self, pm):
+        from ui.dialogs.voice_selection import VoiceSelectionDialog
+        from ui.pages.voice_page import _voice_language
         name = _create_sample_project(pm)
         page = self._make_page(pm)
         page.set_project(name)
-        page.voice_search.setText("XIAOXIAO")
-        for voice_id, _card in page._voice_cards.items():
-            voice_name, description = page._voice_catalog_entry(voice_id)
-            assert "xiaoxiao" in (voice_name + " " + description).lower()
+        recommended = [
+            (p.id, p.name, p.description, _voice_language(p.id))
+            for p in page._recommended_profiles
+        ]
+        dialog = VoiceSelectionDialog("af_heart", recommended, [])
+        dialog.voice_search.setText("XIAOXIAO")
+        assert not dialog._voice_cards  # not a recommended voice
+        dialog.voice_search.setText("EMMA")
+        assert dialog._voice_cards
+        for _voice_id, card in dialog._voice_cards.items():
+            assert "emma" in card.name_label.text().lower()
+        dialog.close()
 
     def test_library_exposes_all_installed_voice_ids(self, pm):
-        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-        from PySide6.QtWidgets import QApplication
-        from ui.pages.voice_page import VoicePage, _load_installed_voice_ids
-
-        app = QApplication.instance() or QApplication([])
+        from ui.dialogs.voice_selection import VoiceSelectionDialog
+        from ui.pages.voice_page import _load_installed_voice_ids, _voice_language
         name = _create_sample_project(pm)
-        page = VoicePage()
-        page.manager = pm
+        page = self._make_page(pm)
         page.set_project(name)
         installed = _load_installed_voice_ids()
-        visible = set(page._voice_cards.keys())
+        recommended = [
+            (p.id, p.name, p.description, _voice_language(p.id))
+            for p in page._recommended_profiles
+        ]
+        remaining = [
+            (vid, nm, dc, _voice_language(vid))
+            for vid, nm, dc in page._remaining_voices()
+        ]
+        dialog = VoiceSelectionDialog("af_heart", recommended, remaining)
+        visible = set(dialog._voice_cards.keys())
         if installed:
             assert set(installed).issubset(visible)
         else:
             assert len(visible) == 54
+        dialog.close()
+
+
+class TestVoiceSelectionDialog:
+    """RC-1: the voice library moved into the modal Voice Selection dialog."""
+
+    @staticmethod
+    def _make_dialog(current="af_heart"):
+        from core.voice_generation_service import VOICE_PROFILES
+        from ui.dialogs.voice_selection import VoiceSelectionDialog
+        from ui.pages.voice_page import (
+            KOKORO_VOICE_CATALOG,
+            _fallback_voice_entry,
+            _voice_language,
+        )
+
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication([])
+
+        recommended = [
+            (p.id, p.name, p.description, _voice_language(p.id))
+            for p in VOICE_PROFILES
+        ]
+        recommended_ids = {p.id for p in VOICE_PROFILES}
+        remaining = [
+            (voice_id, name, desc, _voice_language(voice_id))
+            for voice_id, (name, desc) in KOKORO_VOICE_CATALOG.items()
+            if voice_id not in recommended_ids
+        ]
+        return VoiceSelectionDialog(current, recommended, remaining)
+
+    def test_dialog_lists_recommended_and_all_voices(self):
+        from core.voice_generation_service import VOICE_PROFILES
+        from ui.pages.voice_page import KOKORO_VOICE_CATALOG
+        dialog = self._make_dialog()
+        assert dialog.recommended_grid.count() == len(VOICE_PROFILES)
+        assert dialog.all_voices_grid.count() == (
+            len(KOKORO_VOICE_CATALOG) - len(VOICE_PROFILES)
+        )
+        assert len(dialog._voice_cards) == len(KOKORO_VOICE_CATALOG)
+        dialog.close()
+
+    def test_dialog_remembers_previous_selection(self):
+        dialog = self._make_dialog(current="am_michael")
+        card = dialog._voice_cards["am_michael"]
+        assert not card.selected_badge.isHidden()
+        assert card.select_btn.text() == "Selected"
+        assert not card.select_btn.isEnabled()
+        dialog.close()
+
+    def test_dialog_select_emits_and_closes(self):
+        from PySide6.QtWidgets import QDialog
+        dialog = self._make_dialog()
+        chosen = []
+        dialog.voice_selected.connect(chosen.append)
+        dialog._select_voice("bf_emma")
+        assert chosen == ["bf_emma"]
+        assert dialog.result() == QDialog.DialogCode.Accepted
+
+    def test_dialog_search_filters_voices(self):
+        from ui.pages.voice_page import KOKORO_VOICE_CATALOG, _fallback_voice_entry
+        dialog = self._make_dialog()
+        dialog.voice_search.setText("Xiaoxiao")
+        assert dialog._voice_cards
+        for voice_id in dialog._voice_cards:
+            entry = KOKORO_VOICE_CATALOG.get(voice_id) or _fallback_voice_entry(voice_id)
+            assert "xiaoxiao" in (entry[0] + " " + entry[1]).lower()
+        assert "0 shown" in dialog.recommended_count.text()
+        dialog.close()
+
+    def test_dialog_cards_show_language(self):
+        from ui.pages.voice_page import _voice_language
+        dialog = self._make_dialog()
+        assert _voice_language("bf_emma") == "British English · Female"
+        assert _voice_language("zm_yunyang") == "Chinese · Male"
+        assert "British English" in dialog._voice_cards["bf_emma"].lang_label.text()
+        dialog.close()
+
+    def test_dialog_preview_signal_emits_voice_id(self):
+        dialog = self._make_dialog()
+        previewed = []
+        dialog.preview_requested.connect(previewed.append)
+        dialog._voice_cards["af_heart"].preview_btn.click()
+        assert previewed == ["af_heart"]
+        dialog.close()
 
 
 class TestVoicePrefsPersistence:
@@ -1568,6 +1890,101 @@ class TestImagePromptsSourceContext:
         assert len(reloaded["prompts"]) == 1
         assert reloaded["prompts"][0]["scene_number"] == 1
         assert reloaded["prompts"][0]["full_image_prompt"] == "A classroom, photorealistic"
+
+
+class TestImagePromptBuilderReferenceFormat:
+    """Sprint 3.6.1 — the builder must instruct the model to reproduce the
+    Production Stage 7 reference format exactly: one continuous natural-language
+    prompt per transcript scene, no metadata, no section labels, timestamp first.
+    """
+
+    @staticmethod
+    def _build_user_prompt():
+        from operators.image_prompt.models import ImagePromptRequest
+        from operators.image_prompt.prompt_builder import ImagePromptBuilder
+
+        request = ImagePromptRequest(
+            script_text="INT. CLASSROOM - DAY\nTeacher introduces the water cycle.",
+            transcript="[0:00] Water is always moving around us.\n\n"
+                       "[0:04] It changes form as it travels.",
+            timestamps=[
+                {"time": "00:00", "text": "Water is always moving around us."},
+                {"time": "00:04", "text": "It changes form as it travels."},
+            ],
+            topic="The Water Cycle",
+            language="English",
+        )
+        _, user_prompt = ImagePromptBuilder().build(request)
+        return user_prompt
+
+    def test_embeds_reference_format(self):
+        prompt = self._build_user_prompt()
+        assert "Hand-drawn 2D doodle cartoon animation" in prompt
+        assert "Narration focus" in prompt
+        assert "16:9 aspect ratio" in prompt
+        assert "KaiMi educational doodle style" in prompt
+        assert "[0:00]" in prompt  # reference template timestamp line
+
+    def test_orders_reference_elements(self):
+        prompt = self._build_user_prompt()
+        opening = prompt.index("Hand-drawn 2D doodle cartoon animation")
+        narration = prompt.index("Narration focus")
+        aspect = prompt.index("16:9 aspect ratio")
+        style = prompt.index("KaiMi educational doodle style")
+        assert opening < narration < aspect < style
+
+    def test_requires_one_prompt_per_transcript_scene(self):
+        prompt = self._build_user_prompt()
+        assert "one image prompt per transcript scene" in prompt
+        assert "never merge or split transcript scenes" in prompt
+
+    def test_reference_template_has_no_metadata_labels(self):
+        from operators.image_prompt.prompt_builder import PROMPT_TEMPLATE
+        for label in (
+            "Master Style Lock:",
+            "Character:",
+            "Environment:",
+            "Lighting:",
+            "Camera:",
+            "Negative Prompt:",
+            "Scene:",
+            "Visual Description:",
+        ):
+            assert label not in PROMPT_TEMPLATE, f"'{label}' leaked into template"
+
+    def test_instructions_warn_against_labels_and_metadata(self):
+        prompt = self._build_user_prompt()
+        assert "Never write labels" in prompt
+        assert "headings, no labels, no metadata" in prompt.lower()
+
+    def test_removed_old_labeled_section_instruction(self):
+        prompt = self._build_user_prompt()
+        assert "Subject, Environment, Composition" not in prompt
+        assert "Art Style, Color Palette" not in prompt
+
+    def test_keeps_json_contract(self):
+        prompt = self._build_user_prompt()
+        for key in ("scene_number", "timestamp", "prompt_title", "full_image_prompt"):
+            assert f'"{key}"' in prompt
+
+    def test_keeps_source_context(self):
+        prompt = self._build_user_prompt()
+        assert "The Water Cycle" in prompt
+        assert "Water is always moving around us." in prompt
+        assert "[0:04] It changes form as it travels." in prompt
+
+    def test_preview_via_operator(self):
+        from operators.image_prompt.models import ImagePromptRequest
+        from operators.image_prompt.operator import ImagePromptOperator
+
+        request = ImagePromptRequest(
+            script_text="A short script about gravity.",
+            transcript="[0:00] Gravity pulls everything down.",
+            timestamps=[{"time": "00:00", "text": "Gravity pulls everything down."}],
+        )
+        preview = ImagePromptOperator().get_prompt_preview(request)
+        assert "Hand-drawn 2D doodle cartoon animation" in preview
+        assert "Narration focus" in preview
 
 
 # =====================================================================
@@ -1777,6 +2194,708 @@ class TestUIConsistency:
         assert APP_NAME == "KaiMi Studio"
         assert VERSION == "1.0.0"
         assert CODENAME == "Aurora"
+
+
+# =====================================================================
+# PHASE 12D — Application Identity (RC-3)
+# =====================================================================
+
+class TestAppIdentity:
+    """RC-3: all application identity lives in core.version and is rendered
+    consistently across the window title, About dialog, Settings, and error
+    reporting."""
+
+    def test_version_metadata_complete(self):
+        from core.version import (
+            APP_NAME, APP_DESCRIPTION, AUTHOR, BUILD, BUILD_DATE, CODENAME,
+            COPYRIGHT, ENGINE_VERSION, OFFICIAL_EMAIL, RELEASE_CHANNEL,
+            SCHEMA_VERSION, VERSION, WORKFLOW_VERSION,
+        )
+        assert APP_NAME == "KaiMi Studio"
+        assert VERSION == "1.0.0"
+        assert CODENAME == "Aurora"
+        assert BUILD
+        assert BUILD_DATE
+        assert RELEASE_CHANNEL
+        assert ENGINE_VERSION
+        assert WORKFLOW_VERSION
+        assert SCHEMA_VERSION
+        assert AUTHOR == "Md Samim Aktar Mondal"
+        assert OFFICIAL_EMAIL == "kaimistudio07@gmail.com"
+        assert APP_DESCRIPTION
+        assert COPYRIGHT and AUTHOR in COPYRIGHT
+
+    def test_copyright_includes_author_and_year(self):
+        from core.version import AUTHOR, COPYRIGHT, YEAR
+        assert YEAR in COPYRIGHT
+        assert AUTHOR in COPYRIGHT
+        assert COPYRIGHT.startswith("\u00A9")
+
+    def test_settings_about_card_shows_identity(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication, QLabel
+        from ui.pages.settings_page import SettingsPage
+
+        app = QApplication.instance() or QApplication([])
+        page = SettingsPage()
+        texts = [lbl.text() for lbl in page.findChildren(QLabel)]
+        joined = "\n".join(texts)
+        assert "kaimistudio07@gmail.com" in joined
+        assert "Md Samim Aktar Mondal" in joined
+        assert "1.0.0" in joined
+        assert page.email_copy_btn is not None
+        assert page.about_dialog_btn is not None
+
+    def test_settings_email_copy_button_copies_to_clipboard(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from core.version import OFFICIAL_EMAIL
+        from ui.pages.settings_page import SettingsPage
+
+        app = QApplication.instance() or QApplication([])
+        page = SettingsPage()
+        page.email_copy_btn.click()
+        assert QApplication.clipboard().text() == OFFICIAL_EMAIL
+
+    def test_about_dialog_displays_full_identity(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication, QLabel
+        from core.version import AUTHOR, OFFICIAL_EMAIL, VERSION
+        from ui.dialogs.about_dialog import AboutDialog
+
+        app = QApplication.instance() or QApplication([])
+        dlg = AboutDialog()
+        texts = "\n".join(lbl.text() for lbl in dlg.findChildren(QLabel))
+        assert "KaiMi Studio" in texts
+        assert VERSION in texts
+        assert AUTHOR in texts
+        assert OFFICIAL_EMAIL in texts
+        assert "Engine" in texts
+        assert "Workflow" in texts
+        dlg.close()
+
+    def test_about_dialog_copy_button_copies_email(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication, QPushButton
+        from core.version import OFFICIAL_EMAIL
+        from ui.dialogs.about_dialog import AboutDialog
+
+        app = QApplication.instance() or QApplication([])
+        dlg = AboutDialog()
+        copy_btns = [b for b in dlg.findChildren(QPushButton) if b.text() == "Copy"]
+        assert len(copy_btns) == 1
+        copy_btns[0].click()
+        assert QApplication.clipboard().text() == OFFICIAL_EMAIL
+        dlg.close()
+
+    def test_window_title_uses_centralized_metadata(self):
+        import inspect
+        from ui.main_window import MainWindow
+        src = inspect.getsource(MainWindow.__init__)
+        assert "APP_NAME" in src
+        assert "VERSION" in src
+        assert 'setWindowTitle(f"{APP_NAME} v{VERSION}")' in src
+
+    def test_sidebar_version_label_opens_about_dialog(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication, QWidget
+        from ui.sidebar import _AboutLabel, Sidebar
+
+        app = QApplication.instance() or QApplication([])
+        opened = []
+
+        class FakeWindow(QWidget):
+            def show_about_dialog(self):
+                opened.append(True)
+
+        win = FakeWindow()
+        sidebar = Sidebar(win)
+        labels = sidebar.findChildren(_AboutLabel)
+        assert labels
+        assert labels[0].text().startswith("v")
+        labels[0].clicked.emit()
+        assert opened == [True]
+        sidebar.deleteLater()
+        win.deleteLater()
+
+    def test_crash_handler_references_official_email(self):
+        import inspect
+        from core import crash_handler
+        src = inspect.getsource(crash_handler._show_error_dialog)
+        assert "OFFICIAL_EMAIL" in src
+
+    def test_no_placeholder_emails_in_source(self):
+        """No placeholder support addresses may remain anywhere."""
+        root = Path(__file__).resolve().parent.parent
+        placeholders = (
+            "@example.com", "@example.org", "@yourdomain.com",
+            "@your-email", "your@email", "support@", "placeholder@",
+        )
+        this_file = Path(__file__).resolve()
+        hits = []
+        for base, dirs, files in os.walk(root):
+            # Prune the bundled release build and vendored/hidden trees.
+            dirs[:] = [d for d in dirs if d not in ("release", ".venv", ".git")]
+            for fname in files:
+                if not fname.endswith((".py", ".md")):
+                    continue
+                path = Path(base) / fname
+                if path.resolve() == this_file:
+                    continue  # this test file defines the placeholder patterns
+                low = path.read_text(encoding="utf-8", errors="ignore").lower()
+                for ph in placeholders:
+                    if ph in low:
+                        hits.append(f"{path}: {ph}")
+        assert hits == []
+
+
+class TestReleaseMetadata:
+    """RC-4: every build resource derives from core.version — no duplicated
+    or outdated version/publisher constants anywhere in the build chain."""
+
+    @staticmethod
+    def _root():
+        return Path(__file__).resolve().parent.parent
+
+    def test_build_manifest_matches_version_module(self):
+        from core.version import (
+            APP_NAME, APP_URL, AUTHOR, BUILD, BUILD_DATE, CODENAME, COMPANY,
+            COPYRIGHT, ENGINE_VERSION, OFFICIAL_EMAIL, RELEASE_CHANNEL,
+            SCHEMA_VERSION, VERSION, WORKFLOW_VERSION, build_manifest,
+        )
+        m = build_manifest()
+        assert m["application"] == APP_NAME
+        assert m["version"] == VERSION
+        assert m["build"] == BUILD
+        assert m["codename"] == CODENAME
+        assert m["release_channel"] == RELEASE_CHANNEL
+        assert m["build_date"] == BUILD_DATE
+        assert m["author"] == AUTHOR
+        assert m["official_email"] == OFFICIAL_EMAIL
+        assert m["company"] == COMPANY
+        assert m["copyright"] == COPYRIGHT
+        assert m["engine_version"] == ENGINE_VERSION
+        assert m["workflow_version"] == WORKFLOW_VERSION
+        assert m["schema_version"] == SCHEMA_VERSION
+        assert m["app_url"] == APP_URL
+        # The publisher/company is the author for this release — never a
+        # bare "KaiMi" placeholder.
+        assert m["company"] == m["author"]
+        assert "KaiMi" not in m["company"]
+
+    def test_committed_version_info_matches_generated(self):
+        from core.version import render_version_info
+        committed = (self._root() / "file_version_info.txt").read_text(encoding="utf-8")
+        assert committed == render_version_info()
+
+    def test_committed_iss_defines_match_generated(self):
+        from core.version import render_iss_defines
+        committed = (self._root() / "installer_metadata.iss").read_text(encoding="utf-8")
+        assert committed == render_iss_defines()
+
+    def test_committed_manifest_matches_generated(self):
+        from core.version import render_manifest_json
+        committed = (self._root() / "build_manifest.json").read_text(encoding="utf-8")
+        assert committed == render_manifest_json()
+
+    def test_installer_uses_generated_defines_not_hardcoded_values(self):
+        iss = (self._root() / "installer.iss").read_text(encoding="utf-8")
+        assert '#include "installer_metadata.iss"' in iss
+        assert 'MyAppPublisher "KaiMi"' not in iss
+        assert 'MyAppVersion "1.0.0"' not in iss
+        assert "© 2026 KaiMi" not in iss
+
+    def test_version_info_has_author_not_placeholder_company(self):
+        from core.version import COMPANY, COPYRIGHT
+        txt = (self._root() / "file_version_info.txt").read_text(encoding="utf-8")
+        assert "CompanyName', u'KaiMi'" not in txt
+        assert COMPANY in txt
+        assert COPYRIGHT in txt
+        assert COPYRIGHT.split("©")[-1].strip().startswith("2026 Md Samim")
+
+    def test_build_script_regenerates_release_metadata(self):
+        src = (self._root() / "build.py").read_text(encoding="utf-8")
+        assert "write_release_metadata" in src
+        assert "render_version_info" in src
+        assert "render_iss_defines" in src
+        assert "render_manifest_json" in src
+        assert "from core.version import" in src
+
+    def test_spec_reads_name_from_centralized_metadata(self):
+        src = (self._root() / "KaiMi Studio.spec").read_text(encoding="utf-8")
+        assert "from core.version import APP_NAME" in src
+        assert "name=APP_NAME" in src
+        assert "name='KaiMi Studio'" not in src
+
+    def test_build_script_uses_metadata_for_exe_path(self):
+        src = (self._root() / "build.py").read_text(encoding="utf-8")
+        assert 'DIST / APP_NAME' in src
+        assert 'f"{APP_NAME}.exe"' in src
+
+
+class TestAssetManagerEmptyState:
+    """RC-5: a project with no assets shows a helpful empty state instead of
+    a blank table; the table appears once assets exist."""
+
+    @staticmethod
+    def _make_page(pm):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from ui.pages.asset_manager import AssetManagerPage
+
+        app = QApplication.instance() or QApplication([])
+        page = AssetManagerPage()
+        page.manager = pm
+        return page
+
+    def test_no_assets_shows_empty_state(self, pm):
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+        assert page.assets_stack.currentIndex() == 1  # empty-state page
+        assert not page.assets_empty.isHidden()
+        assert "No Assets Imported" in page.assets_empty.title_label.text()
+        assert page.asset_table.rowCount() == 0
+
+    def test_with_assets_shows_table(self, pm):
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        audio = pm.PROJECTS_DIR / name / "audio" / "clip.wav"
+        audio.parent.mkdir(parents=True, exist_ok=True)
+        audio.write_bytes(b"RIFF fake audio")
+        page.set_project(name)
+        assert page.assets_stack.currentIndex() == 0  # table page
+        assert page.asset_table.rowCount() == 1
+
+    def test_no_project_selected_hides_content(self, pm):
+        page = self._make_page(pm)
+        page.set_project(None)
+        assert not page.empty_state.isHidden()
+        assert page._content_widget.isHidden()
+
+
+class TestVersionHistoryDialog:
+    """RC-5: the Version History dialog must render rows without crashing
+    (regression guard for the setForeground(QColor) fix)."""
+
+    def test_dialog_renders_history_rows(self, monkeypatch):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from ui.pages.version_history import VersionHistoryDialog
+
+        app = QApplication.instance() or QApplication([])
+
+        class FakeHistory:
+            def get_action_history(self, project_name):
+                return [
+                    {
+                        "datetime": "01-01-2026 10:00",
+                        "action": "Saved",
+                        "description": "Manually saved script",
+                    },
+                    {
+                        "datetime": "01-01-2026 11:00",
+                        "action": "Restore",
+                        "description": "Restored from snapshot",
+                    },
+                ]
+
+        monkeypatch.setattr(
+            "ui.pages.version_history.HistoryManager", lambda: FakeHistory()
+        )
+        dlg = VersionHistoryDialog("DemoProject")
+        assert dlg.version_table.rowCount() == 2
+        assert dlg.count_label.text() == "2 versions"
+        dlg.close()
+
+
+class TestBrandingIntegration:
+    """Release prep: every part of KaiMi Studio reads its artwork from the
+    single centralized ``resources/branding`` folder.
+
+    The official pair (``logo.png`` + ``app_icon.png``) is the only branding
+    source; ``app_icon.ico`` is derived from ``app_icon.png`` at build time.
+    """
+
+    @staticmethod
+    def _root():
+        return Path(__file__).resolve().parent.parent
+
+    def test_branding_folder_contains_expected_assets(self):
+        from core.branding import branding_dir
+        expected = [
+            "logo.png",
+            "app_icon.png",
+            "app_icon.ico",
+        ]
+        folder = branding_dir()
+        assert folder.is_dir()
+        for name in expected:
+            assert (folder / name).is_file(), f"missing {name}"
+
+    def test_branding_accessor_resolves_to_existing_files(self):
+        from core.branding import (
+            app_icon_ico_path,
+            app_icon_path,
+            branding_dir,
+            logo_path,
+        )
+        assert branding_dir() == self._root() / "resources" / "branding"
+        assert logo_path().is_file()
+        assert app_icon_path().is_file()
+        assert app_icon_ico_path().is_file()
+        assert logo_path().name == "logo.png"
+        assert app_icon_path().name == "app_icon.png"
+        assert app_icon_ico_path().name == "app_icon.ico"
+
+    def test_logo_pixmap_scales_without_distortion(self):
+        """The lockup scales to the requested width, aspect preserved."""
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PIL import Image
+        from PySide6.QtWidgets import QApplication
+        from core.branding import logo_path, logo_pixmap
+
+        app = QApplication.instance() or QApplication([])
+        pixmap = logo_pixmap(48)
+        assert not pixmap.isNull()
+        assert pixmap.width() == 48
+        with Image.open(logo_path()) as im:
+            ratio = im.height / im.width
+        assert abs(pixmap.height() / pixmap.width() - ratio) < 0.02
+
+    def test_app_icon_loads_from_official_png(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from core.branding import app_icon, app_icon_path
+
+        app = QApplication.instance() or QApplication([])
+        icon = app_icon()
+        assert not icon.isNull()
+        assert icon.availableSizes()  # source PNG resolves to a real icon
+
+    def test_about_dialog_displays_logo_above_title(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication, QLabel
+        from ui.dialogs.about_dialog import AboutDialog
+
+        app = QApplication.instance() or QApplication([])
+        dlg = AboutDialog()
+        pixmap_labels = [
+            lbl for lbl in dlg.findChildren(QLabel)
+            if lbl.pixmap() is not None and not lbl.pixmap().isNull()
+        ]
+        assert pixmap_labels
+        assert pixmap_labels[0].pixmap().width() == 200
+        dlg.close()
+
+    def test_settings_about_card_displays_logo(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication, QLabel
+        from ui.pages.settings_page import SettingsPage
+
+        app = QApplication.instance() or QApplication([])
+        page = SettingsPage()
+        pixmap_labels = [
+            lbl for lbl in page.findChildren(QLabel)
+            if lbl.pixmap() is not None and not lbl.pixmap().isNull()
+        ]
+        assert pixmap_labels
+        assert pixmap_labels[0].pixmap().width() == 96
+
+    def test_sidebar_displays_logo_above_title(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication, QLabel, QWidget
+        from ui.sidebar import Sidebar
+
+        app = QApplication.instance() or QApplication([])
+        parent = QWidget()
+        sidebar = Sidebar(parent)
+        pixmap_labels = [
+            lbl for lbl in sidebar.findChildren(QLabel)
+            if lbl.pixmap() is not None and not lbl.pixmap().isNull()
+        ]
+        assert pixmap_labels
+        assert pixmap_labels[0].pixmap().width() == 56
+        sidebar.deleteLater()
+        parent.deleteLater()
+
+    def test_ico_is_generated_from_official_png(self):
+        """The build-time .ico derives from the official assets and matches
+        the expected multi-resolution sizes."""
+        from PIL import Image
+        from core.branding import app_icon_ico_path
+        from generate_icon import ensure_app_icon_ico
+
+        ico_path = ensure_app_icon_ico()
+        assert ico_path == app_icon_ico_path()
+        assert ico_path.is_file()
+        with Image.open(ico_path) as im:
+            sizes = sorted(set(im.ico.sizes()))
+        assert sizes == sorted([(16, 16), (32, 32), (48, 48),
+                                (64, 64), (128, 128), (256, 256)])
+
+    def test_generate_icon_converts_official_png(self, tmp_path):
+        """generate_icon.py converts the official app_icon.png into a valid
+        .ico without modifying the source PNG."""
+        from PIL import Image
+        from core.branding import app_icon_path
+        from generate_icon import ensure_app_icon_png, generate_app_icon_ico
+
+        ensure_app_icon_png()  # derived icon exists before conversion
+        out = tmp_path / "derived.ico"
+        result = generate_app_icon_ico(app_icon_path(), out)
+        assert result == out
+        assert out.is_file()
+        with Image.open(out) as im:
+            assert im.format == "ICO"
+        source_before = app_icon_path().read_bytes()
+        assert app_icon_path().read_bytes() == source_before  # untouched
+
+    def test_app_sets_window_icon_from_centralized_folder(self):
+        import inspect
+        from ui.main_window import MainWindow
+        src = inspect.getsource(MainWindow.__init__)
+        assert "setWindowIcon" in src
+        assert "app_icon" in src
+        main_src = (self._root() / "main.py").read_text(encoding="utf-8")
+        assert "setWindowIcon(app_icon())" in main_src
+        assert "resources/branding/app_icon.png" in main_src
+        assert "resources/branding/logo.png" in main_src
+
+    def test_build_resources_use_centralized_branding(self):
+        build_src = (self._root() / "build.py").read_text(encoding="utf-8")
+        spec_src = (self._root() / "KaiMi Studio.spec").read_text(encoding="utf-8")
+        iss_src = (self._root() / "installer.iss").read_text(encoding="utf-8")
+        gen_src = (self._root() / "generate_icon.py").read_text(encoding="utf-8")
+
+        # build.py regenerates the .ico from the official PNG before building.
+        assert '"resources" / "branding" / "app_icon.ico"' in build_src
+        assert "ensure_app_icon_ico" in build_src
+        assert "generate_icon" in build_src
+        # spec/installer consume the generated .ico from the central folder.
+        assert "resources/branding/app_icon.ico" in spec_src
+        assert "SetupIconFile=resources\\branding\\app_icon.ico" in iss_src
+        # the generator converts the official PNG; it never draws its own mark
+        # and resolves paths through core.branding (no hardcoded folder).
+        assert "app_icon.png" in gen_src
+        assert "app_icon_ico_path" in gen_src
+        assert "app_icon_path" in gen_src
+
+    def test_no_scattered_branding_paths_remain(self):
+        root = self._root()
+        forbidden = ("assets/icons", "kaimi.ico", "kaimi_256")
+        hits = []
+        for fname in ("main.py", "build.py", "generate_icon.py",
+                      "KaiMi Studio.spec", "installer.iss"):
+            text = (root / fname).read_text(encoding="utf-8").lower()
+            for token in forbidden:
+                if token in text:
+                    hits.append(f"{fname}: {token}")
+        assert hits == []
+
+
+# =====================================================================
+# PHASE 12C — Light Theme Text Contrast (runtime toggle)
+# =====================================================================
+
+class TestLightThemeContrast:
+    """Light theme must never render normal text in white.
+
+    Regression: labels bake theme colors into inline stylesheets at
+    construction. Pages that rebuilt incompletely (nested grid layouts leaked
+    by Dashboard) or kept static chrome (Voice mode cards, empty states)
+    left near-white Dark-theme text on Light backgrounds after a runtime
+    dark->light toggle.
+    """
+
+    @staticmethod
+    def _make_project(pm):
+        pm.create_project(
+            name="ContrastProj", topic="AI Education",
+            platform="YouTube", video_type="Educational",
+            language="English",
+        )
+
+    @staticmethod
+    def _build_pages(pm):
+        """Build every page with a project attached, in the current theme."""
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from ui.pages.asset_manager import AssetManagerPage
+        from ui.pages.dashboard import DashboardPage
+        from ui.pages.export_page import ExportPage
+        from ui.pages.image_prompts_page import ImagePromptsPage
+        from ui.pages.projects import ProjectsPage
+        from ui.pages.script_page import ScriptPage
+        from ui.pages.voice_page import VoicePage
+
+        app = QApplication.instance() or QApplication([])
+        pages = {
+            "Dashboard": DashboardPage(),
+            "Projects": ProjectsPage(),
+            "Script": ScriptPage(),
+            "Voice": VoicePage(),
+            "ImagePrompts": ImagePromptsPage(),
+            "Export": ExportPage(),
+            "AssetManager": AssetManagerPage(),
+        }
+        from core.pipeline_service import PipelineService
+        svc = PipelineService()
+        svc._pm = pm
+        for page in pages.values():
+            page.manager = pm
+            page._pipeline = svc
+            set_project = getattr(page, "set_project", None)
+            if callable(set_project):
+                set_project("ContrastProj")
+        return app, pages
+
+    @staticmethod
+    def _flush_deferred(app):
+        """Flush deleteLater() widgets.
+
+        ``processEvents()`` does not deliver ``DeferredDelete`` events, so
+        rebuilt-away widgets would linger and skew widget scans.
+        """
+        from PySide6.QtCore import QEvent
+        app.processEvents()
+        app.sendPostedEvents(None, QEvent.DeferredDelete)
+
+    @staticmethod
+    def _labels_with_color(pages, hex_colors):
+        """Return (page, text) for labels whose inline stylesheet bakes one of
+        the given hex colors. ``hex_colors`` may be a str or a tuple."""
+        from PySide6.QtWidgets import QLabel
+        if isinstance(hex_colors, str):
+            hex_colors = (hex_colors,)
+        hits = []
+        needle = [f"color: {hex}".lower() for hex in hex_colors]
+        for name, page in pages.items():
+            for lbl in page.findChildren(QLabel):
+                ss = (lbl.styleSheet() or "").lower()
+                if any(n in ss for n in needle):
+                    hits.append((name, lbl.text()[:32]))
+        return hits
+
+    def teardown_method(self):
+        """Restore the shared ThemeManager to the app default (dark) so other
+        tests never inherit an unexpected mode from this class."""
+        from ui.theme_pyside import ThemeManager
+        ThemeManager.instance().set_mode("dark")
+
+    def test_light_theme_tokens_follow_spec(self):
+        """The shared Light tokens use the contrast-safe palette."""
+        from core.theme import Light
+        assert Light.TEXT == "#111827"
+        assert Light.TEXT_SECONDARY == "#6B7280"
+        assert Light.TEXT_MUTED == "#9CA3AF"
+
+    def test_no_stale_white_labels_after_dark_to_light_toggle(self, pm):
+        """After dark->light, no label keeps the near-white Dark TEXT,
+        TEXT_SECONDARY, or TEXT_MUTED tokens."""
+        self._make_project(pm)
+        from ui.theme_pyside import ThemeManager
+        tm = ThemeManager.instance()
+        tm.set_mode("dark")
+        app, pages = self._build_pages(pm)
+        self._flush_deferred(app)
+        tm.set_mode("light")
+        self._flush_deferred(app)
+        assert self._labels_with_color(
+            pages, ("#F8FAFC", "#94A3B8", "#64748B")
+        ) == []
+
+    def test_no_stale_light_labels_after_light_to_dark_toggle(self, pm):
+        """The reverse toggle must not leave light-theme text tokens on the
+        dark background either."""
+        self._make_project(pm)
+        from ui.theme_pyside import ThemeManager
+        tm = ThemeManager.instance()
+        tm.set_mode("light")
+        app, pages = self._build_pages(pm)
+        self._flush_deferred(app)
+        tm.set_mode("dark")
+        self._flush_deferred(app)
+        assert self._labels_with_color(
+            pages, ("#111827", "#6B7280", "#9CA3AF")
+        ) == []
+
+    def test_dashboard_quick_actions_single_instance_with_light_text(self, pm):
+        """No leaked duplicate grids; quick actions render in Light TEXT."""
+        from collections import Counter
+        from PySide6.QtWidgets import QLabel
+
+        self._make_project(pm)
+        from ui.theme_pyside import ThemeManager
+        tm = ThemeManager.instance()
+        tm.set_mode("dark")
+        app, pages = self._build_pages(pm)
+        self._flush_deferred(app)
+        tm.set_mode("light")
+        self._flush_deferred(app)
+
+        dashboard = pages["Dashboard"]
+        quick = ("New Project", "Open Projects", "Asset Manager", "Settings")
+        counts = Counter(
+            lbl.text() for lbl in dashboard.findChildren(QLabel)
+            if lbl.text() in quick
+        )
+        assert counts == {q: 1 for q in quick}
+        for lbl in dashboard.findChildren(QLabel):
+            if lbl.text() == "New Project":
+                assert "color: #111827" in (lbl.styleSheet() or "")
+
+    def test_static_status_badges_refresh_on_theme_toggle(self, pm):
+        """Default-constructed StatusBadges must re-derive PRIMARY/PRIMARY_LIGHT
+        after a runtime toggle instead of keeping Dark-theme colors on Light."""
+        from PySide6.QtWidgets import QLabel
+        self._make_project(pm)
+        from ui.theme_pyside import ThemeManager
+        tm = ThemeManager.instance()
+        tm.set_mode("dark")
+        app, pages = self._build_pages(pm)
+        self._flush_deferred(app)
+        tm.set_mode("light")
+        self._flush_deferred(app)
+
+        # #0D231A is Dark PRIMARY_LIGHT / SUCCESS_LIGHT — never a valid badge
+        # background in Light mode. Any lingering instance means a default
+        # StatusBadge kept its construction-time Dark colors.
+        for pname, page in pages.items():
+            for lbl in page.findChildren(QLabel):
+                ss = lbl.styleSheet() or ""
+                if "background-color: #0D231A" in ss.upper():
+                    raise AssertionError(
+                        f"{pname} badge kept Dark PRIMARY_LIGHT: {lbl.text()!r}"
+                    )
+
+    def test_explicit_badge_colors_are_preserved(self):
+        """refresh_theme() must not overwrite colors set explicitly via
+        update_colors (e.g. status badges, stage-colored chips)."""
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from ui.theme_pyside import ThemeManager
+        from ui.widgets import StatusBadge
+
+        QApplication.instance() or QApplication([])
+        tm = ThemeManager.instance()
+        tm.set_mode("dark")
+
+        badge = StatusBadge("Test")
+        badge.update_colors("#111827", "#22C55E")
+        tm.set_mode("light")
+        badge.refresh_theme()
+        assert "#111827" in badge.styleSheet()
+        assert "#22C55E" in badge.styleSheet()
+
+        # Default-constructed badge re-derives from the Light theme.
+        from core.theme import Light
+        badge2 = StatusBadge("Default")
+        tm.set_mode("dark")
+        tm.set_mode("light")
+        badge2.refresh_theme()
+        assert Light.PRIMARY in badge2.styleSheet()
+        assert Light.PRIMARY_LIGHT in badge2.styleSheet()
 
 
 # =====================================================================
@@ -2497,6 +3616,291 @@ class TestVoiceGenerationService:
         second_instance = VoiceGenerationService._kokoro
 
         assert first_instance is second_instance   # model loaded exactly once
+
+
+# =====================================================================
+# PHASE 14B — Voice Generation Reliability & Diagnostics (RC-6)
+# =====================================================================
+
+
+class _FakeKokoroEngine:
+    """Stand-in Kokoro engine that returns a tiny silent WAV-compatible buffer.
+
+    Lets the full instrumented pipeline (model init → text prep → synthesis →
+    WAV encode → file save) run without the real model so stage reporting,
+    cancellation, and timing can be tested deterministically.
+    """
+
+    def __init__(self):
+        self.calls = []
+
+    def create(self, text, voice=None, speed=None, lang=None):
+        self.calls.append(text)
+        import numpy as np
+
+        samples = np.zeros(2400, dtype=np.float32)  # 0.1 s of silence @ 24 kHz
+        return samples, 24000
+
+
+class _FakeVoiceService:
+    """In-memory stand-in for VoiceGenerationService used by worker tests."""
+
+    def __init__(self, fail_stage=None, delay_synthesis=False):
+        self.fail_stage = fail_stage
+        self.delay_synthesis = delay_synthesis
+        self.reported_stages = []
+
+    def ensure_model_ready(self, progress_callback=None, cancel_event=None):
+        pass
+
+    def generate_to_file(
+        self, text, voice_id, speed, output_path,
+        progress_callback=None, cancel_event=None,
+    ):
+        from core.voice_generation_service import (
+            STAGE_MESSAGES,
+            STAGE_FRACTIONS,
+            VoiceGenerationCancelled,
+        )
+        from pathlib import Path
+
+        if cancel_event is not None and cancel_event.is_set():
+            raise VoiceGenerationCancelled("cancelled")
+        for stage in ("model_init", "text_prep"):
+            self.reported_stages.append(stage)
+            if progress_callback:
+                progress_callback(stage, STAGE_MESSAGES[stage], STAGE_FRACTIONS[stage])
+        if self.delay_synthesis:
+            import time as _time
+            _time.sleep(0.05)
+        self.reported_stages.append("synthesis")
+        if progress_callback:
+            progress_callback(
+                "synthesis", STAGE_MESSAGES["synthesis"], STAGE_FRACTIONS["synthesis"]
+            )
+        if self.fail_stage == "synthesis":
+            raise RuntimeError("synthetic failure inside synthesis")
+        for stage in ("wav_encode",):
+            self.reported_stages.append(stage)
+            if progress_callback:
+                progress_callback(stage, STAGE_MESSAGES[stage], STAGE_FRACTIONS[stage])
+        if self.fail_stage == "file_save":
+            raise RuntimeError("synthetic failure writing file")
+        Path(output_path).write_bytes(b"\x00" * 1024)
+
+
+class TestVoiceGenerationReliability:
+    """RC-6 — real stage progress, cancellation, retry, and diagnostics.
+
+    Uses fake engines/services so the behaviour is deterministic and the tests
+    never require the ~300 MB Kokoro model download.
+    """
+
+    # ------------------------------------------------------------------
+    # Service-level instrumentation
+    # ------------------------------------------------------------------
+
+    def test_service_reports_all_stages_in_order(self, tmp_path, monkeypatch):
+        from core import voice_generation_service as mod
+        from core.voice_generation_service import (
+            VoiceGenerationService,
+            VoiceGenerationCancelled,
+        )
+
+        VoiceGenerationService._kokoro = _FakeKokoroEngine()
+        try:
+            svc = VoiceGenerationService()
+            stages = []
+            svc.generate_to_file(
+                "Hello world.", "af_heart", 1.0, tmp_path / "out.wav",
+                progress_callback=lambda s, m, f: stages.append(s),
+            )
+            assert stages == [
+                "model_init", "text_prep", "synthesis", "wav_encode", "file_save",
+            ]
+            assert (tmp_path / "out.wav").exists()
+        finally:
+            VoiceGenerationService._kokoro = None
+
+    def test_service_stage_fractions_are_monotonic(self):
+        from core.voice_generation_service import STAGE_FRACTIONS
+        vals = list(STAGE_FRACTIONS.values())
+        assert vals == sorted(vals)
+        assert 0.0 < vals[0] < vals[-1] <= 1.0
+
+    def test_service_cancel_raises_cancelled_exception(self, tmp_path):
+        import threading
+        from core.voice_generation_service import (
+            VoiceGenerationService,
+            VoiceGenerationCancelled,
+        )
+
+        VoiceGenerationService._kokoro = _FakeKokoroEngine()
+        cancel = threading.Event()
+        try:
+            svc = VoiceGenerationService()
+            cancel.set()
+            with pytest.raises(VoiceGenerationCancelled):
+                svc.generate_to_file(
+                    "Hello world.", "af_heart", 1.0, tmp_path / "out.wav",
+                    cancel_event=cancel,
+                )
+            assert not (tmp_path / "out.wav").exists()  # nothing written
+        finally:
+            VoiceGenerationService._kokoro = None
+
+    def test_service_measures_real_stage_durations(self, tmp_path, monkeypatch):
+        import time as _time
+        from core import voice_generation_service as mod
+        from core.voice_generation_service import (
+            VoiceGenerationService,
+            _StageClock,
+        )
+
+        clock = _StageClock()
+        _time.sleep(0.02)
+        clock.mark("a")
+        _time.sleep(0.02)
+        clock.mark("b")
+        summary = clock.summary("Header")
+        assert "Header" in summary
+        assert "a" in summary and "b" in summary
+        assert "Total" in summary
+
+    # ------------------------------------------------------------------
+    # Worker-level behaviour (stages, cancel, retry, failure stage)
+    # ------------------------------------------------------------------
+
+    def test_worker_emits_real_stage_sequence(self, monkeypatch, tmp_path):
+        from ui.pages import voice_page as vp
+
+        fake = _FakeVoiceService()
+        monkeypatch.setattr(vp, "get_voice_generation_service", lambda: fake)
+
+        worker = vp.VoiceGenWorker(
+            "Hello narration.", "af_heart", 1.0, str(tmp_path / "out.wav")
+        )
+        stages = []
+        worker.stage.connect(lambda s, m, f: stages.append(s))
+        worker.finished.connect(lambda _p: stages.append("finished"))
+        worker.error.connect(lambda s, m: stages.append(f"error:{s}"))
+
+        worker.run()
+
+        assert "init" in stages
+        assert "ready" in stages
+        assert "synthesis" in stages
+        assert "done" in stages
+        assert stages[-1] == "finished"
+        assert (tmp_path / "out.wav").exists()
+
+    def test_worker_failure_reports_failed_stage(self, monkeypatch, tmp_path):
+        from ui.pages import voice_page as vp
+
+        fake = _FakeVoiceService(fail_stage="synthesis")
+        monkeypatch.setattr(vp, "get_voice_generation_service", lambda: fake)
+
+        worker = vp.VoiceGenWorker(
+            "Hello narration.", "af_heart", 1.0, str(tmp_path / "out.wav")
+        )
+        errors = []
+        worker.error.connect(lambda s, m: errors.append((s, m)))
+        finished = []
+        worker.finished.connect(finished.append)
+
+        worker.run()
+
+        assert errors and errors[0][0] == "synthesis"
+        assert "synthetic failure" in errors[0][1]
+        assert finished == []
+
+    def test_worker_cancel_emits_cancelled_and_no_output(self, monkeypatch, tmp_path):
+        import threading
+        from ui.pages import voice_page as vp
+
+        fake = _FakeVoiceService()
+        monkeypatch.setattr(vp, "get_voice_generation_service", lambda: fake)
+
+        cancel = threading.Event()
+        worker = vp.VoiceGenWorker(
+            "Hello narration.", "af_heart", 1.0, str(tmp_path / "out.wav"),
+            cancel_event=cancel,
+        )
+        cancelled = []
+        finished = []
+        worker.cancelled.connect(lambda: cancelled.append(True))
+        worker.finished.connect(finished.append)
+
+        cancel.set()  # cancel before run starts
+        worker.run()
+
+        assert cancelled == [True]
+        assert finished == []
+        assert not (tmp_path / "out.wav").exists()  # project left intact
+
+    # ------------------------------------------------------------------
+    # Long-script validation (backend pipeline only, no real model needed)
+    # ------------------------------------------------------------------
+
+    def test_long_standard_script_pipeline_completes(self, tmp_path):
+        """A ~4800-char script runs the full instrumented pipeline cleanly."""
+        from core.voice_generation_service import VoiceGenerationService
+
+        VoiceGenerationService._kokoro = _FakeKokoroEngine()
+        try:
+            svc = VoiceGenerationService()
+            long_text = (
+                "Educational narration for KaiMi Studio. " * 140
+            )[:4800]
+            stages = []
+            svc.generate_to_file(
+                long_text, "af_heart", 1.0, tmp_path / "standard.wav",
+                progress_callback=lambda s, m, f: stages.append(s),
+            )
+            assert stages[-1] == "file_save"
+            assert (tmp_path / "standard.wav").exists()
+            assert len(long_text) >= 4500
+        finally:
+            VoiceGenerationService._kokoro = None
+
+    def test_stress_script_pipeline_completes(self, tmp_path):
+        """A ~9500-char stress script completes without crashing."""
+        from core.voice_generation_service import VoiceGenerationService
+
+        VoiceGenerationService._kokoro = _FakeKokoroEngine()
+        try:
+            svc = VoiceGenerationService()
+            stress_text = (
+                "Stress test narration content for pipeline validation. " * 190
+            )[:9500]
+            svc.generate_to_file(
+                stress_text, "bm_george", 1.0, tmp_path / "stress.wav"
+            )
+            assert (tmp_path / "stress.wav").exists()
+            assert len(stress_text) >= 8000
+        finally:
+            VoiceGenerationService._kokoro = None
+
+    # ------------------------------------------------------------------
+    # Progress widget (elapsed / hint / error states)
+    # ------------------------------------------------------------------
+
+    def test_progress_widget_elapsed_hint_and_error(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication([])
+
+        from ui.widgets import ProgressWidget
+
+        w = ProgressWidget()
+        w.set_elapsed(83)
+        assert "01:23" in w.eta_label.text()
+        w.set_hint("Large narrations may take a little longer.")
+        assert w.step_label.text() == "Large narrations may take a little longer."
+        w.show_error("Failed at synthesis — boom")
+        assert "Failed at synthesis" in w.status_label.text()
+        w.reset()
+        assert w.status_label.text() == ""
 
 
 # =====================================================================

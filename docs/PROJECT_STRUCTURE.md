@@ -164,10 +164,11 @@ tests/
 ## `assets/` — Static Assets
 
 ```
-assets/
-└── icons/
-    ├── kaimi.ico         Application icon (Windows)
-    └── ...               Other asset files
+resources/
+└── branding/
+    ├── logo.png          Official master logo (lockup)
+    ├── app_icon.png      Official application icon
+    └── app_icon.ico      Windows icon (generated from app_icon.png at build time)
 ```
 
 ## Folder Responsibility Summary

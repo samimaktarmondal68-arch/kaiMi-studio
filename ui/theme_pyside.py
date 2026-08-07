@@ -78,6 +78,24 @@ class ThemeManager:
         app.setPalette(palette)
         app.setStyleSheet(self._stylesheet(c))
 
+        # Re-resolve every live widget's styling against the new theme.
+        # QSS-driven widgets (headers, cards, buttons, inputs, tables, labels
+        # with object names) update automatically; pages with inline theme
+        # colors rebuild their content in their on_change handlers. Without
+        # this pass, widgets could keep the previous theme's palette-derived
+        # colors until something repaints them.
+        for widget in app.allWidgets():
+            try:
+                style = widget.style()
+                style.unpolish(widget)
+                style.polish(widget)
+                widget.update()
+            except RuntimeError:
+                # The widget's C++ object may already be gone (e.g. orphaned
+                # by a sip-deleted parent layout during a page rebuild); skip
+                # it rather than crashing a theme switch.
+                continue
+
     def _stylesheet(self, c):
         return f"""
             QWidget {{

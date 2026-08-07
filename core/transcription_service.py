@@ -13,11 +13,11 @@ cannot be initialized, the caller receives a clear error explaining why.
 from __future__ import annotations
 
 import importlib.util
-import re
 import threading
 
 from core.logger import get_logger
 from core.settings import AppSettings
+from core.transcript_formatter import TranscriptFormatter
 
 #: Model sizes faster-whisper supports directly.
 WHISPER_MODELS = ("tiny", "base", "small", "medium", "large-v3")
@@ -34,76 +34,21 @@ PACKAGE_NAME = "faster-whisper"
 #: Importable module name (pip name has a hyphen, the module does not).
 IMPORT_NAME = "faster_whisper"
 
-#: Pause (seconds) between segments that starts a new paragraph.
-PARAGRAPH_GAP_SECONDS = 1.5
-
-#: Split text into sentences after sentence-ending punctuation.
-_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
-
 
 def _collapse_whitespace(text: str) -> str:
     """Collapse all whitespace runs to single spaces and strip edges."""
     return " ".join(str(text).split())
 
 
-def _capitalize_sentences(text: str) -> str:
-    """Uppercase the first letter of each sentence without rewriting text."""
-    parts = _SENTENCE_SPLIT.split(text)
-    capitalized = []
-    for part in parts:
-        if part and part[0].isalpha():
-            capitalized.append(part[0].upper() + part[1:])
-        else:
-            capitalized.append(part)
-    return " ".join(capitalized)
-
-
-def _group_into_paragraphs(
-    segments: list[dict],
-    gap_seconds: float = PARAGRAPH_GAP_SECONDS,
-) -> list[str]:
-    """Group cleaned segment text into natural paragraphs.
-
-    A paragraph break is inserted when the silence between two segments is at
-    least ``gap_seconds``. Each paragraph is the joined text of its segments.
-    """
-    paragraphs: list[list[str]] = []
-    current: list[str] = []
-    previous_end: float | None = None
-
-    for segment in segments:
-        text = _collapse_whitespace(segment.get("text", ""))
-        if not text:
-            continue
-        try:
-            start = float(segment.get("start") or 0.0)
-            end = float(segment.get("end") or start)
-        except (TypeError, ValueError):
-            start = 0.0
-            end = 0.0
-
-        if current and previous_end is not None and (start - previous_end) >= gap_seconds:
-            paragraphs.append(current)
-            current = []
-
-        current.append(text)
-        previous_end = end
-
-    if current:
-        paragraphs.append(current)
-
-    return [" ".join(group) for group in paragraphs]
-
-
 def format_transcript(segments: list[dict]) -> str:
-    """Format raw segment text into readable narration paragraphs.
+    """Format raw Whisper segments into the canonical [M:SS] block transcript.
 
-    Applies light cleanup only: proper sentence capitalization, single spaces,
-    natural paragraph grouping, exactly one blank line between paragraphs,
-    and trimmed edges. The narration is never summarized or rewritten.
+    Delegates to :class:`~core.transcript_formatter.TranscriptFormatter`.
+    Each segment becomes one ``[M:SS] narration`` block; blocks are separated
+    by exactly one blank line. Light cleanup only — the narration is never
+    summarised or rewritten.
     """
-    paragraphs = _group_into_paragraphs(segments)
-    return "\n\n".join(_capitalize_sentences(paragraph) for paragraph in paragraphs).strip()
+    return TranscriptFormatter().format(segments)
 
 
 class TranscriptionService:

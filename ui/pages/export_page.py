@@ -15,6 +15,7 @@ from core.theme import Fonts, Theme
 from ui.theme_pyside import ThemeManager
 from ui.widgets import (
     CardTitle,
+    clear_layout,
     EmptyState,
     IconProvider,
     MutedLabel,
@@ -46,8 +47,22 @@ class ExportPage(QWidget):
             self._load_project_data()
 
     def _on_theme_changed(self):
+        self._refresh_theme_static()
         if self.project_name:
             self._load_project_data()
+
+    def _refresh_theme_static(self):
+        """Re-apply theme tokens to chrome built once in ``_build``.
+
+        The project header and export-card description keep the colors they
+        were constructed with unless restyled here (Light-theme contrast
+        regression after a runtime theme switch).
+        """
+        c = ThemeManager.instance().colors()
+        self.name_label.setStyleSheet(f"{Fonts.subtitle(c.TEXT)}")
+        self.info_label.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
+        self.export_desc_label.setStyleSheet(f"{Fonts.caption(c.TEXT_SECONDARY)}")
+        self.status_badge.refresh_theme()
 
     def set_project(self, name):
         self.project_name = name
@@ -102,10 +117,12 @@ class ExportPage(QWidget):
 
         card.content_layout.addWidget(SectionHeader("Export Project"))
 
-        desc = QLabel("Export your script and image prompts as a TXT file ready for production.")
-        desc.setStyleSheet(f"{Fonts.caption(c.TEXT_SECONDARY)}")
-        desc.setWordWrap(True)
-        card.content_layout.addWidget(desc)
+        self.export_desc_label = QLabel(
+            "Export your script and image prompts as a TXT file ready for production."
+        )
+        self.export_desc_label.setStyleSheet(f"{Fonts.caption(c.TEXT_SECONDARY)}")
+        self.export_desc_label.setWordWrap(True)
+        card.content_layout.addWidget(self.export_desc_label)
 
         self.status_label = MutedLabel("")
         card.content_layout.addWidget(self.status_label)
@@ -178,11 +195,9 @@ class ExportPage(QWidget):
         self._load_export_history()
 
     def _build_workflow_steps(self, pipeline_state):
-        for i in reversed(range(self.workflow_layout.count())):
-            w = self.workflow_layout.itemAt(i).widget()
-            if w:
-                w.setParent(None)
-                w.deleteLater()
+        # clear_layout removes the nested step rows too — a widget-only loop
+        # would leak stale rows that keep old theme colors after a toggle.
+        clear_layout(self.workflow_layout)
 
         c = ThemeManager.instance().colors()
 

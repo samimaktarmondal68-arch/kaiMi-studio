@@ -18,6 +18,52 @@ from ..theme_pyside import ThemeManager
 from core.theme import Fonts
 
 
+def clear_layout(layout):
+    """Remove every widget, nested layout, and spacer from a ``QLayout``.
+
+    Shared teardown helper for pages that rebuild their content on theme or
+    data changes. Unlike a loop over ``item.widget()``, this also removes
+    nested sub-layouts (e.g. grids added via ``addLayout``), so rebuilds
+    never leak stale widgets that keep old theme colors.
+    """
+    if layout is None:
+        return
+    while layout.count():
+        item = layout.takeAt(0)
+        widget = item.widget()
+        if widget is not None:
+            widget.setParent(None)
+            widget.deleteLater()
+        else:
+            child = item.layout()
+            if child is not None:
+                clear_layout(child)
+        # spacer items carry neither a widget nor a layout; dropping the
+        # item (takeAt) is all that is needed.
+
+
+def rebuild_page_layout(page):
+    """Dispose a widget's root layout so ``_build()`` can install a fresh one.
+
+    A ``QWidget`` accepts only one layout manager; calling
+    ``QVBoxLayout(page)`` again would silently orphan the second layout and
+    its widgets would never be shown. Pages that rebuild their whole content
+    (e.g. the Dashboard on theme/data changes) must dispose the old layout
+    first — this helper clears every widget and nested layout, then destroys
+    the layout synchronously so the next ``_build()`` installs cleanly.
+    """
+    layout = page.layout()
+    if layout is None:
+        return
+    clear_layout(layout)
+    try:
+        from shiboken6 import delete as _sip_delete
+    except ImportError:  # pragma: no cover — shiboken6 ships with PySide6
+        layout.deleteLater()
+        return
+    _sip_delete(layout)
+
+
 class IconProvider:
     """Single source of truth for all application icons.
     Each icon is an SVG string rendered to QPixmap at requested size/color.
@@ -322,6 +368,29 @@ class ProgressWidget(QWidget):
         if eta:
             self.eta_label.setText(f"Estimated Time: {eta}")
 
+    def set_elapsed(self, seconds: float):
+        """Show elapsed wall-clock time in the ETA slot (e.g. 'Elapsed: 01:23').
+
+        Used by the Voice page while generation runs: the elapsed timer ticks
+        every second so the user always sees how long the stage has taken.
+        """
+        minutes, secs = divmod(max(0, int(seconds)), 60)
+        self.eta_label.setText(f"Elapsed: {minutes:02d}:{secs:02d}")
+
+    def set_hint(self, text: str):
+        """Show a reassurance hint below the progress bar."""
+        self.step_label.setText(text)
+
+    def show_error(self, message: str):
+        """Switch the status line to an error state (red, bold)."""
+        c = ThemeManager.instance().colors()
+        self.progress_bar.setValue(0)
+        self.percentage_label.setText("0%")
+        self.status_label.setText(message)
+        self.status_label.setStyleSheet(f"color: {c.ERROR}; font-weight: bold;")
+        self.step_label.setText("")
+        self.eta_label.setText("")
+
     def show_complete(self, message="Complete"):
         self.progress_bar.setValue(100)
         self.percentage_label.setText("100%")
@@ -436,6 +505,8 @@ class StatusBadge(QLabel):
 
     def __init__(self, text="", color=None, bg=None, parent=None):
         super().__init__(text, parent)
+        self._color_explicit = color is not None
+        self._bg_explicit = bg is not None
         c = ThemeManager.instance().colors()
         self._color = color or c.PRIMARY
         self._bg = bg or c.PRIMARY_LIGHT
@@ -451,6 +522,23 @@ class StatusBadge(QLabel):
     def update_colors(self, color: str, bg: str):
         self._color = color
         self._bg = bg
+        self._color_explicit = True
+        self._bg_explicit = True
+        self._update_style()
+
+    def refresh_theme(self):
+        """Re-derive theme-dependent colors after a runtime theme switch.
+
+        Explicitly-set colors (constructor args or ``update_colors``) are
+        kept as-is; defaults re-resolve so static badges never render
+        Dark-theme PRIMARY on a Light background (Light-theme contrast
+        regression).
+        """
+        c = ThemeManager.instance().colors()
+        if not self._color_explicit:
+            self._color = c.PRIMARY
+        if not self._bg_explicit:
+            self._bg = c.PRIMARY_LIGHT
         self._update_style()
 
 
@@ -493,6 +581,11 @@ class EmptyState(QWidget):
         layout.setSpacing(16)
         layout.setContentsMargins(32, 32, 32, 32)
 
+        self._icon_name = icon
+        self.icon_label = None
+        self.title_label = None
+        self.desc_label = None
+
         if icon:
             c = ThemeManager.instance().colors()
             self.icon_label = IconProvider.icon_label(icon, 48, c.TEXT_MUTED)
@@ -518,3 +611,19 @@ class EmptyState(QWidget):
             self.action_btn = ModernButton(action_text, primary=True)
             self.action_btn.clicked.connect(action_callback)
             layout.addWidget(self.action_btn, 0, Qt.AlignCenter)
+
+    def refresh_theme(self):
+        """Re-apply the current theme tokens to icon, title, and description.
+
+        Called by pages on theme change so empty states never keep colors
+        baked at construction (Light-theme contrast regression).
+        """
+        c = ThemeManager.instance().colors()
+        if self.icon_label is not None and self._icon_name:
+            self.icon_label.setPixmap(
+                IconProvider.pixmap(self._icon_name, 48, c.TEXT_MUTED)
+            )
+        if self.title_label is not None:
+            self.title_label.setStyleSheet(f"{Fonts.section_title(c.TEXT)}")
+        if self.desc_label is not None:
+            self.desc_label.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")

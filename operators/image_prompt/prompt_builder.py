@@ -3,6 +3,37 @@ from __future__ import annotations
 from operators.image_prompt.models import ImagePromptRequest
 from core.prompts import load_all_system_prompts
 
+#: Production Stage 7 reference template embedded in every generation request.
+#: The model must reproduce this exact writing style: timestamp line first,
+#: then one continuous natural-language paragraph opening with
+#: "Hand-drawn 2D doodle cartoon animation, ..." that flows through style,
+#: character, environment, action, camera, narration focus, negative wording,
+#: aspect ratio, and the KaiMi style tag — with no labels or metadata.
+PROMPT_TEMPLATE = (
+    "[0:00]\n"
+    "Hand-drawn 2D doodle cartoon animation, soft hand-drawn lines with clean "
+    "bold outlines and gentle pastel fills, a friendly teacher character "
+    "standing beside a large chalkboard, inside a bright sunny classroom, the "
+    "teacher points at a diagram of the water cycle while raindrops fall "
+    "outside the window, medium shot with a gentle push-in toward the board, "
+    'Narration focus: "Water is always moving around us.", no text, no labels, '
+    "no watermark, no realistic shading, no photography, no 3D render, 16:9 "
+    "aspect ratio, KaiMi educational doodle style"
+)
+
+#: Section labels that must never appear in a generated prompt. Google Flow
+#: sometimes renders these labels as visible text inside generated images.
+_FORBIDDEN_LABELS = (
+    "Master Style Lock:",
+    "Character:",
+    "Environment:",
+    "Lighting:",
+    "Camera:",
+    "Negative Prompt:",
+    "Scene:",
+    "Visual Description:",
+)
+
 
 class ImagePromptBuilder:
 
@@ -31,16 +62,40 @@ class ImagePromptBuilder:
             user += f"Timestamps:\n" + "\n".join(ts_lines) + "\n\n"
 
         user += (
-            f"Generate detailed image prompts for each logical scene or segment. "
+            f"Generate one image prompt per transcript scene. "
             f"Return your response as a JSON array of prompt objects.\n\n"
-            f"Each object must have exactly these keys:\n"
+            f"Each object must have exactly these keys (all values must be non-empty):\n"
             f'- "scene_number": integer\n'
-            f'- "timestamp": string in "MM:SS" format\n'
+            f'- "timestamp": zero-padded "MM:SS" string, e.g. "00:00" (the in-prompt '
+            f"first line uses [M:SS] without padding, e.g. [0:00], for the same scene)\n"
             f'- "prompt_title": short descriptive title\n'
             f'- "full_image_prompt": complete production-ready prompt\n\n'
-            f"The full_image_prompt must include:\n"
-            f"Subject, Environment, Composition, Lighting, Camera Angle, "
-            f"Art Style, Color Palette, Negative Prompt.\n\n"
+            f"The full_image_prompt must follow the Production Stage 7 reference "
+            f"format exactly:\n"
+            f"- First line: the scene timestamp in [M:SS] format without zero-padding "
+            f"(e.g. [0:00]), matching the transcript scene it illustrates.\n"
+            f"- Then one continuous natural-language paragraph that opens with "
+            f"'Hand-drawn 2D doodle cartoon animation, ...' and flows through, "
+            f"in order: illustration style and line quality, character "
+            f"description, environment description, scene action, camera angle, "
+            f'Narration focus: "<narration quote verbatim from that transcript '
+            f'scene>", negative wording, "16:9 aspect ratio", "KaiMi educational '
+            f"doodle style\".\n\n"
+            f"Reference template:\n{PROMPT_TEMPLATE}\n\n"
+            f"Rules:\n"
+            f"- One prompt per transcript scene; never merge or split transcript scenes.\n"
+            f"- Write the whole description as one continuous sentence joined "
+            f"with commas. No headings, no labels, no metadata, no bullet "
+            f"points, no blank lines and no line breaks inside a prompt.\n"
+            f"- Never write labels such as: "
+            f"{', '.join(_FORBIDDEN_LABELS)}.\n"
+            f"- Preserve the same illustration style, line quality, brush style, "
+            f"rendering style, color palette, and artistic identity across all "
+            f"scenes of the project.\n"
+            f"- When consecutive scenes share a location or character, reuse the "
+            f"same natural continuity language as the previous prompt.\n"
+            f"- The narration focus quote must be the exact narration from that "
+            f"transcript scene, quoted verbatim.\n\n"
             f"Return ONLY valid JSON. No markdown, no explanation, no extra text."
         )
 
