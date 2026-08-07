@@ -2497,3 +2497,159 @@ class TestVoiceGenerationService:
         second_instance = VoiceGenerationService._kokoro
 
         assert first_instance is second_instance   # model loaded exactly once
+
+
+# =====================================================================
+# PHASE 11 — Sprint 3.4C Workflow Fixes
+# =====================================================================
+
+class TestSprint34CWorkflow:
+    """Sprint 3.4C: project workflow fixes.
+
+    Covers the New Project dialog passing the selected Video Type into
+    project creation, and the Projects page "Generate Script" card action
+    (opens project -> Script page -> starts generation).
+    """
+
+    # ------------------------------------------------------------------
+    # Issue 2: New Project dialog must persist the selected Video Type
+    # ------------------------------------------------------------------
+
+    def test_dialog_passes_selected_video_type(self, pm, monkeypatch):
+        import ui.dialogs as dialogs_mod
+        from ui.dialogs import NewProjectDialog
+
+        class _FakeSettings:
+            def __init__(self):
+                self._data = {}
+
+            def get(self, key, default=None):
+                return self._data.get(key, default)
+
+            def set(self, key, value):
+                self._data[key] = value
+
+        monkeypatch.setattr(dialogs_mod, "AppSettings", _FakeSettings)
+        # The dialog builds its own ProjectManager: point it at the temp dir.
+        monkeypatch.setattr(ProjectManager, "PROJECTS_DIR", pm.PROJECTS_DIR)
+
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication([])
+
+        for video_type in ["Educational", "Entertainment", "Documentary", "Tutorial", "Other"]:
+            name = f"Dlg_{video_type.replace(' ', '_')}"
+            dlg = NewProjectDialog()
+            dlg.name_input.setText(name)
+            dlg.topic_input.setText(f"Topic for {video_type}")
+            dlg.video_type_combo.setCurrentText(video_type)
+            dlg._on_create()
+            data = pm.load_project(name)
+            assert data is not None
+            assert data["video_type"] == video_type
+
+    # ------------------------------------------------------------------
+    # Issue 1: Projects page "Generate Script" card action
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _make_projects_page(pm, monkeypatch):
+        from core.pipeline_service import get_pipeline_service
+        from ui.pages.projects import ProjectsPage
+
+        monkeypatch.setattr(ProjectManager, "PROJECTS_DIR", pm.PROJECTS_DIR)
+        service = get_pipeline_service()
+        service._pm = pm
+
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication([])
+
+        page = ProjectsPage()
+        page.manager = pm
+        page.refresh()
+        app.processEvents()
+        return page
+
+    def test_card_shows_generate_script_only_when_script_pending(self, pm, monkeypatch):
+        from PySide6.QtWidgets import QPushButton
+        from core.pipeline_service import get_pipeline_service
+
+        name = _create_sample_project(pm)             # Script NOT_STARTED
+        _create_sample_project(pm, "CompletedProject")  # Script completed below
+        service = get_pipeline_service()
+        service._pm = pm
+        service.mark_stage_completed("CompletedProject", "Script")
+
+        page = self._make_projects_page(pm, monkeypatch)
+
+        cards = {}
+        for i in range(page.cards_layout.count()):
+            widget = page.cards_layout.itemAt(i).widget()
+            if widget is not None:
+                cards[widget._project.get("name")] = widget
+
+        pending_texts = [b.text() for b in cards[name].findChildren(QPushButton)]
+        completed_texts = [b.text() for b in cards["CompletedProject"].findChildren(QPushButton)]
+
+        assert any("Generate Script" in t for t in pending_texts)
+        assert not any("Generate Script" in t for t in completed_texts)
+        assert "Resume" in pending_texts and "Resume" in completed_texts
+
+    def test_generate_script_action_opens_project_and_starts_generation(self, pm, monkeypatch):
+        from PySide6.QtWidgets import QApplication, QPushButton, QWidget
+
+        name = _create_sample_project(pm)
+        page = self._make_projects_page(pm, monkeypatch)
+        app = QApplication.instance()
+
+        class _FakeScriptPage(QWidget):
+            def __init__(self):
+                super().__init__()
+                self.project_name = None
+                self.generate_calls = []
+
+            def set_project(self, project_name):
+                self.project_name = project_name
+
+            def generate_script(self):
+                self.generate_calls.append(self.project_name)
+
+        class _FakeContent(QWidget):
+            def __init__(self, script_page):
+                super().__init__()
+                self._current = script_page
+
+            def currentWidget(self):
+                return self._current
+
+        class _FakeWindow(QWidget):
+            def __init__(self, script_page):
+                super().__init__()
+                self.script_page = script_page
+                self.content = _FakeContent(script_page)
+                self.navigated = []
+                self.context = None
+
+            def navigate_to(self, label, project_name=None):
+                self.navigated.append((label, project_name))
+                self.script_page.set_project(project_name)
+                self.content._current = self.script_page
+
+            def set_project_context(self, project_name):
+                self.context = project_name
+
+        script_page = _FakeScriptPage()
+        window = _FakeWindow(script_page)
+        page.setParent(window)
+
+        cards = [page.cards_layout.itemAt(i).widget() for i in range(page.cards_layout.count())]
+        card = next(c for c in cards if c is not None and c._project.get("name") == name)
+        gen_btn = next(b for b in card.findChildren(QPushButton) if "Generate Script" in b.text())
+        gen_btn.click()
+        app.processEvents()
+
+        assert window.navigated == [("Script", name)]
+        assert window.context == name
+        assert script_page.project_name == name
+        assert script_page.generate_calls == [name]

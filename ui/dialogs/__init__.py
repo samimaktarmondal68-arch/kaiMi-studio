@@ -283,6 +283,7 @@ class NewProjectDialog(QDialog):
                 topic=topic,
                 template_name=template_name,
                 platform=self.platform_combo.currentText(),
+                video_type=self.video_type_combo.currentText(),
                 language=self.language_combo.currentText(),
                 script_min=template.script_min if template else 4500,
                 script_max=template.script_max if template else 5000,

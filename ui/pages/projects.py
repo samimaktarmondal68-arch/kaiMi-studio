@@ -49,10 +49,11 @@ def _format_size(bytes_val: int) -> str:
 
 
 class _ProjectCard(ModernCard):
-    def __init__(self, project, navigate_callback):
+    def __init__(self, project, navigate_callback, generate_script_callback=None):
         super().__init__()
         self._project = project
         self._navigate_callback = navigate_callback
+        self._generate_script_callback = generate_script_callback
         self.setFixedHeight(170)
         self._outer_layout.setContentsMargins(0, 0, 0, 0)
         self._build()
@@ -190,6 +191,22 @@ class _ProjectCard(ModernCard):
                            color=c.TEXT_ON_PRIMARY, bg=badge_color)
         actions.addWidget(badge)
 
+        # A dedicated "Generate Script" action: opens the project, navigates
+        # to the Script page, and starts generation automatically (Sprint 3.4C).
+        script_status = pipeline_state.get("Script", StageStatus.BLOCKED)
+        if (
+            self._generate_script_callback
+            and action.stage == "Script"
+            and action.can_execute
+            and script_status in (StageStatus.NOT_STARTED, StageStatus.FAILED)
+        ):
+            gen_btn = ModernButton(action.label, primary=True)
+            gen_btn.setFixedSize(150, 30)
+            gen_btn.clicked.connect(
+                lambda checked, n=name: self._generate_script_callback(n)
+            )
+            actions.addWidget(gen_btn)
+
         open_btn = ModernButton("Resume", primary=True)
         open_btn.setFixedSize(80, 30)
         open_btn.clicked.connect(lambda checked, n=name: self._navigate_callback(n))
@@ -317,7 +334,11 @@ class ProjectsPage(QWidget):
 
         for project in projects:
             name = project.get("name", "")
-            card = _ProjectCard(project, lambda n=name: self._navigate("", n))
+            card = _ProjectCard(
+                project,
+                lambda n=name: self._navigate("", n),
+                lambda n=name: self._generate_script(n),
+            )
             self.cards_layout.addWidget(card)
 
         self.cards_layout.addStretch()
@@ -331,6 +352,22 @@ class ProjectsPage(QWidget):
             target = action.stage if action.stage else STAGE_LABELS[0]
             parent.set_project_context(project_name)
             parent.navigate_to(target, project_name)
+
+    def _generate_script(self, project_name):
+        """Open a project, navigate to the Script page, and start generation.
+
+        Called by the card's "Generate Script" action so the button always
+        produces visible feedback instead of appearing to do nothing.
+        """
+        parent = self.window()
+        if not parent or not hasattr(parent, "navigate_to"):
+            return
+        parent.set_project_context(project_name)
+        parent.navigate_to("Script", project_name)
+        content = getattr(parent, "content", None)
+        current = content.currentWidget() if content is not None else None
+        if current is not None and hasattr(current, "generate_script"):
+            current.generate_script()
 
     def _create_new(self):
         parent = self.window()
