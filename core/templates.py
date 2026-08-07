@@ -9,8 +9,6 @@ class TemplateConfig:
     platform: str
     video_type: str
     script_mode: str
-    script_min: int
-    script_max: int
     duration_preset: str
     description: str
 
@@ -21,8 +19,6 @@ TEMPLATES: list[TemplateConfig] = [
         platform="YouTube",
         video_type="Educational",
         script_mode="characters",
-        script_min=4500,
-        script_max=5000,
         duration_preset="10-15 minutes",
         description="Standard YouTube educational content with detailed script.",
     ),
@@ -31,8 +27,6 @@ TEMPLATES: list[TemplateConfig] = [
         platform="YouTube",
         video_type="Educational",
         script_mode="characters",
-        script_min=500,
-        script_max=1000,
         duration_preset="30-60 seconds",
         description="Short-form YouTube content with concise script.",
     ),
@@ -41,8 +35,6 @@ TEMPLATES: list[TemplateConfig] = [
         platform="Instagram",
         video_type="Educational",
         script_mode="characters",
-        script_min=300,
-        script_max=800,
         duration_preset="15-60 seconds",
         description="Vertical short-form educational content.",
     ),
@@ -51,8 +43,6 @@ TEMPLATES: list[TemplateConfig] = [
         platform="YouTube",
         video_type="Educational",
         script_mode="characters",
-        script_min=3000,
-        script_max=6000,
         duration_preset="8-12 minutes",
         description="In-depth educational content with thorough explanations.",
     ),
@@ -61,8 +51,6 @@ TEMPLATES: list[TemplateConfig] = [
         platform="YouTube",
         video_type="Documentary",
         script_mode="characters",
-        script_min=6000,
-        script_max=10000,
         duration_preset="15-30 minutes",
         description="Long-form documentary-style content with narrative arcs.",
     ),
@@ -71,8 +59,6 @@ TEMPLATES: list[TemplateConfig] = [
         platform="YouTube",
         video_type="Entertainment",
         script_mode="characters",
-        script_min=2000,
-        script_max=4000,
         duration_preset="5-10 minutes",
         description="Narrative-driven content with emotional engagement.",
     ),
@@ -81,8 +67,6 @@ TEMPLATES: list[TemplateConfig] = [
         platform="YouTube",
         video_type="Entertainment",
         script_mode="characters",
-        script_min=5000,
-        script_max=8000,
         duration_preset="20-40 minutes",
         description="Conversational format with discussion-style script.",
     ),
@@ -91,8 +75,6 @@ TEMPLATES: list[TemplateConfig] = [
         platform="YouTube",
         video_type="Educational",
         script_mode="characters",
-        script_min=4500,
-        script_max=5000,
         duration_preset="",
         description="Fully customizable project settings.",
     ),

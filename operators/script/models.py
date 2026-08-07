@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from core.script_lengths import DEFAULT_SCRIPT_MAX, DEFAULT_SCRIPT_MIN
+
 
 @dataclass(frozen=True)
 class ScriptRequest:
@@ -10,8 +12,8 @@ class ScriptRequest:
     video_type: str = "Educational"
     language: str = "English"
     script_mode: str = "characters"
-    script_min: int = 4500
-    script_max: int = 5000
+    script_min: int = DEFAULT_SCRIPT_MIN
+    script_max: int = DEFAULT_SCRIPT_MAX
     duration_preset: str = ""
     research_sources: str = ""
     keywords: str = ""

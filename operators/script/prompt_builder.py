@@ -19,8 +19,8 @@ class ScriptPromptBuilder:
         target_instruction = ""
         if request.script_mode == "characters":
             target_instruction = (
-                "The final script MUST be between 4500 and 4999 characters. "
-                "Never stop below 4500 characters and never exceed 4999 characters. "
+                f"The final script MUST be between {request.script_min} and {request.script_max} characters. "
+                f"Never stop below {request.script_min} characters and never exceed {request.script_max} characters. "
                 "Write in natural narration paragraphs with one blank line between paragraphs. "
                 "Use a strong curiosity hook, conversational documentary pacing, smooth transitions, "
                 "interesting explanations, and a strong ending. "

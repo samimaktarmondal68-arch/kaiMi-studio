@@ -13,6 +13,7 @@ from pathlib import Path
 from core.workflow import build_initial_workflow_state
 from core.logger import get_logger
 from core.templates import get_template
+from core.script_lengths import resolve_preset_bounds
 
 _INVALID_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _RESERVED_NAMES = {
@@ -62,6 +63,7 @@ def _build_smart_metadata(
     language: str, script_mode: str, script_min: int, script_max: int,
     duration_preset: str, research_sources: str, keywords: str,
 ) -> dict:
+    preset_min, preset_max = resolve_preset_bounds(script_min, script_max)
     return {
         "name": name,
         "topic": topic,
@@ -72,6 +74,8 @@ def _build_smart_metadata(
         "script_mode": script_mode,
         "script_min": script_min,
         "script_max": script_max,
+        "script_min_characters": preset_min,
+        "script_max_characters": preset_max,
         "duration_preset": duration_preset,
         "research_sources": research_sources,
         "keywords": keywords,

@@ -6,8 +6,9 @@ from PySide6.QtWidgets import (
 )
 
 from core.project_manager import ProjectManager
+from core.script_lengths import DEFAULT_SCRIPT_MAX, DEFAULT_SCRIPT_MIN, find_preset
 from core.settings import AppSettings
-from core.templates import get_template, get_template_names, TemplateConfig
+from core.templates import get_template, get_template_names
 from core.theme import Fonts, Spacing, Radius
 from core.version import APP_NAME, VERSION, CODENAME
 from ..theme_pyside import ThemeManager
@@ -245,9 +246,15 @@ class NewProjectDialog(QDialog):
         template = get_template(template_name)
         c = ThemeManager.instance().colors()
         if template:
+            preset = find_preset(DEFAULT_SCRIPT_MIN, DEFAULT_SCRIPT_MAX)
+            script_length = (
+                f"{preset.name} ({preset.min_characters:,}\u2013{preset.max_characters:,} chars)"
+                if preset
+                else f"{DEFAULT_SCRIPT_MIN:,}\u2013{DEFAULT_SCRIPT_MAX:,} chars"
+            )
             desc = (
                 f"Platform: {template.platform}  |  Type: {template.video_type}  |  "
-                f"Script: {template.script_min}-{template.script_max} chars  |  "
+                f"Script Length: {script_length} (default)  |  "
                 f"Duration: {template.duration_preset or 'Flexible'}"
             )
             self.template_desc.setText(desc)
@@ -285,8 +292,8 @@ class NewProjectDialog(QDialog):
                 platform=self.platform_combo.currentText(),
                 video_type=self.video_type_combo.currentText(),
                 language=self.language_combo.currentText(),
-                script_min=template.script_min if template else 4500,
-                script_max=template.script_max if template else 5000,
+                script_min=DEFAULT_SCRIPT_MIN,
+                script_max=DEFAULT_SCRIPT_MAX,
                 duration_preset=template.duration_preset if template else "",
                 description=self.description_input.toPlainText().strip(),
             )

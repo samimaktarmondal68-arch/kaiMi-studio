@@ -752,8 +752,8 @@ class TestProviderPreflight:
 class TestScriptGenerationPolish:
 
     def test_script_operator_continues_and_formats_to_target_length(self):
-        from operators.script.models import ScriptRequest
-        from operators.script.operator import SCRIPT_TARGET_MAX, SCRIPT_TARGET_MIN, ScriptOperator
+        from operators.script.models import DEFAULT_SCRIPT_MAX, DEFAULT_SCRIPT_MIN, ScriptRequest
+        from operators.script.operator import ScriptOperator
         from providers.models import GenerationResponse
 
         class FakeProviderManager:
@@ -775,7 +775,7 @@ class TestScriptGenerationPolish:
         operator = ScriptOperator(provider_manager=FakeProviderManager())
         result = operator.execute(ScriptRequest(topic="Photosynthesis"))
 
-        assert SCRIPT_TARGET_MIN <= len(result) <= SCRIPT_TARGET_MAX
+        assert DEFAULT_SCRIPT_MIN <= len(result) <= DEFAULT_SCRIPT_MAX
         assert "\n\n\n" not in result
         assert all(line.strip().upper() not in {"HOOK", "BODY", "ENDING", "PAUSE", "INTRO"} for line in result.splitlines())
         assert "(pause)" not in result.lower()
@@ -795,7 +795,7 @@ class TestScriptGenerationPolish:
 
         page.editor.setPlainText("b" * 4725)
         app.processEvents()
-        assert page.char_count_label.text() == "4725 / 4999 maximum"
+        assert page.char_count_label.text() == "4725 / 5000 maximum"
 
         page.copy_script()
         assert QApplication.clipboard().text() == "b" * 4725
@@ -2653,3 +2653,242 @@ class TestSprint34CWorkflow:
         assert window.context == name
         assert script_page.project_name == name
         assert script_page.generate_calls == [name]
+
+
+# =====================================================================
+# PHASE 12 — Sprint 3.4D Script Length Presets
+# =====================================================================
+
+class TestSprint34DScriptLengths:
+    """Sprint 3.4D: configurable, validated script length presets."""
+
+    def test_eight_presets_match_spec(self):
+        from core.script_lengths import SCRIPT_LENGTH_PRESETS
+        expected = [
+            ("Short Video", 4500, 5000, "Approx. 3\u20134 minutes"),
+            ("Medium Video", 6500, 7000, "Approx. 4\u20135 minutes"),
+            ("Long Video", 9500, 10000, "Approx. 6\u20137 minutes"),
+            ("Extended Video", 12500, 13000, "Approx. 8\u20139 minutes"),
+            ("Very Long Video", 15500, 16000, "Approx. 10\u201311 minutes"),
+            ("Documentary Video", 19500, 20000, "Approx. 13\u201314 minutes"),
+            ("Deep Dive Video", 24500, 25000, "Approx. 16\u201318 minutes"),
+            ("Maximum Video", 39500, 40000, "Approx. 28\u201330 minutes"),
+        ]
+        actual = [
+            (p.name, p.min_characters, p.max_characters, p.estimated_duration)
+            for p in SCRIPT_LENGTH_PRESETS
+        ]
+        assert actual == expected
+
+    def test_project_script_bounds_fallback_and_roundtrip(self):
+        from core.script_lengths import project_script_bounds
+        assert project_script_bounds({}) == (4500, 5000)
+        assert project_script_bounds(None) == (4500, 5000)
+        assert project_script_bounds({
+            "script_min_characters": 6500,
+            "script_max_characters": 7000,
+        }) == (6500, 7000)
+        assert project_script_bounds({
+            "script_min_characters": "6500",
+            "script_max_characters": 7000,
+        }) == (4500, 5000)
+        assert project_script_bounds({
+            "script_min_characters": 7000,
+            "script_max_characters": 6500,
+        }) == (4500, 5000)
+        assert project_script_bounds({
+            "script_min_characters": 0,
+            "script_max_characters": 7000,
+        }) == (4500, 5000)
+
+    def test_prompt_builder_uses_selected_range(self):
+        from operators.script.models import ScriptRequest
+        from operators.script.prompt_builder import ScriptPromptBuilder
+        builder = ScriptPromptBuilder()
+
+        _, short_prompt = builder.build(ScriptRequest(topic="t", script_min=4500, script_max=5000))
+        assert "4500" in short_prompt and "5000" in short_prompt
+        assert "4999" not in short_prompt
+
+        _, max_prompt = builder.build(ScriptRequest(topic="t", script_min=39500, script_max=40000))
+        assert "39500" in max_prompt and "40000" in max_prompt
+        assert "4500" not in max_prompt
+
+    def test_operator_enforces_selected_preset_range(self):
+        from operators.script.models import ScriptRequest
+        from operators.script.operator import ScriptOperator
+        from providers.models import GenerationResponse
+
+        sentence = (
+            "That factory pulls carbon dioxide from the air and draws water from the roots "
+            "to build the sugars that keep the plant alive. "
+        )
+
+        class FakeProviderManager:
+            def __init__(self):
+                self.calls = 0
+
+            def generate(self, request):
+                self.calls += 1
+                if self.calls == 1:
+                    return GenerationResponse(text="A short opening hook sentence here.")
+                return GenerationResponse(text=sentence * 80)
+
+        result = ScriptOperator(provider_manager=FakeProviderManager()).execute(
+            ScriptRequest(topic="Photosynthesis", script_min=6500, script_max=7000)
+        )
+        assert 6500 <= len(result) <= 7000
+
+    def test_operator_never_returns_under_minimum(self):
+        from operators.script.models import ScriptRequest
+        from operators.script.operator import ScriptOperator
+        from providers.models import GenerationResponse
+
+        class TinyProvider:
+            def generate(self, request):
+                return GenerationResponse(text="Too short. " * 10)
+
+        with pytest.raises(RuntimeError):
+            ScriptOperator(provider_manager=TinyProvider()).execute(
+                ScriptRequest(topic="t", script_min=6500, script_max=7000)
+            )
+
+    def test_project_creation_stores_preset_bounds(self, pm):
+        name = _create_sample_project(pm)  # legacy script_min=4500, script_max=5000
+        data = pm.load_project(name)
+        assert data["script_min_characters"] == 4500
+        assert data["script_max_characters"] == 5000
+        assert data["script_min"] == 4500
+        assert data["script_max"] == 5000
+
+    def test_project_creation_non_preset_range_falls_back(self, pm):
+        pm.create_project(
+            name="Doc", topic="t", platform="YouTube", video_type="Documentary",
+            script_min=6000, script_max=10000,
+        )
+        data = pm.load_project("Doc")
+        assert data["script_min_characters"] == 4500
+        assert data["script_max_characters"] == 5000
+
+    def test_script_page_preset_selection_persists(self, pm, monkeypatch):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from ui.pages.script_page import ScriptPage
+
+        monkeypatch.setattr(ProjectManager, "PROJECTS_DIR", pm.PROJECTS_DIR)
+        monkeypatch.setattr("core.script_storage._PROJECTS_DIR", pm.PROJECTS_DIR)
+        app = QApplication.instance() or QApplication([])
+
+        name = _create_sample_project(pm)
+        data = pm.load_project(name)
+        data["script_min_characters"] = 6500
+        data["script_max_characters"] = 7000
+        pm.update_project(name, data)
+
+        page = ScriptPage()
+        page.set_project(name)
+        app.processEvents()
+
+        # Combo and selection panel reflect the stored Medium preset.
+        assert page.script_length_combo.currentData() == "Medium Video"
+        assert page.preset_name_label.text() == "Medium Video"
+        assert page.preset_range_label.text() == "6,500\u20137,000 characters"
+        assert "Approx. 4\u20135 minutes" in page.preset_duration_label.text()
+
+        # Character count labels use the selected range.
+        page.editor.setPlainText("a" * 5000)
+        app.processEvents()
+        assert page.char_count_label.text() == "5000 / 6500 minimum"
+        page.editor.setPlainText("b" * 6800)
+        app.processEvents()
+        assert page.char_count_label.text() == "6800 / 7000 maximum"
+
+        # Changing the preset persists the new bounds to project.json.
+        page.script_length_combo.setCurrentIndex(5)  # Documentary Video
+        app.processEvents()
+        stored = pm.load_project(name)
+        assert stored["script_min_characters"] == 19500
+        assert stored["script_max_characters"] == 20000
+        assert stored["script_min"] == 19500
+        assert stored["script_max"] == 20000
+        assert page.preset_name_label.text() == "Documentary Video"
+
+
+# =====================================================================
+# PHASE 13 — Sprint 3.4E Release Polish
+# =====================================================================
+
+class TestSprint34EReleasePolish:
+    """Sprint 3.4E: release polish — preset naming, dialog text, and
+    removal of obsolete character-limit references."""
+
+    def test_continuation_limit_is_named_constant(self):
+        from core.script_lengths import MAX_SCRIPT_CONTINUATIONS
+        assert MAX_SCRIPT_CONTINUATIONS == 4
+
+    def test_templates_have_no_legacy_script_ranges(self):
+        from core.templates import TEMPLATES
+        assert TEMPLATES
+        for template in TEMPLATES:
+            assert not hasattr(template, "script_min")
+            assert not hasattr(template, "script_max")
+
+    def test_dialog_describes_preset_script_length(self, pm, monkeypatch):
+        import ui.dialogs as dialogs_mod
+
+        class _FakeSettings:
+            def __init__(self):
+                self._data = {}
+
+            def get(self, key, default=None):
+                return self._data.get(key, default)
+
+            def set(self, key, value):
+                self._data[key] = value
+
+        monkeypatch.setattr(dialogs_mod, "AppSettings", _FakeSettings)
+        monkeypatch.setattr(ProjectManager, "PROJECTS_DIR", pm.PROJECTS_DIR)
+
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from ui.dialogs import NewProjectDialog
+
+        app = QApplication.instance() or QApplication([])
+        dlg = NewProjectDialog()
+        desc = dlg.template_desc.text()
+        assert "Script Length: Short Video (4,500\u20135,000 chars) (default)" in desc
+        assert "Script: " not in desc  # the old raw-range label is gone
+
+    def test_dialog_created_project_uses_default_preset(self, pm, monkeypatch):
+        import ui.dialogs as dialogs_mod
+
+        class _FakeSettings:
+            def __init__(self):
+                self._data = {}
+
+            def get(self, key, default=None):
+                return self._data.get(key, default)
+
+            def set(self, key, value):
+                self._data[key] = value
+
+        monkeypatch.setattr(dialogs_mod, "AppSettings", _FakeSettings)
+        monkeypatch.setattr(ProjectManager, "PROJECTS_DIR", pm.PROJECTS_DIR)
+
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from ui.dialogs import NewProjectDialog
+
+        app = QApplication.instance() or QApplication([])
+        dlg = NewProjectDialog()
+        dlg.name_input.setText("Polished")
+        dlg.topic_input.setText("Topic")
+        dlg._on_create()
+        data = pm.load_project("Polished")
+        assert data is not None
+        assert data["script_min_characters"] == 4500
+        assert data["script_max_characters"] == 5000
+        assert data["script_min"] == 4500
+        assert data["script_max"] == 5000
+        assert data["script_min_characters"] == data["script_min"]
+        assert data["script_max_characters"] == data["script_max"]

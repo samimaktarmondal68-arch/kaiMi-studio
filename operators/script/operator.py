@@ -4,6 +4,7 @@ import re
 import time
 
 from core.logger import get_logger
+from core.script_lengths import MAX_SCRIPT_CONTINUATIONS
 from operators.script.models import (
     ScriptGenerationError,
     ScriptRequest,
@@ -17,11 +18,6 @@ from providers.provider_manager import ProviderManager, get_provider_manager
 
 class ProviderConfigurationError(RuntimeError):
     pass
-
-
-SCRIPT_TARGET_MIN = 4500
-SCRIPT_TARGET_MAX = 4999
-MAX_CONTINUATION_ATTEMPTS = 4
 
 _FORBIDDEN_LABELS = {
     "hook",
@@ -64,7 +60,7 @@ class ScriptOperator:
         system_prompt, user_prompt = self._prompt_builder.build(request)
 
         result = self._generate(system_prompt, user_prompt)
-        result = self._enforce_script_requirements(result, system_prompt)
+        result = self._enforce_script_requirements(result, system_prompt, request)
         elapsed = time.perf_counter() - t0
         self._log.info("ScriptOperator", f"Script generated in {elapsed:.2f}s ({len(result)} chars)")
         return result
@@ -80,6 +76,8 @@ class ScriptOperator:
         topic = (request.topic or "").strip()
         if not topic:
             raise ScriptValidationError("Script topic must not be empty.")
+        if request.script_min <= 0 or request.script_max < request.script_min:
+            raise ScriptValidationError("Invalid script length range.")
 
     def _generate(self, system_prompt: str, user_prompt: str) -> str:
         try:
@@ -100,30 +98,42 @@ class ScriptOperator:
 
         return self._format_script_text(response.text)
 
-    def _enforce_script_requirements(self, script: str, system_prompt: str) -> str:
-        """Return a formatted script within the required character range."""
-        result = self._fit_to_maximum(self._format_script_text(script))
+    def _enforce_script_requirements(
+        self, script: str, system_prompt: str, request: ScriptRequest
+    ) -> str:
+        """Return a formatted script inside the requested character range.
+
+        If the draft is below the minimum, the model is asked to continue
+        until the script reaches the range; oversized drafts are trimmed at
+        a natural boundary. An out-of-range script is never returned.
+        """
+        min_characters, max_characters = request.script_min, request.script_max
+        result = self._fit_to_maximum(self._format_script_text(script), min_characters, max_characters)
 
         attempts = 0
-        while len(result) < SCRIPT_TARGET_MIN and attempts < MAX_CONTINUATION_ATTEMPTS:
+        while len(result) < min_characters and attempts < MAX_SCRIPT_CONTINUATIONS:
             attempts += 1
-            continuation = self._generate_continuation(result, system_prompt)
+            continuation = self._generate_continuation(
+                result, system_prompt, min_characters, max_characters
+            )
             result = self._merge_continuation(result, continuation)
-            result = self._fit_to_maximum(result)
+            result = self._fit_to_maximum(result, min_characters, max_characters)
 
-        if len(result) < SCRIPT_TARGET_MIN:
+        if len(result) < min_characters:
             raise ScriptGenerationError(
-                "Generated script did not reach the 4500 character minimum."
+                f"Generated script did not reach the {min_characters} character minimum."
             )
 
-        if len(result) > SCRIPT_TARGET_MAX:
-            result = self._fit_to_maximum(result)
+        if len(result) > max_characters:
+            result = self._fit_to_maximum(result, min_characters, max_characters)
 
         return result
 
-    def _generate_continuation(self, script: str, system_prompt: str) -> str:
-        remaining_min = SCRIPT_TARGET_MIN - len(script)
-        remaining_max = SCRIPT_TARGET_MAX - len(script)
+    def _generate_continuation(
+        self, script: str, system_prompt: str, min_characters: int, max_characters: int
+    ) -> str:
+        remaining_min = min_characters - len(script)
+        remaining_max = max_characters - len(script)
         prompt = (
             "Continue this YouTube documentary narration seamlessly from the exact point it stops.\n\n"
             "Rules:\n"
@@ -145,27 +155,27 @@ class ScriptOperator:
             return script
         return self._format_script_text(f"{script}\n\n{continuation}")
 
-    def _fit_to_maximum(self, script: str) -> str:
+    def _fit_to_maximum(self, script: str, min_characters: int, max_characters: int) -> str:
         script = self._format_script_text(script)
-        if len(script) <= SCRIPT_TARGET_MAX:
+        if len(script) <= max_characters:
             return script
 
-        boundary = self._find_clean_cut(script)
+        boundary = self._find_clean_cut(script, min_characters, max_characters)
         if boundary:
             return self._format_script_text(script[:boundary])
 
-        return self._format_script_text(script[:SCRIPT_TARGET_MAX].rstrip())
+        return self._format_script_text(script[:max_characters].rstrip())
 
-    def _find_clean_cut(self, script: str) -> int:
+    def _find_clean_cut(self, script: str, min_characters: int, max_characters: int) -> int:
         """Find a natural cut point that keeps the script inside the target range."""
-        paragraph_cut = script.rfind("\n\n", SCRIPT_TARGET_MIN, SCRIPT_TARGET_MAX + 1)
-        if paragraph_cut >= SCRIPT_TARGET_MIN:
+        paragraph_cut = script.rfind("\n\n", min_characters, max_characters + 1)
+        if paragraph_cut >= min_characters:
             return paragraph_cut
 
-        sentence_matches = list(re.finditer(r"[.!?][\"')\]]?(?=\s)", script[:SCRIPT_TARGET_MAX + 1]))
+        sentence_matches = list(re.finditer(r"[.!?][\"')\]]?(?=\s)", script[:max_characters + 1]))
         for match in reversed(sentence_matches):
             cut = match.end()
-            if cut >= SCRIPT_TARGET_MIN:
+            if cut >= min_characters:
                 return cut
 
         return 0

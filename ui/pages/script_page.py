@@ -1,6 +1,9 @@
+from datetime import datetime
+
 from PySide6.QtCore import QObject, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -18,6 +21,15 @@ from core.project_manager import ProjectManager
 from core.script_storage import ScriptStorage
 from core.task_manager import TaskManager
 from core.theme import Fonts, Spacing, Radius
+from core.script_lengths import (
+    DEFAULT_SCRIPT_MAX,
+    DEFAULT_SCRIPT_MIN,
+    SCRIPT_LENGTH_PRESETS,
+    estimate_duration,
+    find_preset,
+    get_preset,
+    project_script_bounds,
+)
 from operators.script.models import ScriptRequest
 from operators.script.operator import ScriptOperator
 from providers.provider_manager import get_provider_manager
@@ -35,9 +47,6 @@ from ..widgets import (
 
 
 _log = get_logger()
-
-SCRIPT_TARGET_MIN = 4500
-SCRIPT_TARGET_MAX = 4999
 
 
 class _GenerationBridge(QObject):
@@ -71,6 +80,9 @@ class ScriptPage(QWidget):
         self.task_manager = TaskManager()
         self._pipeline = get_pipeline_service()
         self.project_name = None
+        self._script_min = DEFAULT_SCRIPT_MIN
+        self._script_max = DEFAULT_SCRIPT_MAX
+        self._loading_bounds = False
         self._script_text = ""
         self._saved_text = ""
         self._dirty = False
@@ -122,6 +134,9 @@ class ScriptPage(QWidget):
         self.progress_widget.setVisible(False)
         layout.addWidget(self.progress_widget)
 
+        # Default selection shown before any project is loaded.
+        self._set_bounds(DEFAULT_SCRIPT_MIN, DEFAULT_SCRIPT_MAX, persist=False)
+
         layout.addStretch()
 
     def _build_project_header(self, parent):
@@ -150,19 +165,140 @@ class ScriptPage(QWidget):
         self.info_platform.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
         self.info_language = QLabel("")
         self.info_language.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
-        self.info_target = QLabel("")
-        self.info_target.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
         meta_row.addWidget(self.info_topic)
         meta_row.addWidget(self.info_platform)
         meta_row.addWidget(self.info_language)
-        meta_row.addWidget(self.info_target)
         meta_row.addStretch()
         card.content_layout.addLayout(meta_row)
+
+        # Script Length preset selector (Sprint 3.4D).
+        length_row = QHBoxLayout()
+        length_row.setSpacing(8)
+        length_label = QLabel("Script Length")
+        length_label.setStyleSheet(f"{Fonts.caption_bold(c.TEXT_SECONDARY)}")
+        length_row.addWidget(length_label)
+
+        self.script_length_combo = QComboBox()
+        for preset in SCRIPT_LENGTH_PRESETS:
+            self.script_length_combo.addItem(self._preset_label(preset), preset.name)
+        self.script_length_combo.setMinimumWidth(420)
+        self.script_length_combo.currentIndexChanged.connect(self._on_preset_changed)
+        length_row.addWidget(self.script_length_combo)
+        length_row.addStretch()
+        card.content_layout.addLayout(length_row)
+
+        # "Selected Script Length" summary panel; updates instantly on
+        # selection change.
+        selection = QFrame()
+        selection.setAttribute(Qt.WA_StyledBackground, True)
+        selection.setStyleSheet(
+            f"background-color: {c.SURFACE}; border: 1px solid {c.BORDER}; border-radius: 10px;"
+        )
+        selection_layout = QVBoxLayout(selection)
+        selection_layout.setContentsMargins(12, 10, 12, 10)
+        selection_layout.setSpacing(4)
+
+        selection_title = QLabel("Selected Script Length")
+        selection_title.setStyleSheet(f"{Fonts.caption_bold(c.TEXT_SECONDARY)}")
+        selection_layout.addWidget(selection_title)
+
+        def make_summary_row(caption, value_style):
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            caption_label = QLabel(caption)
+            caption_label.setStyleSheet(f"{Fonts.caption(c.TEXT_MUTED)}")
+            value_label = QLabel("")
+            value_label.setStyleSheet(value_style)
+            row.addWidget(caption_label)
+            row.addWidget(value_label)
+            row.addStretch()
+            selection_layout.addLayout(row)
+            return value_label
+
+        self.preset_name_label = make_summary_row("Name", Fonts.css(13, '600', c.PRIMARY))
+        self.preset_range_label = make_summary_row(
+            "Character Range", Fonts.caption(c.TEXT_SECONDARY)
+        )
+        self.preset_duration_label = make_summary_row(
+            "Estimated Duration", Fonts.caption(c.TEXT_SECONDARY)
+        )
+
+        card.content_layout.addWidget(selection)
 
         self.project_label = MutedLabel("")
         card.content_layout.addWidget(self.project_label)
 
         parent.addWidget(card)
+
+    @staticmethod
+    def _preset_label(preset):
+        """Combo display text: name, character range, estimated duration."""
+        return (
+            f"{preset.name}  \u00B7  {preset.min_characters:,}\u2013{preset.max_characters:,} "
+            f"characters  \u00B7  {preset.estimated_duration}"
+        )
+
+    def _on_preset_changed(self, index):
+        if self._loading_bounds or index < 0:
+            return
+        # Resolve by the combo's item data so the selection stays correct
+        # even if the combo item order ever diverges from the preset list.
+        preset = get_preset(self.script_length_combo.itemData(index))
+        if preset is None:
+            return
+        self._set_bounds(preset.min_characters, preset.max_characters, persist=True)
+
+    def _set_bounds(self, min_characters, max_characters, persist=False):
+        """Apply script length bounds to every label and optionally persist them."""
+        changed = (
+            min_characters != self._script_min or max_characters != self._script_max
+        )
+        self._script_min = min_characters
+        self._script_max = max_characters
+
+        preset = find_preset(min_characters, max_characters)
+        name = preset.name if preset else f"{min_characters:,}\u2013{max_characters:,}"
+        duration = (
+            preset.estimated_duration
+            if preset
+            else estimate_duration(min_characters, max_characters)
+        )
+
+        c = ThemeManager.instance().colors()
+        self.preset_name_label.setText(name)
+        self.preset_name_label.setStyleSheet(f"{Fonts.css(13, '600', c.PRIMARY)}")
+        self.preset_range_label.setText(f"{min_characters:,}\u2013{max_characters:,} characters")
+        self.preset_range_label.setStyleSheet(f"{Fonts.caption(c.TEXT_SECONDARY)}")
+        self.preset_duration_label.setText(duration)
+        self.preset_duration_label.setStyleSheet(f"{Fonts.caption(c.TEXT_SECONDARY)}")
+
+        # Sync the combo without re-triggering persistence.
+        self._loading_bounds = True
+        index = self.script_length_combo.findData(name)
+        if index >= 0:
+            self.script_length_combo.setCurrentIndex(index)
+        self._loading_bounds = False
+
+        self._update_text_metrics(self.editor.toPlainText())
+
+        if persist and changed and self.project_name:
+            self._persist_bounds(min_characters, max_characters)
+
+    def _persist_bounds(self, min_characters, max_characters):
+        """Write the selected bounds into the project metadata."""
+        data = self.manager.load_project(self.project_name)
+        if data is None:
+            return
+        data["script_min_characters"] = min_characters
+        data["script_max_characters"] = max_characters
+        # Keep the legacy keys in sync for backward-compatible consumers.
+        data["script_min"] = min_characters
+        data["script_max"] = max_characters
+        data["last_modified"] = datetime.now().strftime("%d-%m-%Y %H:%M")
+        self.manager.update_project(self.project_name, data)
+        # Let the rest of the UI (e.g. the Projects page) refresh.
+        from core.pipeline_events import get_pipeline_events
+        get_pipeline_events().project_updated.emit(self.project_name)
 
     def _build_status_bar(self, parent):
         bar = QFrame()
@@ -176,7 +312,7 @@ class ScriptPage(QWidget):
         row.setContentsMargins(16, 0, 16, 0)
         row.setSpacing(16)
 
-        self.char_count_label = QLabel(f"0 / {SCRIPT_TARGET_MIN} minimum")
+        self.char_count_label = QLabel(f"0 / {DEFAULT_SCRIPT_MIN} minimum")
         self.char_count_label.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
         row.addWidget(self.char_count_label)
 
@@ -244,10 +380,10 @@ class ScriptPage(QWidget):
 
     def _update_text_metrics(self, text):
         length = len(text)
-        if length < SCRIPT_TARGET_MIN:
-            self.char_count_label.setText(f"{length} / {SCRIPT_TARGET_MIN} minimum")
+        if length < self._script_min:
+            self.char_count_label.setText(f"{length} / {self._script_min} minimum")
         else:
-            self.char_count_label.setText(f"{length} / {SCRIPT_TARGET_MAX} maximum")
+            self.char_count_label.setText(f"{length} / {self._script_max} maximum")
         self.word_count_label.setText(f"{self._count_words(text)} words")
 
     def _load_project_data(self):
@@ -264,10 +400,12 @@ class ScriptPage(QWidget):
             self.info_topic.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
             self.info_platform.setText(f"Platform: {platform}")
             self.info_language.setText(f"Language: {language}")
-            self.info_target.setText(f"Target: {SCRIPT_TARGET_MIN}-{SCRIPT_TARGET_MAX} chars")
 
             self.project_label.setText(f"/ {self.project_name}")
             self.status_badge.setText("Script")
+
+            min_characters, max_characters = project_script_bounds(project_data)
+            self._set_bounds(min_characters, max_characters, persist=False)
 
         script_data = self.script_storage.load(self.project_name)
         output = script_data.get("script_output", "")
@@ -323,14 +461,15 @@ class ScriptPage(QWidget):
 
         def run_task(task_manager):
             research_context = self._obtain_research_context(project_data)
+            min_characters, max_characters = project_script_bounds(project_data)
             request = ScriptRequest(
                 topic=project_data.get("topic", ""),
                 platform=project_data.get("platform", "Long Form"),
                 video_type=project_data.get("video_type", "Educational"),
                 language=project_data.get("language", "English"),
                 script_mode=project_data.get("script_mode", "characters"),
-                script_min=SCRIPT_TARGET_MIN,
-                script_max=SCRIPT_TARGET_MAX,
+                script_min=min_characters,
+                script_max=max_characters,
                 duration_preset=project_data.get("duration_preset", ""),
                 research_sources=research_context,
                 keywords=project_data.get("keywords", ""),
@@ -400,12 +539,13 @@ class ScriptPage(QWidget):
 
         project_data = self.manager.load_project(self.project_name) or {}
 
+        min_characters, max_characters = project_script_bounds(project_data)
         self.script_storage.save(
             project_name=self.project_name,
             script_output=result,
             script_mode=project_data.get("script_mode", "characters"),
-            script_min=project_data.get("script_min", 4500),
-            script_max=project_data.get("script_max", 5000),
+            script_min=min_characters,
+            script_max=max_characters,
             duration_preset=project_data.get("duration_preset", ""),
             research_data=self._last_research_context,
         )
