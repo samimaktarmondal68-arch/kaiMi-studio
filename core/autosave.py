@@ -56,7 +56,12 @@ class AutosaveManager:
 
     def _notify_status(self, status: str) -> None:
         for cb in self._status_callbacks:
-            cb(status)
+            try:
+                cb(status)
+            except Exception:
+                # Status callbacks target UI indicators that may already have
+                # been destroyed; a stale indicator must not break the save.
+                pass
 
     def is_dirty(self) -> bool:
         return len(self._dirty_keys) > 0

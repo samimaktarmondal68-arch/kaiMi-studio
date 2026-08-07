@@ -441,13 +441,21 @@ class VoicePage(QWidget):
             self._load_project_data()
 
     def cleanup(self):
+        """Stop background workers and wait for their threads to finish.
+
+        Workers cannot be interrupted mid-operation (transcription / TTS), so
+        the GUI thread waits while processing events. Deleting a running
+        QThread would abort the application on exit (Sprint 3.4B / C3).
+        """
         self._stop_progress_animation()
         if self._media_player:
             self._media_player.stop()
         for thread in (self._worker_thread, self._preview_thread, self._gen_thread):
             if thread and thread.isRunning():
                 thread.quit()
-                thread.wait(3000)
+        for thread in (self._worker_thread, self._preview_thread, self._gen_thread):
+            if thread and thread.isRunning():
+                self._wait_for_thread(thread)
         for worker in (self._worker, self._preview_worker, self._gen_worker):
             if worker:
                 worker.deleteLater()
@@ -464,7 +472,23 @@ class VoicePage(QWidget):
             self._gen_thread.deleteLater()
             self._gen_thread = None
 
+    @staticmethod
+    def _wait_for_thread(thread: QThread) -> None:
+        """Block the GUI thread until a worker thread has fully finished.
+
+        Events are intentionally not processed while waiting: processing them
+        during shutdown could deliver completion slots that start follow-up
+        work on new threads (e.g. the auto-advance chain after voice
+        generation), which would then be destroyed while still running.
+        """
+        thread.wait()
+
     def set_project(self, name):
+        if name != self.project_name:
+            # Persist pending edits to the OLD project before its autosave
+            # callback could fire after we switch (Sprint 3.4B / C1, C2).
+            self._autosave.flush_all()
+            self._dirty = False
         self.project_name = name
         self._load_project_data()
 
@@ -1211,7 +1235,9 @@ class VoicePage(QWidget):
         self._restore_voice_settings()
         self._refresh_import_ui()
 
-        if self._transcript_text:
+        if self._transcript_text and not self._dirty:
+            # Never overwrite unsaved user edits (Sprint 3.4B / C2). Pipeline
+            # events reload page data; only reload the editor when it is clean.
             self.next_btn.setEnabled(True)
             self.download_btn.setEnabled(True)
             self.transcript_box.setPlainText(self._transcript_text)
@@ -1224,6 +1250,13 @@ class VoicePage(QWidget):
                 self.timestamps_label.setText(
                     f"{seg_count} segments  |  First: {first_time}  |  Last: {last_time}"
                 )
+        elif not self._dirty:
+            # A project with no transcript must not keep another project's text.
+            self._saved_text = ""
+            self.transcript_box.setPlainText("")
+            self.next_btn.setEnabled(False)
+            self.download_btn.setEnabled(False)
+            self.timestamps_label.setText("")
 
     def _load_saved_transcript(self, project_path):
         fp = project_path / "transcript.json"

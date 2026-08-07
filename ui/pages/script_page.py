@@ -94,8 +94,14 @@ class ScriptPage(QWidget):
 
     def cleanup(self):
         self._stop_progress_animation()
+        self.task_manager.cancel()
 
     def set_project(self, name):
+        if name != self.project_name:
+            # Persist pending edits to the OLD project before its autosave
+            # callback could fire after we switch (Sprint 3.4B / C1, C2).
+            self._autosave.flush_all()
+            self._dirty = False
         self.project_name = name
         self._load_project_data()
 
@@ -266,6 +272,10 @@ class ScriptPage(QWidget):
         script_data = self.script_storage.load(self.project_name)
         output = script_data.get("script_output", "")
         if output:
+            # Never overwrite unsaved user edits (Sprint 3.4B / C2). Pipeline
+            # events reload page data; only reload the editor when it is clean.
+            if self._dirty:
+                return
             self.editor.setPlainText(output)
             self._saved_text = output
             self._dirty = False
@@ -274,6 +284,13 @@ class ScriptPage(QWidget):
             self.status_label.setText("Saved")
             self.status_label.setStyleSheet(f"color: {c.SUCCESS}; font-weight: bold;")
             self._update_text_metrics(output)
+        elif not self._dirty:
+            # A project with no saved script must not keep another project's text.
+            self._saved_text = ""
+            self.editor.setPlainText("")
+            self._dirty = False
+            self.save_btn.setEnabled(False)
+            self._update_text_metrics("")
 
     def generate_script(self):
         if not self.project_name:

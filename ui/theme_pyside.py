@@ -39,9 +39,10 @@ class ThemeManager:
             cb(self._current)
 
     def set_mode(self, mode):
-        if mode != self._current:
-            self._current = mode
-            self._apply()
+        changed = mode != self._current
+        self._current = mode
+        self._apply()
+        if changed:
             for cb in self._callbacks:
                 cb(self._current)
 

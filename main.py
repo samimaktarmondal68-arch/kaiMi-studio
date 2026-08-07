@@ -44,6 +44,18 @@ def _verify_integrity(log) -> bool:
     return all_ok
 
 
+def _shutdown() -> None:
+    """Flush pending autosaves, then stop the autosave timers.
+
+    flush_all() must run before shutdown() so edits still inside the debounce
+    window are persisted instead of being discarded (Sprint 3.4B / C1).
+    """
+    from core.autosave import get_autosave_manager
+    manager = get_autosave_manager()
+    manager.flush_all()
+    manager.shutdown()
+
+
 def main():
     install_crash_handler()
     log = get_logger()
@@ -81,12 +93,11 @@ def main():
         dlg = FirstRunDialog(window, on_close=_on_first_run_close)
         dlg.exec()
 
-    def _shutdown():
+    def _on_quit():
         log.shutdown("Application closed")
-        from core.autosave import get_autosave_manager
-        get_autosave_manager().shutdown()
+        _shutdown()
 
-    app.aboutToQuit.connect(_shutdown)
+    app.aboutToQuit.connect(_on_quit)
 
     sys.exit(app.exec())
 

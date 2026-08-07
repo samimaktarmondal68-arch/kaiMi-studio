@@ -15,6 +15,7 @@ from core.notifications import NotificationService
 from core.pipeline_events import get_pipeline_events
 from core.pipeline_service import get_pipeline_service
 from core.project_manager import ProjectManager
+from core.settings import AppSettings
 from core.shortcuts import KeyboardShortcuts
 
 
@@ -39,7 +40,9 @@ class MainWindow(QMainWindow):
 
     def _init_theme(self):
         self.theme = ThemeManager.instance()
-        self.theme.set_mode("dark")
+        saved = AppSettings().get_theme()
+        mode = saved if saved in ("dark", "light") else "dark"
+        self.theme.set_mode(mode)
         self.theme.on_change(lambda mode: self._on_theme_changed())
 
     def _init_ui(self):
@@ -145,6 +148,25 @@ class MainWindow(QMainWindow):
         self._project_name = name
         if name:
             self._update_sidebar_project(name)
+
+    def closeEvent(self, event):
+        """Flush pending autosaves and stop background workers before exit.
+
+        Regression (Sprint 3.4B / C1, C3): without this, edits inside the
+        autosave debounce window were dropped and running QThreads were
+        destroyed while still running.
+        """
+        get_autosave_manager().flush_all()
+        self._cleanup_pages()
+        super().closeEvent(event)
+
+    def _cleanup_pages(self):
+        """Give every page a chance to stop its background workers."""
+        for i in range(self.content.count()):
+            page = self.content.widget(i)
+            cleanup = getattr(page, "cleanup", None)
+            if callable(cleanup):
+                cleanup()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

@@ -90,6 +90,10 @@ class ImagePromptsPage(QWidget):
         self.project_name = name
         self._load_project_data()
 
+    def cleanup(self):
+        """Cancel any in-flight generation task before the app exits."""
+        self.task_manager.cancel()
+
     def _build(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)

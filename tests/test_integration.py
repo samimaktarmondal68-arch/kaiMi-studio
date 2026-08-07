@@ -1780,6 +1780,395 @@ class TestUIConsistency:
 
 
 # =====================================================================
+# PHASE 12B — Theme Initialization (Sprint 3.4A)
+# =====================================================================
+
+class TestThemeStartup:
+    """The saved theme must be fully applied before the UI is visible.
+
+    Regression: MainWindow._init_theme hard-coded set_mode("dark"), which was a
+    no-op because ThemeManager._current already defaults to "dark" — so the app
+    stylesheet/palette were never applied at startup, producing a mixed dark/
+    light UI until the user manually cycled the theme in Settings.
+    """
+
+    def test_set_mode_applies_even_when_mode_unchanged(self):
+        """set_mode must re-apply the stylesheet even when the mode already
+        matches, otherwise the very first startup never applies the theme."""
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from ui.theme_pyside import ThemeManager
+
+        QApplication.instance() or QApplication([])
+        applied = []
+        tm = ThemeManager()
+        tm._apply = lambda: applied.append(True)
+        tm.set_mode("dark")  # class default is already "dark"
+        assert applied == [True]
+
+    def test_main_window_init_theme_uses_saved_mode(self, monkeypatch):
+        """_init_theme must read the saved preference instead of hard-coding."""
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from ui.main_window import MainWindow
+
+        class FakeSettings:
+            def get_theme(self):
+                return "light"
+
+        fake_tm = SimpleNamespace()
+        fake_tm.set_mode_calls = []
+        fake_tm.on_change_calls = []
+        fake_tm.set_mode = lambda m: fake_tm.set_mode_calls.append(m)
+        fake_tm.on_change = lambda cb: fake_tm.on_change_calls.append(cb)
+
+        class FakeThemeManager:
+            @staticmethod
+            def instance():
+                return fake_tm
+
+        monkeypatch.setattr("ui.main_window.AppSettings", FakeSettings)
+        monkeypatch.setattr("ui.main_window.ThemeManager", FakeThemeManager)
+
+        win = MainWindow.__new__(MainWindow)
+        win._init_theme()
+        assert fake_tm.set_mode_calls == ["light"]
+
+    def test_invalid_saved_theme_falls_back_to_dark(self, monkeypatch):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from ui.main_window import MainWindow
+
+        class FakeSettings:
+            def get_theme(self):
+                return "banana"
+
+        fake_tm = SimpleNamespace()
+        fake_tm.set_mode_calls = []
+        fake_tm.on_change_calls = []
+        fake_tm.set_mode = lambda m: fake_tm.set_mode_calls.append(m)
+        fake_tm.on_change = lambda cb: fake_tm.on_change_calls.append(cb)
+
+        class FakeThemeManager:
+            @staticmethod
+            def instance():
+                return fake_tm
+
+        monkeypatch.setattr("ui.main_window.AppSettings", FakeSettings)
+        monkeypatch.setattr("ui.main_window.ThemeManager", FakeThemeManager)
+
+        win = MainWindow.__new__(MainWindow)
+        win._init_theme()
+        assert fake_tm.set_mode_calls == ["dark"]
+
+    def test_main_window_startup_applies_stylesheet(self, tmp_path, monkeypatch):
+        """Full startup: after MainWindow is constructed, the app must carry
+        the saved theme's stylesheet and palette."""
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtGui import QPalette
+        from PySide6.QtWidgets import QApplication
+        from core.theme import Dark
+        import core.settings as settings_mod
+        from ui.theme_pyside import ThemeManager
+
+        monkeypatch.setattr(settings_mod, "_SETTINGS_FILE", tmp_path / "settings.json")
+        monkeypatch.setattr(settings_mod, "_SETTINGS_DIR", tmp_path)
+        settings_mod.AppSettings._instance = None
+        _write_json(tmp_path / "settings.json", {"theme": "dark", "first_run": False})
+        ThemeManager._instance = None
+        ThemeManager._current = "dark"
+
+        try:
+            app = QApplication.instance() or QApplication([])
+            from ui.main_window import MainWindow
+            win = MainWindow()
+            app.processEvents()
+
+            assert win.theme._current == "dark"
+            assert len(app.styleSheet()) > 0, "theme stylesheet was never applied"
+            pal = app.palette()
+            assert pal.color(QPalette.Window).name().upper() == Dark.BG.upper()
+        finally:
+            ThemeManager._instance = None
+            ThemeManager._current = "dark"
+            settings_mod.AppSettings._instance = None
+
+
+# =====================================================================
+# PHASE 12C — Data Integrity & Safe Shutdown (Sprint 3.4B)
+# =====================================================================
+
+class TestSafeShutdownAutosave:
+    """C1: pending autosaves must be flushed before shutdown."""
+
+    def test_flush_all_persists_pending_keys(self):
+        from core.autosave import AutosaveManager
+        am = AutosaveManager(debounce_ms=60000)
+        saved = []
+        am.register("k", lambda: saved.append("k"))
+        am.mark_dirty("k")
+        assert saved == []
+        am.flush_all()
+        assert saved == ["k"]
+        assert am.is_dirty() is False
+
+    def test_main_shutdown_flushes_before_shutdown(self, monkeypatch):
+        """aboutToQuit handler must flush pending autosaves first."""
+        import main
+        calls = []
+
+        class FakeManager:
+            def flush_all(self):
+                calls.append("flush_all")
+
+            def shutdown(self):
+                calls.append("shutdown")
+
+        monkeypatch.setattr("core.autosave.get_autosave_manager", lambda: FakeManager())
+        main._shutdown()
+        assert calls == ["flush_all", "shutdown"]
+
+    def test_close_flow_persists_pending_script_edits(self, pm, monkeypatch):
+        """Close-event flush: 'type then close' writes the editor text to disk."""
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from core.autosave import AutosaveManager
+        from ui.pages.script_page import ScriptPage
+
+        app = QApplication.instance() or QApplication([])
+        name = _create_sample_project(pm)
+        monkeypatch.setattr("core.script_storage._PROJECTS_DIR", pm.PROJECTS_DIR)
+
+        page = ScriptPage()
+        page.manager = pm
+        page.set_project(name)
+
+        autosave = AutosaveManager(debounce_ms=60000)
+        autosave.register("script", page._autosave_save)
+
+        page.editor.setPlainText("TYPED JUST BEFORE CLOSE")
+        autosave.mark_dirty("script")
+        autosave.flush_all()  # exactly what MainWindow.closeEvent does
+
+        saved = _read_json(pm, name, "script.json")
+        assert saved["script_output"] == "TYPED JUST BEFORE CLOSE"
+
+
+class TestCloseEventShutdown:
+    """C3: closing the window flushes autosave and stops page workers."""
+
+    def test_close_event_flushes_autosave_and_cleans_pages(self, tmp_path, monkeypatch):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtGui import QCloseEvent
+        from PySide6.QtWidgets import QApplication
+        import core.settings as settings_mod
+        from ui.main_window import MainWindow
+        from ui.pages.voice_page import VoicePage
+        from ui.theme_pyside import ThemeManager
+
+        monkeypatch.setattr(settings_mod, "_SETTINGS_FILE", tmp_path / "settings.json")
+        monkeypatch.setattr(settings_mod, "_SETTINGS_DIR", tmp_path)
+        settings_mod.AppSettings._instance = None
+        _write_json(tmp_path / "settings.json", {"theme": "dark", "first_run": False})
+        ThemeManager._instance = None
+        ThemeManager._current = "dark"
+
+        app = QApplication.instance() or QApplication([])
+
+        cleaned = []
+        monkeypatch.setattr(VoicePage, "cleanup", lambda self: cleaned.append("voice"))
+
+        flushed = []
+
+        class FakeAutosave:
+            def flush_all(self):
+                flushed.append("flush_all")
+
+        monkeypatch.setattr("ui.main_window.get_autosave_manager", lambda: FakeAutosave())
+
+        try:
+            win = MainWindow()
+            win.closeEvent(QCloseEvent())
+        finally:
+            ThemeManager._instance = None
+            ThemeManager._current = "dark"
+            settings_mod.AppSettings._instance = None
+
+        assert flushed == ["flush_all"]
+        assert cleaned == ["voice"]
+
+
+class TestEditorDirtyGuard:
+    """C2: pipeline data reloads must not overwrite unsaved editor edits."""
+
+    def test_script_page_skips_reload_when_dirty(self, pm, monkeypatch):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from ui.pages.script_page import ScriptPage
+
+        app = QApplication.instance() or QApplication([])
+        name = _create_sample_project(pm)
+        _fill_script(pm, name)
+        monkeypatch.setattr("core.script_storage._PROJECTS_DIR", pm.PROJECTS_DIR)
+
+        page = ScriptPage()
+        page.manager = pm
+        page.set_project(name)
+        assert page.editor.toPlainText() == "INT. CLASSROOM - DAY\nTeacher introduces AI..."
+
+        page.editor.setPlainText("UNSAVED USER EDITS")
+        assert page._dirty is True
+
+        page._load_project_data()  # pipeline-event refresh
+        assert page.editor.toPlainText() == "UNSAVED USER EDITS"
+        assert page._dirty is True
+
+    def test_script_page_still_reloads_when_clean(self, pm, monkeypatch):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from ui.pages.script_page import ScriptPage
+
+        app = QApplication.instance() or QApplication([])
+        name = _create_sample_project(pm)
+        _fill_script(pm, name)
+        monkeypatch.setattr("core.script_storage._PROJECTS_DIR", pm.PROJECTS_DIR)
+
+        page = ScriptPage()
+        page.manager = pm
+        page.set_project(name)
+
+        page._load_project_data()
+        assert page.editor.toPlainText() == "INT. CLASSROOM - DAY\nTeacher introduces AI..."
+
+    def test_script_page_switching_projects_still_loads(self, pm, monkeypatch):
+        """Navigation to a different project must still load its content."""
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from ui.pages.script_page import ScriptPage
+
+        app = QApplication.instance() or QApplication([])
+        name_a = _create_sample_project(pm, "ProjA")
+        _fill_script(pm, name_a)
+        name_b = _create_sample_project(pm, "ProjB")
+        _write_json(pm.PROJECTS_DIR / name_b / "script.json", {
+            "script_output": "SCRIPT FOR B", "script_mode": "characters",
+        })
+        monkeypatch.setattr("core.script_storage._PROJECTS_DIR", pm.PROJECTS_DIR)
+
+        page = ScriptPage()
+        page.manager = pm
+        page.set_project(name_a)
+        page.editor.setPlainText("WIP EDITS IN A")
+        assert page._dirty is True
+
+        page.set_project(name_b)  # different project -> must reload
+        assert page.project_name == name_b
+        assert page._dirty is False
+        assert page.editor.toPlainText() == "SCRIPT FOR B"
+
+    def test_switching_projects_flushes_pending_edits_to_old_project(self, pm, monkeypatch):
+        """C1/C2: switching projects must persist pending edits to the OLD
+        project before its autosave callback could fire against the new one."""
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from ui.pages.script_page import ScriptPage
+
+        app = QApplication.instance() or QApplication([])
+        name_a = _create_sample_project(pm, "ProjA")
+        name_b = _create_sample_project(pm, "ProjB")
+        monkeypatch.setattr("core.script_storage._PROJECTS_DIR", pm.PROJECTS_DIR)
+
+        page = ScriptPage()
+        page.manager = pm
+        page.set_project(name_a)
+        page.editor.setPlainText("EDITS IN A")
+
+        page.set_project(name_b)  # flush must write A's edits to A
+
+        saved_a = _read_json(pm, name_a, "script.json")
+        assert saved_a["script_output"] == "EDITS IN A"
+        saved_b = _read_json(pm, name_b, "script.json")
+        assert "EDITS IN A" not in str(saved_b)
+        assert page.editor.toPlainText() == ""  # B has no script: editor cleared
+        assert page._dirty is False
+
+    def test_voice_page_skips_reload_when_dirty(self, pm):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from ui.pages.voice_page import VoicePage
+
+        app = QApplication.instance() or QApplication([])
+        name = _create_sample_project(pm)
+        _write_json(pm.PROJECTS_DIR / name / "transcript.json", {"text": "Saved transcript"})
+        _write_json(pm.PROJECTS_DIR / name / "voice.json", {
+            "transcript": "Saved transcript",
+            "segments": [{"start": 0, "end": 3, "text": "Saved transcript", "time": "00:00"}],
+        })
+
+        page = VoicePage()
+        page.manager = pm
+        page.set_project(name)
+        assert page.transcript_box.toPlainText() == "Saved transcript"
+
+        page.transcript_box.setPlainText("UNSAVED TRANSCRIPT EDITS")
+        assert page._dirty is True
+
+        page._load_project_data()  # pipeline-event refresh
+        assert page.transcript_box.toPlainText() == "UNSAVED TRANSCRIPT EDITS"
+        assert page._dirty is True
+
+
+class TestShutdownWorkers:
+    """C3: page cleanup stops background workers without crashing."""
+
+    def test_script_page_cleanup_cancels_task_manager(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from ui.pages.script_page import ScriptPage
+
+        app = QApplication.instance() or QApplication([])
+        page = ScriptPage()
+        cancelled = []
+        page.task_manager.cancel = lambda: cancelled.append(True)
+        page.cleanup()
+        assert cancelled == [True]
+
+    def test_image_prompts_cleanup_cancels_task_manager(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from ui.pages.image_prompts_page import ImagePromptsPage
+
+        app = QApplication.instance() or QApplication([])
+        page = ImagePromptsPage()
+        cancelled = []
+        page.task_manager.cancel = lambda: cancelled.append(True)
+        page.cleanup()
+        assert cancelled == [True]
+
+    def test_voice_page_cleanup_joins_running_thread(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtCore import QObject, QThread
+        from PySide6.QtWidgets import QApplication
+        from ui.pages.voice_page import VoicePage
+
+        app = QApplication.instance() or QApplication([])
+        page = VoicePage()
+
+        class SlowWorker(QObject):
+            def run(self):
+                QThread.msleep(200)
+
+        thread = QThread()
+        worker = SlowWorker()
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        thread.start()
+        page._worker_thread = thread
+        page._worker = worker
+
+        page.cleanup()
+        assert thread.isRunning() is False
+
+
+# =====================================================================
 # PHASE 13 — Code Quality (import checks)
 # =====================================================================
 
