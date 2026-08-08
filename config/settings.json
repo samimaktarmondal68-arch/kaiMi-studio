@@ -14,5 +14,6 @@
     "last_template": "Custom",
     "last_export_format": "txt",
     "__proto__": "polluted",
-    "export_format": "txt"
+    "export_format": "txt",
+    "whisper_model": "tiny"
 }

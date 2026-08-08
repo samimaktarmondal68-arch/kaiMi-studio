@@ -2695,6 +2695,605 @@ class TestBrandingIntegration:
 
 
 # =====================================================================
+# PHASE 12B — RC-6.2 Voice Page State Layout Repair
+# =====================================================================
+
+class TestVoicePageRC62:
+    """RC-6.2: Voice page state layout repair & transcript visibility.
+
+    The Narration card must never clip or overlap its sections, the AI and
+    Import modes must be true mutually exclusive UI states, and the
+    Transcript group must stay visible with a clear status in every state.
+    """
+
+    @staticmethod
+    def _make_page(pm):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from core.pipeline_service import PipelineService
+        from ui.pages.voice_page import VoicePage
+
+        QApplication.instance() or QApplication([])
+        page = VoicePage()
+        page.manager = pm
+        service = PipelineService()
+        service._pm = pm
+        page._pipeline = service
+
+        class _NoopHistory:
+            def record_action(self, *args, **kwargs):
+                return ""
+
+        page._history = _NoopHistory()
+        return page
+
+    @staticmethod
+    def _attach_audio(page, pm, name, filename="clip.wav"):
+        audio_file = pm.PROJECTS_DIR / name / "audio" / filename
+        audio_file.parent.mkdir(parents=True, exist_ok=True)
+        audio_file.write_bytes(b"RIFF fake audio data")
+        page._audio_path = str(audio_file)
+        page._refresh_narration_ui()
+        return audio_file
+
+    # --- A. AI Voice state -------------------------------------------------
+
+    def test_ai_state_shows_voice_identity_and_controls(self, pm):
+        from ui.pages.voice_page import VOICE_SOURCE_AI
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+
+        assert page._voice_source == VOICE_SOURCE_AI
+        # selected voice identity fully visible with metadata
+        assert not page.ai_identity_container.isHidden()
+        assert not page.selected_voice_name_label.isHidden()
+        assert not page.selected_voice_desc_label.isHidden()
+        assert not page.selected_voice_lang_label.isHidden()
+        assert page.selected_voice_name_label.text() == "Emma"
+        assert page.selected_voice_desc_label.text()
+        assert page.selected_voice_lang_label.text()
+        # voice controls visible
+        assert not page.preview_btn.isHidden()
+        assert not page.change_voice_btn.isHidden()
+        assert not page.ai_speed_container.isHidden()
+        assert not page.ai_generation_container.isHidden()
+        assert not page.generate_btn.isHidden()
+        assert not page.tts_setup_btn.isHidden()
+        # imported-audio chrome never leaks into the AI state
+        assert page.import_identity_container.isHidden()
+        assert page.imported_file_label.isHidden()
+
+    def test_ai_state_shared_sections_visible_with_audio(self, pm):
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+        self._attach_audio(page, pm, name)
+
+        assert not page.narration_summary.isHidden()
+        assert not page.playback_container.isHidden()
+        assert not page.export_container.isHidden()
+        assert not page.transcript_container.isHidden()
+        assert not page.next_btn.isHidden()
+
+    # --- B. Generated AI Voice state ----------------------------------------
+
+    def test_generated_ai_state_summary_and_sections(self, pm):
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+        self._attach_audio(page, pm, name)
+
+        assert not page.narration_summary.isHidden()
+        assert page.summary_title_label.text() == "Voice Generated"
+        assert page.summary_voice_label.text().startswith("Voice: ")
+        assert "Duration:" in page.narration_duration_label.text()
+        assert "File size:" in page.narration_size_label.text()
+        for section in (page.playback_container, page.export_container,
+                        page.transcript_container):
+            assert not section.isHidden()
+        assert not page.next_btn.isHidden()
+
+    # --- C. Import Audio state ----------------------------------------------
+
+    def test_import_state_shows_audio_identity_hides_ai_controls(self, pm):
+        from ui.pages.voice_page import VOICE_SOURCE_IMPORT
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+        self._attach_audio(page, pm, name, filename="lesson.mp3")
+        page._on_mode_selected(VOICE_SOURCE_IMPORT)
+
+        assert page._voice_source == VOICE_SOURCE_IMPORT
+        # imported audio identity block
+        assert not page.import_identity_container.isHidden()
+        assert page.imported_title_label.text() == "Imported Audio"
+        assert page.imported_file_label.text() == "lesson.mp3"
+        assert "File size:" in page.imported_meta_label.text()
+        assert not page.import_preview_btn.isHidden()
+        assert not page.replace_audio_btn.isHidden()
+        # AI voice-specific controls must NOT be shown
+        assert page.ai_identity_container.isHidden()
+        assert page.selected_voice_name_label.isHidden()
+        assert page.selected_voice_desc_label.isHidden()
+        assert page.selected_voice_lang_label.isHidden()
+        assert page.preview_btn.isHidden()
+        assert page.change_voice_btn.isHidden()
+        assert page.ai_speed_container.isHidden()
+        assert page.ai_generation_container.isHidden()
+        assert page.generate_btn.isHidden()
+        assert page.tts_setup_btn.isHidden()
+        # shared workflow sections stay available
+        assert not page.playback_container.isHidden()
+        assert not page.export_container.isHidden()
+        assert not page.transcript_container.isHidden()
+        assert not page.next_btn.isHidden()
+        # upload card handles importing/configuring only
+        assert not page._upload_card.isHidden()
+
+    def test_import_state_without_audio_keeps_transcript_group(self, pm):
+        from ui.pages.voice_page import VOICE_SOURCE_IMPORT
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+        page._on_mode_selected(VOICE_SOURCE_IMPORT)
+        assert not page.transcript_container.isHidden()
+        assert page.transcript_summary_label.text() == "Status: Not Generated"
+
+    # --- D. Transcript workflow ---------------------------------------------
+
+    def test_transcript_completion_exposes_view_transcript(self, pm):
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+
+        # before audio: Generate Transcript present but disabled, View hidden
+        assert not page.generate_transcript_btn.isHidden()
+        assert not page.generate_transcript_btn.isEnabled()
+        assert not page.view_transcript_btn.isEnabled()
+        self._attach_audio(page, pm, name)
+        assert page.generate_transcript_btn.isEnabled()
+        assert not page.view_transcript_btn.isEnabled()
+
+        page._on_transcription_done("Hello transcript", [
+            {"start": 0.0, "end": 1.0, "text": "Hello transcript",
+             "time": "00:00"},
+        ])
+        assert page.transcript_summary_label.text() == (
+            "Status: Generated \u2014 16 characters \u00b7 1 segment"
+        )
+        assert page.generate_transcript_btn.text() == "Regenerate Transcript"
+        assert page.view_transcript_btn.isEnabled()
+        assert page.next_btn.isEnabled()
+
+    def test_view_transcript_opens_existing_editor_dialog(self, pm, monkeypatch):
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+        page._on_transcription_done("Ready", [
+            {"start": 0.0, "end": 1.0, "text": "Ready", "time": "00:00"},
+        ])
+        opened = []
+        import ui.pages.voice_page as vp
+
+        class _FakeDialog:
+            def __init__(self, page_ref, parent=None):
+                opened.append(page_ref)
+
+            def exec(self):
+                return 0
+
+        monkeypatch.setattr(vp, "TranscriptEditorDialog", _FakeDialog)
+        page._open_transcript_editor()
+        assert opened == [page]
+
+    # --- E. Theme regression -------------------------------------------------
+
+    def test_identity_labels_refresh_on_theme_toggle(self, pm):
+        from ui.theme_pyside import ThemeManager
+        tm = ThemeManager.instance()
+        tm.set_mode("dark")
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+        tm.set_mode("light")
+        page._refresh_theme_static()
+        assert "color: #111827" in page.selected_voice_name_label.styleSheet()
+        assert "color: #111827" in page.imported_file_label.styleSheet()
+        assert "color: #6B7280" in page.imported_meta_label.styleSheet()
+        tm.set_mode("dark")
+
+    # --- F. Layout regression (no clipping / overlap) -------------------------
+
+    def test_narration_sections_do_not_overlap_or_clip(self, pm):
+        from PySide6.QtCore import QPoint
+        from PySide6.QtWidgets import QApplication, QScrollArea
+        app = QApplication.instance() or QApplication([])
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+        self._attach_audio(page, pm, name)
+        page.show()
+        app.processEvents()
+
+        # the page scrolls as a whole instead of clipping the tall card
+        assert isinstance(page._scroll, QScrollArea)
+        assert page._scroll.widgetResizable()
+
+        card = page._ai_card
+        sections = [
+            page.narration_summary,
+            page.playback_container,
+            page.export_container,
+            page.transcript_container,
+        ]
+        positions = []
+        for section in sections:
+            assert not section.isHidden()
+            y = section.mapTo(page, QPoint(0, 0)).y()
+            positions.append((y, section))
+        positions.sort()
+        for (y1, s1), (y2, s2) in zip(positions, positions[1:]):
+            assert y1 < y2, (
+                f"{s1.__class__.__name__} overlaps {s2.__class__.__name__}"
+            )
+        card_top = card.mapTo(page, QPoint(0, 0)).y()
+        for y, section in positions:
+            assert y + section.height() <= card_top + card.height() + 1, (
+                f"{section.__class__.__name__} is clipped by the Narration card"
+            )
+
+    def test_transcript_status_sits_next_to_header_not_far_right(self, pm):
+        from PySide6.QtCore import QPoint
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication([])
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+        page.show()
+        app.processEvents()
+        header_x = page._group_labels[-1].mapTo(page, QPoint(0, 0)).x()
+        status_x = page.transcript_summary_label.mapTo(page, QPoint(0, 0)).x()
+        assert header_x <= status_x <= header_x + 300
+
+    # --- G. Cross-project state isolation (RC-6.2 regression) ----------------
+
+    def test_cross_project_audio_and_transcript_isolation(self, pm):
+        """Switching projects must not leak the previous project's narration."""
+        name_with = _create_sample_project(pm, name="ProjWithData")
+        name_empty = _create_sample_project(pm, name="ProjEmpty")
+        page = self._make_page(pm)
+        page.set_project(name_with)
+        self._attach_audio(page, pm, name_with, filename="clip.wav")
+        page._on_transcription_done("Cross project transcript", [
+            {"start": 0.0, "end": 1.0, "text": "Cross project transcript",
+             "time": "00:00"},
+        ])
+        assert page._audio_path is not None
+        assert page._transcript_text == "Cross project transcript"
+        assert page.view_transcript_btn.isEnabled()
+        assert page.next_btn.isEnabled()
+
+        page.set_project(name_empty)
+        assert page._audio_path is None
+        assert page._transcript_text == ""
+        assert not page.view_transcript_btn.isEnabled()
+        assert not page.next_btn.isEnabled()
+        assert page.transcript_summary_label.text() == "Status: Not Generated"
+
+
+# =====================================================================
+# PHASE 12B2 — RC-6 Transcript viewer & Image Prompt generation
+# =====================================================================
+
+class TestRC6TranscriptViewer:
+    """RC-6: the generated transcript must appear in View Transcript, survive
+    reopen/edit/save, and the status must distinguish generating/generated/
+    failed from 'not generated'.
+    """
+
+    @staticmethod
+    def _make_page(pm):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from core.pipeline_service import PipelineService
+        from ui.pages.voice_page import VoicePage
+
+        QApplication.instance() or QApplication([])
+        page = VoicePage()
+        page.manager = pm
+        service = PipelineService()
+        service._pm = pm
+        page._pipeline = service
+
+        class _NoopHistory:
+            def record_action(self, *args, **kwargs):
+                return ""
+
+        page._history = _NoopHistory()
+        return page
+
+    @staticmethod
+    def _segment(text="Seg"):
+        return [{"start": 0.0, "end": 1.0, "text": text, "time": "00:00"}]
+
+    def test_generated_transcript_is_persisted_to_disk(self, pm):
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+        page._on_transcription_done("Persisted transcript", self._segment())
+
+        transcript = _read_json(pm, name, "transcript.json")
+        assert transcript["text"] == "Persisted transcript"
+        voice = _read_json(pm, name, "voice.json")
+        assert voice["transcript"] == "Persisted transcript"
+        assert len(voice["segments"]) == 1
+
+    def test_generated_transcript_appears_in_view_transcript_dialog(self, pm):
+        from ui.pages.voice_page import TranscriptEditorDialog
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication([])
+
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+        page._on_transcription_done(
+            "Generated transcript content", self._segment("Generated transcript content")
+        )
+
+        dialog = TranscriptEditorDialog(page, parent=page)
+        dialog.show()
+        app.processEvents()
+        # RC-6 blank-viewer regression: the editor must render its content.
+        assert page.transcript_box.toPlainText() == "Generated transcript content"
+        assert not page.transcript_box.isHidden()
+        assert page.transcript_box.isVisible()
+        dialog.close()
+
+    def test_reopening_view_transcript_preserves_transcript(self, pm):
+        from ui.pages.voice_page import TranscriptEditorDialog
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication([])
+
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+        page._on_transcription_done("Persistent transcript", self._segment())
+
+        for _ in range(2):
+            dialog = TranscriptEditorDialog(page, parent=page)
+            dialog.show()
+            app.processEvents()
+            assert page.transcript_box.toPlainText() == "Persistent transcript"
+            assert page.transcript_box.isVisible()
+            dialog.close()
+            app.processEvents()
+
+    def test_editing_and_saving_transcript_persists(self, pm):
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+        page._on_transcription_done("Original transcript", self._segment())
+
+        page.transcript_box.setPlainText("Edited transcript text")
+        page.save_transcript()
+        assert _read_json(pm, name, "transcript.json")["text"] == "Edited transcript text"
+
+        # A fresh page (restart) must load the edited transcript.
+        reloaded = self._make_page(pm)
+        reloaded.set_project(name)
+        assert reloaded._transcript_text == "Edited transcript text"
+        assert reloaded.transcript_box.toPlainText() == "Edited transcript text"
+
+    def test_transcript_status_generating_to_generated(self, pm):
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+
+        page._transcribing = True
+        page._update_transcript_status()
+        assert page.transcript_summary_label.text() == "Status: Generating..."
+
+        page._transcribing = False
+        page._transcript_error = None
+        page._transcript_text = "Hello world"
+        page._segments = [{"start": 0, "end": 1, "text": "Hello world", "time": "00:00"}]
+        page._update_transcript_status()
+        assert page.transcript_summary_label.text() == (
+            "Status: Generated \u2014 11 characters \u00b7 1 segment"
+        )
+        assert page.generate_transcript_btn.text() == "Regenerate Transcript"
+
+    def test_transcript_failure_displays_failure_state(self, pm):
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+        page._on_transcription_error("whisper model failed to load")
+
+        assert page._transcript_error == "whisper model failed to load"
+        assert page.transcript_summary_label.text() == (
+            "Status: Failed \u2014 whisper model failed to load"
+        )
+        assert page.generate_transcript_btn.text() == "Retry Transcription"
+
+    def test_transcript_not_generated_state(self, pm):
+        name = _create_sample_project(pm)
+        page = self._make_page(pm)
+        page.set_project(name)
+        assert page.transcript_summary_label.text() == "Status: Not Generated"
+        assert page.generate_transcript_btn.text() == "Generate Transcript"
+
+
+class TestRC6ImagePromptGeneration:
+    """RC-6: Generate Prompts must update the UI on success and show a
+    persistent, actionable failure on error — never a silent
+    'No Prompts Yet'.
+    """
+
+    @staticmethod
+    def _make_page(pm, monkeypatch):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from core.pipeline_service import PipelineService
+        from ui.pages.image_prompts_page import ImagePromptsPage
+
+        QApplication.instance() or QApplication([])
+        monkeypatch.setattr("core.script_storage._PROJECTS_DIR", pm.PROJECTS_DIR)
+        monkeypatch.setattr("core.transcript_storage._PROJECTS_DIR", pm.PROJECTS_DIR)
+        monkeypatch.setattr("core.image_prompt_storage._PROJECTS_DIR", pm.PROJECTS_DIR)
+        monkeypatch.setattr(
+            "ui.pages.image_prompts_page._provider_preflight",
+            lambda: (True, ""),
+        )
+        page = ImagePromptsPage()
+        page.manager = pm
+        service = PipelineService()
+        service._pm = pm
+        page._pipeline = service
+        return page
+
+    @staticmethod
+    def _seed(pm, name):
+        _create_sample_project(pm, name)
+        _fill_script(pm, name)
+        _write_json(pm.PROJECTS_DIR / name / "voice.json", {
+            "transcript": "Segment one.",
+            "segments": [{"start": 0, "end": 4, "text": "Segment one.", "time": "00:00"}],
+        })
+        _write_json(pm.PROJECTS_DIR / name / "transcript.json", {"text": "Segment one."})
+        # Advance the workflow through Script and Voice so the Image Prompts
+        # stage is AVAILABLE (matches how a real user reaches this page).
+        data = pm.load_project(name)
+        data["workflow_state"] = advance_workflow_state(
+            data["workflow_state"], "Script"
+        )
+        data["workflow_state"] = advance_workflow_state(
+            data["workflow_state"], "Voice"
+        )
+        pm.update_project(name, data)
+
+    @staticmethod
+    def _wait(app, predicate, timeout=10.0):
+        """Pump the event loop until predicate is true or timeout elapses."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            app.processEvents()
+            if predicate():
+                return True
+            time.sleep(0.02)
+        return predicate()
+
+    def test_success_updates_ui_and_persists(self, pm, monkeypatch):
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication([])
+        name = "PromptsOk"
+        self._seed(pm, name)
+        page = self._make_page(pm, monkeypatch)
+
+        class _FakeOperator:
+            def execute(self, request):
+                return json.dumps([{
+                    "scene_number": 1,
+                    "timestamp": "00:00",
+                    "prompt_title": "Opening",
+                    "full_image_prompt": "A classroom scene, photorealistic",
+                }])
+
+        page.operator = _FakeOperator()
+        page.set_project(name)
+        assert page.empty_state is not None
+
+        page.generate_prompts()
+        assert self._wait(app, lambda: not page.task_manager.is_running)
+        assert self._wait(app, lambda: bool(page._prompts))
+
+        # Success must replace the empty state immediately (no stale
+        # 'No Prompts Yet') and re-enable the action.
+        assert page.empty_state is None
+        assert len(page._prompts) == 1
+        assert page._generation_error is None
+        assert page.failure_label.isHidden()
+        assert page.generate_btn.isEnabled()
+        assert page.export_btn.isEnabled()
+
+        stored = _read_json(pm, name, "image_prompts.json")
+        assert len(stored["prompts"]) == 1
+        assert stored["prompts"][0]["full_image_prompt"] == "A classroom scene, photorealistic"
+
+    def test_failure_shows_persistent_banner(self, pm, monkeypatch):
+        from PySide6.QtWidgets import QApplication
+        from operators.image_prompt.models import ImagePromptGenerationError
+        app = QApplication.instance() or QApplication([])
+        name = "PromptsFail"
+        self._seed(pm, name)
+        page = self._make_page(pm, monkeypatch)
+
+        class _FailingOperator:
+            def execute(self, request):
+                raise ImagePromptGenerationError(
+                    "Quota exceeded: insufficient balance"
+                )
+
+        page.operator = _FailingOperator()
+        page.set_project(name)
+
+        page.generate_prompts()
+        assert self._wait(app, lambda: not page.task_manager.is_running)
+        assert self._wait(app, lambda: page._generation_error is not None)
+
+        # The failure must be visible and actionable, never silent.
+        assert "Quota exceeded" in page._generation_error
+        assert not page.failure_label.isHidden()
+        assert "Quota exceeded" in page.failure_label.text()
+        assert page.empty_state is not None  # no prompts, but reason is shown
+        assert page.generate_btn.isEnabled()
+
+    def test_worker_exception_reaches_ui(self, pm, monkeypatch):
+        """An exception raised in the background worker must surface as a
+        visible failure banner (no silent drop)."""
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication([])
+        name = "PromptsWorkerExc"
+        self._seed(pm, name)
+        page = self._make_page(pm, monkeypatch)
+
+        class _ExplodingOperator:
+            def execute(self, request):
+                raise RuntimeError("provider connection reset")
+
+        page.operator = _ExplodingOperator()
+        page.set_project(name)
+
+        page.generate_prompts()
+        assert self._wait(app, lambda: not page.task_manager.is_running)
+        assert self._wait(app, lambda: page._generation_error is not None)
+        assert "provider connection reset" in page._generation_error
+        assert not page.failure_label.isHidden()
+
+    def test_preflight_failure_reports_immediately(self, pm, monkeypatch):
+        name = "PromptsBlocked"
+        self._seed(pm, name)
+        page = self._make_page(pm, monkeypatch)
+
+        # Patch AFTER _make_page so it overrides the hermetic (True, "") stub.
+        def _blocked():
+            return (False, "Provider 'Gemini' requires an API key. Set one in Settings.")
+
+        monkeypatch.setattr(
+            "ui.pages.image_prompts_page._provider_preflight", _blocked
+        )
+        page.set_project(name)
+
+        page.generate_prompts()
+        assert not page.task_manager.is_running
+        assert page._generation_error is not None
+        assert "requires an API key" in page._generation_error
+        assert not page.failure_label.isHidden()
+        assert page.empty_state is not None
+        assert page.generate_btn.isEnabled()
+
+
+# =====================================================================
 # PHASE 12C — Light Theme Text Contrast (runtime toggle)
 # =====================================================================
 

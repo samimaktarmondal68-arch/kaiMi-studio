@@ -3,18 +3,22 @@ import shutil
 import struct
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QBuffer, QIODevice, QObject, QThread, QTimer, Qt, QUrl, Signal
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
+    QDialog,
     QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPlainTextEdit,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -35,6 +39,7 @@ from core.voice_generation_service import (
     VoiceGenerationCancelled,
     get_voice_generation_service,
 )
+from ..dialogs import _dialog_styles
 from ..dialogs.voice_selection import VoiceSelectionDialog
 from ..theme_pyside import ThemeManager
 from ..widgets import (
@@ -404,6 +409,101 @@ class _ModeOption(QFrame):
         self.set_selected(self._selected)
 
 
+class TranscriptEditorDialog(QDialog):
+    """Modal editor for the project transcript (RC-6.1).
+
+    Hosts the Voice page's single transcript editor widget (temporarily
+    reparented into this dialog) so the editing logic, dirty tracking, and
+    autosave stay in one place. Save, Copy, and Download TXT reuse the
+    page's existing handlers; the widgets return to the page on close.
+    """
+
+    def __init__(self, page, parent=None):
+        super().__init__(parent)
+        self._page = page
+        self.setWindowTitle("Transcript")
+        self.setModal(True)
+        self.setMinimumSize(680, 560)
+        self.setStyleSheet(_dialog_styles())
+        self._build()
+        self.finished.connect(self._restore_widgets)
+
+    def _build(self):
+        c = ThemeManager.instance().colors()
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        title = QLabel("Transcript")
+        title.setStyleSheet(f"{Fonts.css(20, '600', c.TEXT)}")
+        layout.addWidget(title)
+
+        subtitle = QLabel(
+            "Edit the narration transcript. Changes are saved to this project."
+        )
+        subtitle.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
+        layout.addWidget(subtitle)
+
+        page = self._page
+        # The shared editor chrome is created hidden on the page (and re-hidden
+        # by _restore_widgets on close). An explicitly hidden widget stays
+        # hidden even after setParent() + layout.addWidget(), so the dialog
+        # must re-show every hosted widget or it opens with an invisible,
+        # 'completely blank' editor (RC-6 blank-transcript-viewer regression).
+        page.transcript_box.setParent(self)
+        page.transcript_box.setVisible(True)
+        layout.addWidget(page.transcript_box, 1)
+
+        meta_row = QHBoxLayout()
+        meta_row.setSpacing(8)
+        page.status_label.setParent(self)
+        page.status_label.setVisible(True)
+        meta_row.addWidget(page.status_label)
+        page.timestamps_label.setParent(self)
+        page.timestamps_label.setVisible(True)
+        meta_row.addWidget(page.timestamps_label)
+        page._autosave_indicator.setParent(self)
+        page._autosave_indicator.setVisible(True)
+        meta_row.addWidget(page._autosave_indicator)
+        meta_row.addStretch()
+        layout.addLayout(meta_row)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        page.save_btn.setParent(self)
+        page.save_btn.setVisible(True)
+        btn_row.addWidget(page.save_btn)
+        page.download_btn.setParent(self)
+        page.download_btn.setVisible(True)
+        btn_row.addWidget(page.download_btn)
+        copy_btn = ModernButton("Copy", primary=False)
+        copy_btn.clicked.connect(self._copy_transcript)
+        btn_row.addWidget(copy_btn)
+        btn_row.addStretch()
+        close_btn = ModernButton("Close", primary=True)
+        close_btn.clicked.connect(self.close)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+    def _copy_transcript(self):
+        QApplication.clipboard().setText(self._page.transcript_box.toPlainText())
+        NotificationService.get().success("Transcript copied.")
+
+    def _restore_widgets(self, _result=None):
+        """Return the shared editor chrome to the page after the dialog closes."""
+        page = self._page
+        for widget in (
+            page.transcript_box,
+            page.status_label,
+            page.timestamps_label,
+            page._autosave_indicator,
+            page.save_btn,
+            page.download_btn,
+        ):
+            widget.setParent(page)
+            widget.setVisible(False)
+
+
 class VoicePage(QWidget):
     def __init__(self):
         super().__init__()
@@ -415,6 +515,9 @@ class VoicePage(QWidget):
         self._audio_path = None
         self._transcript_text = ""
         self._segments = []
+        #: Human-readable reason when the last transcription attempt failed;
+        #: None while idle / generating / after success (RC-6 status model).
+        self._transcript_error = None
         self._saved_text = ""
         self._dirty = False
         self._transcribing = False
@@ -432,6 +535,7 @@ class VoicePage(QWidget):
         self._voice_source = VOICE_SOURCE_AI
         self._selected_voice_id = DEFAULT_VOICE_ID
         self._voice_dialog = None
+        self._transcript_dialog = None
         self._preview_cache = {}
         self._preview_thread = None
         self._preview_worker = None
@@ -476,10 +580,30 @@ class VoicePage(QWidget):
         self.selected_voice_name_label.setStyleSheet(f"{Fonts.body_bold(c.TEXT)}")
         self.selected_voice_desc_label.setStyleSheet(f"{Fonts.caption(c.TEXT_SECONDARY)}")
         self.selected_voice_lang_label.setStyleSheet(f"{Fonts.tiny(c.TEXT_MUTED)}")
+        self.imported_title_label.setStyleSheet(f"{Fonts.tiny(c.TEXT_MUTED)}")
+        self.imported_file_label.setStyleSheet(f"{Fonts.body_bold(c.TEXT)}")
+        self.imported_meta_label.setStyleSheet(f"{Fonts.caption(c.TEXT_SECONDARY)}")
+        self.ai_voice_icon.setPixmap(IconProvider.pixmap("voice", 30, c.SECONDARY))
+        self.import_audio_icon.setPixmap(
+            IconProvider.pixmap("document", 30, c.SECONDARY)
+        )
         self.info_project.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
         self.info_topic.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
         self.info_language.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
         self.status_badge.refresh_theme()
+        self.summary_check_label.setPixmap(
+            IconProvider.pixmap("check_circle", 18, c.SUCCESS)
+        )
+        self.summary_title_label.setStyleSheet(f"{Fonts.body_bold(c.SUCCESS)}")
+        for label in (
+            self.summary_voice_label,
+            self.narration_duration_label,
+            self.narration_size_label,
+            self.summary_generated_label,
+        ):
+            label.setStyleSheet(f"{Fonts.caption(c.TEXT)}")
+        for label in self._group_labels:
+            label.setStyleSheet(f"{Fonts.caption_bold(c.TEXT_SECONDARY)}")
 
     def cleanup(self):
         """Stop background workers and wait for their threads to finish.
@@ -533,11 +657,29 @@ class VoicePage(QWidget):
             # callback could fire after we switch (Sprint 3.4B / C1, C2).
             self._autosave.flush_all()
             self._dirty = False
+            # A failure from another project must not leak into this one.
+            self._transcript_error = None
         self.project_name = name
         self._load_project_data()
 
     def _build(self):
-        layout = QVBoxLayout(self)
+        # The page scrolls as a whole (same pattern as Settings / Dashboard /
+        # Projects). Without a scroll container the tall Narration card was
+        # compressed below its minimum height by the window and its bottom
+        # sections (Playback / Export / Transcript) were painted outside the
+        # visible area — the RC-6.2 clipping regression.
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._scroll.setFrameShape(QScrollArea.NoFrame)
+        outer.addWidget(self._scroll)
+
+        content = QWidget()
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(12)
 
@@ -545,33 +687,16 @@ class VoicePage(QWidget):
 
         self._build_mode_selector(layout)
 
+        self._create_transcript_widgets()
+
         self._build_narration_section(layout)
 
         self._build_upload_section(layout)
 
-        self.progress_widget = ProgressWidget()
-        self.progress_widget.setVisible(False)
-        layout.addWidget(self.progress_widget)
-
-        self.gen_actions = QWidget()
-        gen_actions_row = QHBoxLayout(self.gen_actions)
-        gen_actions_row.setContentsMargins(0, 0, 0, 0)
-        gen_actions_row.setSpacing(8)
-        self.cancel_gen_btn = ModernButton("Cancel Generation", primary=False)
-        self.cancel_gen_btn.clicked.connect(self._cancel_generation)
-        gen_actions_row.addWidget(self.cancel_gen_btn)
-        self.retry_gen_btn = ModernButton("Retry", primary=True)
-        self.retry_gen_btn.clicked.connect(self._retry_voice)
-        gen_actions_row.addWidget(self.retry_gen_btn)
-        gen_actions_row.addStretch()
-        self.gen_actions.setVisible(False)
-        layout.addWidget(self.gen_actions)
-
-        self._build_transcript_section(layout)
-
         self._build_action_bar(layout)
 
         layout.addStretch()
+        self._scroll.setWidget(content)
 
         self._set_mode_ui(self._voice_source)
         self._update_voice_summary()
@@ -639,10 +764,19 @@ class VoicePage(QWidget):
         self._mode_card = card
 
     def _build_narration_section(self, parent):
-        """One unified module: selected voice, status, and narration playback."""
+        """One unified narration module (RC-6.2 layout).
+
+        Holds two mutually exclusive identity blocks — the selected AI voice
+        (name, description, language) and the imported audio (filename,
+        duration, size) — followed by the AI-only speed/generation controls,
+        the shared progress bar and generated summary, and the grouped
+        Playback / Export / Transcript controls. The Transcript group stays
+        visible in every state so the workflow dependency never disappears.
+        """
         c = ThemeManager.instance().colors()
         card = ModernCard()
-        card.content_layout.setSpacing(10)
+        card.content_layout.setSpacing(14)
+        self._group_labels = []
 
         header_row = QHBoxLayout()
         header_row.setContentsMargins(0, 0, 0, 0)
@@ -653,38 +787,80 @@ class VoicePage(QWidget):
         header_row.addWidget(self.narration_status_badge, 0, Qt.AlignVCenter)
         card.content_layout.addLayout(header_row)
 
-        summary_row = QHBoxLayout()
-        summary_row.setSpacing(12)
+        # --- AI voice identity --------------------------------------------------
+        self.ai_identity_container = QWidget()
+        ai_row = QHBoxLayout(self.ai_identity_container)
+        ai_row.setContentsMargins(0, 0, 0, 0)
+        ai_row.setSpacing(14)
 
-        voice_icon = IconProvider.icon_label("voice", 26, c.SECONDARY)
-        summary_row.addWidget(voice_icon)
+        self.ai_voice_icon = IconProvider.icon_label("voice", 30, c.SECONDARY)
+        ai_row.addWidget(self.ai_voice_icon, 0, Qt.AlignTop)
 
-        text_col = QVBoxLayout()
-        text_col.setSpacing(2)
+        ai_text_col = QVBoxLayout()
+        ai_text_col.setSpacing(4)
         self.selected_voice_name_label = QLabel("")
         self.selected_voice_name_label.setStyleSheet(f"{Fonts.body_bold(c.TEXT)}")
-        text_col.addWidget(self.selected_voice_name_label)
+        ai_text_col.addWidget(self.selected_voice_name_label)
 
         self.selected_voice_desc_label = QLabel("")
         self.selected_voice_desc_label.setStyleSheet(f"{Fonts.caption(c.TEXT_SECONDARY)}")
-        text_col.addWidget(self.selected_voice_desc_label)
+        self.selected_voice_desc_label.setWordWrap(True)
+        ai_text_col.addWidget(self.selected_voice_desc_label)
 
         self.selected_voice_lang_label = QLabel("")
         self.selected_voice_lang_label.setStyleSheet(f"{Fonts.tiny(c.TEXT_MUTED)}")
-        text_col.addWidget(self.selected_voice_lang_label)
-        summary_row.addLayout(text_col, 1)
+        ai_text_col.addWidget(self.selected_voice_lang_label)
+        ai_row.addLayout(ai_text_col, 1)
 
         self.preview_btn = ModernButton("Preview", primary=False)
         self.preview_btn.clicked.connect(self._preview_selected_voice)
-        summary_row.addWidget(self.preview_btn)
+        ai_row.addWidget(self.preview_btn, 0, Qt.AlignTop)
 
         self.change_voice_btn = ModernButton("Change Voice", primary=False)
         self.change_voice_btn.clicked.connect(self._open_voice_dialog)
-        summary_row.addWidget(self.change_voice_btn)
+        ai_row.addWidget(self.change_voice_btn, 0, Qt.AlignTop)
 
-        card.content_layout.addLayout(summary_row)
+        card.content_layout.addWidget(self.ai_identity_container)
 
-        meta_row = QHBoxLayout()
+        # --- Imported audio identity ----------------------------------------------
+        self.import_identity_container = QWidget()
+        import_row = QHBoxLayout(self.import_identity_container)
+        import_row.setContentsMargins(0, 0, 0, 0)
+        import_row.setSpacing(14)
+
+        self.import_audio_icon = IconProvider.icon_label("document", 30, c.SECONDARY)
+        import_row.addWidget(self.import_audio_icon, 0, Qt.AlignTop)
+
+        import_text_col = QVBoxLayout()
+        import_text_col.setSpacing(4)
+        self.imported_title_label = QLabel("Imported Audio")
+        self.imported_title_label.setStyleSheet(f"{Fonts.tiny(c.TEXT_MUTED)}")
+        import_text_col.addWidget(self.imported_title_label)
+
+        self.imported_file_label = QLabel("")
+        self.imported_file_label.setStyleSheet(f"{Fonts.body_bold(c.TEXT)}")
+        self.imported_file_label.setWordWrap(True)
+        import_text_col.addWidget(self.imported_file_label)
+
+        self.imported_meta_label = QLabel("")
+        self.imported_meta_label.setStyleSheet(f"{Fonts.caption(c.TEXT_SECONDARY)}")
+        import_text_col.addWidget(self.imported_meta_label)
+        import_row.addLayout(import_text_col, 1)
+
+        self.import_preview_btn = ModernButton("Preview", primary=False)
+        self.import_preview_btn.clicked.connect(self._play_narration)
+        import_row.addWidget(self.import_preview_btn, 0, Qt.AlignTop)
+
+        self.replace_audio_btn = ModernButton("Replace Audio", primary=False)
+        self.replace_audio_btn.clicked.connect(self.choose_audio)
+        import_row.addWidget(self.replace_audio_btn, 0, Qt.AlignTop)
+
+        card.content_layout.addWidget(self.import_identity_container)
+
+        # --- AI-only: voice speed ---------------------------------------------------
+        self.ai_speed_container = QWidget()
+        meta_row = QHBoxLayout(self.ai_speed_container)
+        meta_row.setContentsMargins(0, 0, 0, 0)
         meta_row.setSpacing(8)
         meta_row.addWidget(MutedLabel("Voice speed:"))
         self.speed_combo = QComboBox()
@@ -694,15 +870,13 @@ class VoicePage(QWidget):
         self.speed_combo.setCurrentIndex(max(idx, 0))
         self.speed_combo.currentIndexChanged.connect(self._on_speed_changed)
         meta_row.addWidget(self.speed_combo)
-        meta_row.addSpacing(16)
-        self.narration_duration_label = MutedLabel("Duration: \u2014")
-        meta_row.addWidget(self.narration_duration_label)
-        self.narration_size_label = MutedLabel("File size: \u2014")
-        meta_row.addWidget(self.narration_size_label)
         meta_row.addStretch()
-        card.content_layout.addLayout(meta_row)
+        card.content_layout.addWidget(self.ai_speed_container)
 
-        gen_row = QHBoxLayout()
+        # --- AI-only: generation -------------------------------------------------------
+        self.ai_generation_container = QWidget()
+        gen_row = QHBoxLayout(self.ai_generation_container)
+        gen_row.setContentsMargins(0, 0, 0, 0)
         gen_row.setSpacing(8)
         self.generate_btn = ModernButton("Generate Voice", primary=True)
         self.generate_btn.clicked.connect(self.generate_voice)
@@ -713,38 +887,142 @@ class VoicePage(QWidget):
         self.tts_setup_btn.clicked.connect(self.show_tts_setup)
         gen_row.addWidget(self.tts_setup_btn)
         gen_row.addStretch()
-        card.content_layout.addLayout(gen_row)
+        card.content_layout.addWidget(self.ai_generation_container)
 
+        # --- Generation progress + cancel/retry -----------------------------------
+        self.progress_widget = ProgressWidget()
+        self.progress_widget.setVisible(False)
+        card.content_layout.addWidget(self.progress_widget)
+
+        self.gen_actions = QWidget()
+        gen_actions_row = QHBoxLayout(self.gen_actions)
+        gen_actions_row.setContentsMargins(0, 0, 0, 0)
+        gen_actions_row.setSpacing(8)
+        self.cancel_gen_btn = ModernButton("Cancel Generation", primary=False)
+        self.cancel_gen_btn.clicked.connect(self._cancel_generation)
+        gen_actions_row.addWidget(self.cancel_gen_btn)
+        self.retry_gen_btn = ModernButton("Retry", primary=True)
+        self.retry_gen_btn.clicked.connect(self._retry_voice)
+        gen_actions_row.addWidget(self.retry_gen_btn)
+        gen_actions_row.addStretch()
+        self.gen_actions.setVisible(False)
+        card.content_layout.addWidget(self.gen_actions)
+
+        # --- Generated narration summary (Part 7) ---------------------------------
+        self.narration_summary = QFrame()
+        self.narration_summary.setObjectName("card")
+        self.narration_summary.setAttribute(Qt.WA_StyledBackground, True)
+        summary_layout = QVBoxLayout(self.narration_summary)
+        summary_layout.setContentsMargins(14, 12, 14, 12)
+        summary_layout.setSpacing(6)
+
+        summary_title_row = QHBoxLayout()
+        summary_title_row.setSpacing(8)
+        self.summary_check_label = IconProvider.icon_label("check_circle", 18, c.SUCCESS)
+        summary_title_row.addWidget(self.summary_check_label)
+        self.summary_title_label = QLabel("Voice Generated")
+        self.summary_title_label.setStyleSheet(f"{Fonts.body_bold(c.SUCCESS)}")
+        summary_title_row.addWidget(self.summary_title_label)
+        summary_title_row.addStretch()
+        summary_layout.addLayout(summary_title_row)
+
+        summary_body = QVBoxLayout()
+        summary_body.setContentsMargins(26, 0, 0, 0)
+        summary_body.setSpacing(4)
+        self.summary_voice_label = QLabel("Voice: \u2014")
+        self.summary_voice_label.setStyleSheet(f"{Fonts.caption(c.TEXT)}")
+        summary_body.addWidget(self.summary_voice_label)
+        self.narration_duration_label = QLabel("Duration: \u2014")
+        self.narration_duration_label.setStyleSheet(f"{Fonts.caption(c.TEXT)}")
+        summary_body.addWidget(self.narration_duration_label)
+        self.narration_size_label = QLabel("File size: \u2014")
+        self.narration_size_label.setStyleSheet(f"{Fonts.caption(c.TEXT)}")
+        summary_body.addWidget(self.narration_size_label)
+        self.summary_generated_label = QLabel("Generated: \u2014")
+        self.summary_generated_label.setStyleSheet(f"{Fonts.caption(c.TEXT)}")
+        summary_body.addWidget(self.summary_generated_label)
+        summary_layout.addLayout(summary_body)
+        card.content_layout.addWidget(self.narration_summary)
+
+        # --- Playback controls (Part 6) --------------------------------------------
         self.playback_container = QWidget()
-        play_row = QHBoxLayout(self.playback_container)
-        play_row.setContentsMargins(0, 0, 0, 0)
-        play_row.setSpacing(8)
+        play_col = QVBoxLayout(self.playback_container)
+        play_col.setContentsMargins(0, 0, 0, 0)
+        play_col.setSpacing(8)
+        play_col.addWidget(self._group_label("Playback"))
 
+        play_row = QHBoxLayout()
+        play_row.setSpacing(8)
         self.play_btn = ModernButton("\u25b6 Play", primary=True)
-        self.play_btn.setFixedWidth(100)
+        self.play_btn.setFixedWidth(110)
         self.play_btn.clicked.connect(self._play_narration)
         play_row.addWidget(self.play_btn)
 
         self.pause_btn = ModernButton("\u23f8 Pause", primary=False)
-        self.pause_btn.setFixedWidth(100)
+        self.pause_btn.setFixedWidth(110)
         self.pause_btn.clicked.connect(self._pause_narration)
         play_row.addWidget(self.pause_btn)
 
         self.stop_btn = ModernButton("\u23f9 Stop", primary=False)
-        self.stop_btn.setFixedWidth(90)
+        self.stop_btn.setFixedWidth(100)
         self.stop_btn.clicked.connect(self._stop_audio)
         play_row.addWidget(self.stop_btn)
+        play_row.addStretch()
+        play_col.addLayout(play_row)
+        card.content_layout.addWidget(self.playback_container)
 
+        # --- Export controls (Part 6) ------------------------------------------------
+        self.export_container = QWidget()
+        export_col = QVBoxLayout(self.export_container)
+        export_col.setContentsMargins(0, 0, 0, 0)
+        export_col.setSpacing(8)
+        export_col.addWidget(self._group_label("Export"))
+
+        export_row = QHBoxLayout()
+        export_row.setSpacing(8)
         self.download_audio_btn = ModernButton("\u2b07 Download", primary=False)
         self.download_audio_btn.clicked.connect(self._download_audio)
-        play_row.addWidget(self.download_audio_btn)
+        export_row.addWidget(self.download_audio_btn)
 
         self.regenerate_btn = ModernButton("\U0001f501 Regenerate", primary=False)
         self.regenerate_btn.clicked.connect(self._regenerate_voice)
-        play_row.addWidget(self.regenerate_btn)
+        export_row.addWidget(self.regenerate_btn)
+        export_row.addStretch()
+        export_col.addLayout(export_row)
+        card.content_layout.addWidget(self.export_container)
 
-        play_row.addStretch()
-        card.content_layout.addWidget(self.playback_container)
+        # --- Transcript controls (always visible) ----------------------------------------
+        self.transcript_container = QWidget()
+        transcript_col = QVBoxLayout(self.transcript_container)
+        transcript_col.setContentsMargins(0, 0, 0, 0)
+        transcript_col.setSpacing(8)
+
+        transcript_header = QHBoxLayout()
+        transcript_header.setSpacing(8)
+        transcript_header.addWidget(self._group_label("Transcript"))
+        self.transcript_summary_label = MutedLabel("Status: Not Generated")
+        transcript_header.addWidget(self.transcript_summary_label)
+        transcript_header.addStretch()
+        transcript_col.addLayout(transcript_header)
+
+        transcript_row = QHBoxLayout()
+        transcript_row.setSpacing(8)
+        self.generate_transcript_btn = ModernButton("Generate Transcript", primary=False)
+        self.generate_transcript_btn.clicked.connect(self.transcribe_audio)
+        transcript_row.addWidget(self.generate_transcript_btn)
+
+        self.view_transcript_btn = ModernButton("View Transcript", primary=False)
+        self.view_transcript_btn.clicked.connect(self._open_transcript_editor)
+        transcript_row.addWidget(self.view_transcript_btn)
+        transcript_row.addStretch()
+        transcript_col.addLayout(transcript_row)
+        card.content_layout.addWidget(self.transcript_container)
+
+        #: Shared transcription trigger. The old Upload-Audio button was removed
+        #: (RC-6.2: no duplicate Generate Transcript), but the ``transcribe_btn``
+        #: name is kept as an alias so the transcription pipeline and existing
+        #: tests keep working against the single Narration-card button.
+        self.transcribe_btn = self.generate_transcript_btn
 
         self.narration_empty_label = MutedLabel(
             "No narration generated yet. Generate a voice to enable playback."
@@ -757,6 +1035,13 @@ class VoicePage(QWidget):
         self._refresh_narration_ui()
 
     def _build_upload_section(self, parent):
+        """Import-mode card: choose and configure the audio file.
+
+        Only handles importing/configuring the audio (Choose Audio File,
+        selected filename, Whisper model, Whisper Setup). The transcription
+        trigger lives in the Narration card's Transcript group (RC-6.2) so
+        the two sections no longer duplicate the Generate Transcript action.
+        """
         card = ModernCard()
         card.content_layout.setSpacing(8)
 
@@ -772,11 +1057,6 @@ class VoicePage(QWidget):
         self.upload_btn = ModernButton("Choose Audio File", primary=True)
         self.upload_btn.clicked.connect(self.choose_audio)
         btn_row.addWidget(self.upload_btn)
-
-        self.transcribe_btn = ModernButton("Generate Transcript", primary=False)
-        self.transcribe_btn.clicked.connect(self.transcribe_audio)
-        self.transcribe_btn.setEnabled(False)
-        btn_row.addWidget(self.transcribe_btn)
 
         btn_row.addStretch()
         card.content_layout.addLayout(btn_row)
@@ -804,43 +1084,50 @@ class VoicePage(QWidget):
         parent.addWidget(card)
         self._upload_card = card
 
-    def _build_transcript_section(self, parent):
-        title_row = QHBoxLayout()
-        title_row.setContentsMargins(0, 0, 0, 0)
+    def _create_transcript_widgets(self):
+        """Create the transcript editor chrome, kept hidden on the page.
 
-        title_row.addWidget(SectionHeader("Transcript Editor"))
+        The editor and its status / save / copy chrome live inside the
+        transcript dialog while it is open; the widgets stay owned by this
+        page so dirty tracking, autosave, and the transcription pipeline
+        keep a single source of truth (RC-6.1: the editor no longer
+        permanently occupies the Voice page).
+        """
+        self.transcript_box = QPlainTextEdit(self)
+        self.transcript_box.setPlaceholderText(
+            "No transcript yet. Generate a transcript first."
+        )
+        self.transcript_box.setMinimumHeight(260)
+        self.transcript_box.textChanged.connect(self._on_text_edit)
+        self.transcript_box.setVisible(False)
 
         self.status_label = MutedLabel("")
-        title_row.addWidget(self.status_label)
-
-        title_row.addWidget(self._autosave_indicator)
-        title_row.addStretch()
-
-        parent.addLayout(title_row)
-
-        self.transcript_box = QPlainTextEdit()
-        self.transcript_box.setPlaceholderText("No transcript yet. Upload audio and generate.")
-        self.transcript_box.textChanged.connect(self._on_text_edit)
-        self.transcript_box.setMinimumHeight(220)
-        parent.addWidget(self.transcript_box, 1)
+        self.status_label.setParent(self)
+        self.status_label.setVisible(False)
 
         self.timestamps_label = MutedLabel("")
-        parent.addWidget(self.timestamps_label)
+        self.timestamps_label.setParent(self)
+        self.timestamps_label.setVisible(False)
+
+        self.save_btn = ModernButton("Save Transcript", primary=True)
+        self.save_btn.clicked.connect(self.save_transcript)
+        self.save_btn.setParent(self)
+        self.save_btn.setEnabled(False)
+        self.save_btn.setVisible(False)
+
+        self.download_btn = ModernButton("Download TXT", primary=False)
+        self.download_btn.clicked.connect(self.download_transcript)
+        self.download_btn.setParent(self)
+        self.download_btn.setEnabled(False)
+        self.download_btn.setVisible(False)
+
+        self._autosave_indicator.setParent(self)
+        self._autosave_indicator.setVisible(False)
 
     def _build_action_bar(self, parent):
         bar = QHBoxLayout()
         bar.setContentsMargins(0, 0, 0, 0)
         bar.setSpacing(12)
-
-        self.save_btn = ModernButton("Save Transcript", primary=True)
-        self.save_btn.clicked.connect(self.save_transcript)
-        self.save_btn.setEnabled(False)
-        bar.addWidget(self.save_btn)
-
-        self.download_btn = ModernButton("Download TXT", primary=False)
-        self.download_btn.clicked.connect(self.download_transcript)
-        self.download_btn.setEnabled(False)
-        bar.addWidget(self.download_btn)
 
         bar.addStretch()
 
@@ -886,9 +1173,29 @@ class VoicePage(QWidget):
         for key, option in self._mode_options.items():
             option.set_selected(key == self._voice_source)
         ai_visible = self._voice_source == VOICE_SOURCE_AI
+        # AI and Import are true UI states: the selected AI voice, speed and
+        # TTS controls never leak into the imported state, and the imported
+        # audio identity never shows under an AI voice (RC-6.2). Visibility is
+        # applied to the group containers AND their direct controls so both
+        # the rendered layout and isHidden()/isVisible() reflect the state
+        # consistently (Qt only reports isHidden() true for a never-shown
+        # widget when it was itself explicitly hidden).
+        self.ai_identity_container.setVisible(ai_visible)
+        self.selected_voice_name_label.setVisible(ai_visible)
+        self.selected_voice_desc_label.setVisible(ai_visible)
+        self.selected_voice_lang_label.setVisible(ai_visible)
+        self.preview_btn.setVisible(ai_visible)
+        self.change_voice_btn.setVisible(ai_visible)
+        self.ai_speed_container.setVisible(ai_visible)
+        self.ai_generation_container.setVisible(ai_visible)
         self.generate_btn.setVisible(ai_visible)
         self.tts_status_label.setVisible(ai_visible)
         self.tts_setup_btn.setVisible(ai_visible)
+        self.import_identity_container.setVisible(not ai_visible)
+        self.imported_file_label.setVisible(not ai_visible)
+        self.imported_meta_label.setVisible(not ai_visible)
+        self.import_preview_btn.setVisible(not ai_visible)
+        self.replace_audio_btn.setVisible(not ai_visible)
         self._upload_card.setVisible(not ai_visible)
         self._refresh_import_ui()
         self._refresh_narration_ui()
@@ -971,6 +1278,17 @@ class VoicePage(QWidget):
 
     def _on_dialog_voice_selected(self, voice_id):
         self._select_voice(voice_id)
+
+    def _open_transcript_editor(self):
+        """Open the modal transcript editor (RC-6.1 Part 3)."""
+        if not self._transcript_text:
+            NotificationService.get().info(
+                "No transcript yet. Generate a transcript first."
+            )
+            return
+        self._transcript_dialog = TranscriptEditorDialog(self, parent=self)
+        self._transcript_dialog.exec()
+        self._transcript_dialog = None
 
     def _select_voice(self, voice_id):
         self._selected_voice_id = voice_id
@@ -1206,6 +1524,60 @@ class VoicePage(QWidget):
             getattr(c, color_attr), getattr(c, bg_attr)
         )
 
+    def _group_label(self, text: str) -> QLabel:
+        """Small caption used to label a control group inside the card."""
+        c = ThemeManager.instance().colors()
+        label = QLabel(text)
+        label.setStyleSheet(f"{Fonts.caption_bold(c.TEXT_SECONDARY)}")
+        self._group_labels.append(label)
+        return label
+
+    def _refresh_transcript_controls(self):
+        """Enable transcript actions from the current page state."""
+        has_audio = bool(self._audio_path) and Path(self._audio_path).exists()
+        has_transcript = bool(self._transcript_text)
+        busy = self._transcribing or self._generating
+        self.generate_transcript_btn.setEnabled(has_audio and not busy)
+        self.view_transcript_btn.setEnabled(has_transcript and not busy)
+        self._update_transcript_status()
+
+    def _update_transcript_status(self):
+        """Refresh the Transcript group status and button label from real state.
+
+        RC-6 status model distinguishes 'Generating...', 'Failed — reason', and
+        a generated summary with character/segment counts from 'Not Generated',
+        so 'Status: Ready' can never masquerade as a missing transcript.
+        """
+        c = ThemeManager.instance().colors()
+        if self._transcribing:
+            self.transcript_summary_label.setText("Status: Generating...")
+            self.transcript_summary_label.setStyleSheet(f"{Fonts.tiny(c.WARNING)}")
+            self.generate_transcript_btn.setText("Generate Transcript")
+            return
+        if self._transcript_error:
+            reason = " ".join(str(self._transcript_error).split())
+            if len(reason) > 100:
+                reason = reason[:97] + "..."
+            self.transcript_summary_label.setText(f"Status: Failed \u2014 {reason}")
+            self.transcript_summary_label.setStyleSheet(f"{Fonts.tiny(c.ERROR)}")
+            self.generate_transcript_btn.setText("Retry Transcription")
+            return
+        if self._transcript_text:
+            n_chars = len(self._transcript_text)
+            n_segs = len(self._segments)
+            char_word = "character" if n_chars == 1 else "characters"
+            seg_word = "segment" if n_segs == 1 else "segments"
+            summary = f"{n_chars:,} {char_word}"
+            if n_segs:
+                summary += f" \u00b7 {n_segs:,} {seg_word}"
+            self.transcript_summary_label.setText(f"Status: Generated \u2014 {summary}")
+            self.transcript_summary_label.setStyleSheet(f"{Fonts.tiny(c.SUCCESS)}")
+            self.generate_transcript_btn.setText("Regenerate Transcript")
+            return
+        self.transcript_summary_label.setText("Status: Not Generated")
+        self.transcript_summary_label.setStyleSheet("")
+        self.generate_transcript_btn.setText("Generate Transcript")
+
     def _set_playback_enabled(self, enabled: bool):
         for btn in (
             self.play_btn,
@@ -1241,12 +1613,19 @@ class VoicePage(QWidget):
             self._set_narration_status("generated")
 
     def _refresh_narration_ui(self):
-        """Show the empty state or the playback controls + status."""
+        """Show the empty state or the narration controls + status.
+
+        The Transcript group is always visible (RC-6.2) so the core workflow
+        dependency never disappears; only the post-generation Playback /
+        Export / summary sections depend on an audio file existing.
+        """
         has_audio = bool(self._audio_path) and Path(self._audio_path).exists()
         self.playback_container.setVisible(has_audio)
+        self.export_container.setVisible(has_audio)
+        self.narration_summary.setVisible(has_audio)
         self.narration_empty_label.setVisible(not has_audio)
-        self.narration_duration_label.setVisible(has_audio)
-        self.narration_size_label.setVisible(has_audio)
+        self._refresh_transcript_controls()
+        self._update_import_identity()
         if not has_audio:
             self._set_narration_status("ready")
             if self._voice_source == VOICE_SOURCE_IMPORT:
@@ -1265,10 +1644,38 @@ class VoicePage(QWidget):
             self._refresh_narration_status_from_player()
         self._update_narration_meta()
 
+    def _update_import_identity(self):
+        """Populate the Imported Audio block from the real file metadata."""
+        if not self._audio_path or not Path(self._audio_path).exists():
+            self.imported_file_label.setText("No audio file selected")
+            self.imported_meta_label.setText(
+                "Choose an MP3, WAV, or M4A file in the Upload Audio section."
+            )
+            self.import_preview_btn.setEnabled(False)
+            return
+        self.imported_file_label.setText(Path(self._audio_path).name)
+        parts = []
+        ms = self._wav_duration_ms(self._audio_path) or self._narration_duration_ms
+        if ms > 0:
+            total_sec = ms // 1000
+            parts.append(f"Duration: {total_sec // 60}:{total_sec % 60:02d}")
+        try:
+            size = Path(self._audio_path).stat().st_size
+            parts.append(f"File size: {self._format_file_size(size)}")
+        except OSError:
+            pass
+        self.imported_meta_label.setText("  \u00b7  ".join(parts) or "Imported audio")
+        self.import_preview_btn.setEnabled(True)
+        self.replace_audio_btn.setEnabled(True)
+
     def _update_narration_meta(self):
+        """Refresh the generated-narration summary (Part 7) from real metadata."""
         if not self._audio_path or not Path(self._audio_path).exists():
             self.narration_duration_label.setText("Duration: \u2014")
             self.narration_size_label.setText("File size: \u2014")
+            self.summary_voice_label.setText("Voice: \u2014")
+            self.summary_generated_label.setText("Generated: \u2014")
+            self._set_summary_title()
             return
         ms = self._wav_duration_ms(self._audio_path) or self._narration_duration_ms
         if ms > 0:
@@ -1279,10 +1686,41 @@ class VoicePage(QWidget):
         else:
             self.narration_duration_label.setText("Duration: \u2014")
         try:
-            size = Path(self._audio_path).stat().st_size
+            stat = Path(self._audio_path).stat()
+            size = stat.st_size
+            generated_text = self._format_generated_time(stat.st_mtime)
         except OSError:
             size = 0
+            generated_text = "\u2014"
         self.narration_size_label.setText(f"File size: {self._format_file_size(size)}")
+        if self._voice_source == VOICE_SOURCE_IMPORT:
+            voice_text = Path(self._audio_path).name
+        else:
+            voice_text = self._display_name(self._selected_voice_id)
+        self.summary_voice_label.setText(f"Voice: {voice_text}")
+        self.summary_generated_label.setText(f"Generated: {generated_text}")
+        self._set_summary_title()
+
+    def _set_summary_title(self):
+        is_import = self._voice_source == VOICE_SOURCE_IMPORT
+        self.summary_title_label.setText(
+            "Audio Imported" if is_import else "Voice Generated"
+        )
+
+    @staticmethod
+    def _format_generated_time(mtime) -> str:
+        """Format a file mtime like 'Today 10:42 PM' (RC-6.1 Part 7)."""
+        dt = datetime.fromtimestamp(mtime)
+        now = datetime.now()
+        if dt.date() == now.date():
+            prefix = "Today"
+        elif (now.date() - dt.date()).days == 1:
+            prefix = "Yesterday"
+        else:
+            prefix = dt.strftime("%b %d")
+        hour = dt.hour % 12 or 12
+        ampm = "AM" if dt.hour < 12 else "PM"
+        return f"{prefix} {hour}:{dt.minute:02d} {ampm}"
 
     @staticmethod
     def _format_file_size(size_bytes) -> str:
@@ -1403,6 +1841,7 @@ class VoicePage(QWidget):
         self.generate_btn.setEnabled(False)
         self.upload_btn.setEnabled(False)
         self.transcribe_btn.setEnabled(False)
+        self.generate_transcript_btn.setEnabled(False)
         self.progress_widget.setVisible(True)
         self.progress_widget.reset()
         self.progress_widget.set_progress(2, "Initializing Voice Engine...")
@@ -1523,6 +1962,7 @@ class VoicePage(QWidget):
         self.gen_actions.setVisible(False)
         self.generate_btn.setEnabled(True)
         self.upload_btn.setEnabled(True)
+        self.generate_transcript_btn.setEnabled(True)
         self._set_playback_enabled(True)
         self._set_mode_options_enabled(True)
         self._refresh_narration_ui()
@@ -1535,6 +1975,7 @@ class VoicePage(QWidget):
         self.generate_btn.setEnabled(True)
         self.upload_btn.setEnabled(True)
         self.transcribe_btn.setEnabled(True)
+        self.generate_transcript_btn.setEnabled(True)
         self._set_playback_enabled(True)
         self._set_mode_options_enabled(True)
         self.cancel_gen_btn.setVisible(False)
@@ -1630,11 +2071,23 @@ class VoicePage(QWidget):
             self.info_language.setText(f"Language: {project_data.get('language', '\u2014')}")
 
         project_path = self.manager.PROJECTS_DIR / self.project_name
+        # A project with no narration audio must not keep the previous
+        # project's audio path (RC-6.2 cross-project state isolation): Play,
+        # Download, and Transcription otherwise operate on another project's
+        # file while the user is looking at this project.
+        self._audio_path = None
         audio_dir = project_path / "audio"
         if audio_dir.exists():
             audio_files = [f for f in audio_dir.iterdir() if f.is_file()]
             if audio_files:
                 self._audio_path = str(audio_files[0])
+
+        if not self._dirty:
+            # A project switch must not keep the previous project's transcript
+            # (RC-6.2 cross-project state isolation). Unsaved editor edits are
+            # preserved (Sprint 3.4B / C2).
+            self._transcript_text = ""
+            self._segments = []
 
         self._load_saved_transcript(project_path)
 
@@ -1646,7 +2099,8 @@ class VoicePage(QWidget):
             # Never overwrite unsaved user edits (Sprint 3.4B / C2). Pipeline
             # events reload page data; only reload the editor when it is clean.
             self.next_btn.setEnabled(True)
-            self.download_btn.setEnabled(True)
+            self.view_transcript_btn.setEnabled(True)
+            self._update_transcript_status()
             self.transcript_box.setPlainText(self._transcript_text)
             self._saved_text = self._transcript_text
             self._update_status_clean()
@@ -1662,7 +2116,8 @@ class VoicePage(QWidget):
             self._saved_text = ""
             self.transcript_box.setPlainText("")
             self.next_btn.setEnabled(False)
-            self.download_btn.setEnabled(False)
+            self.view_transcript_btn.setEnabled(False)
+            self._update_transcript_status()
             self.timestamps_label.setText("")
 
     def _load_saved_transcript(self, project_path):
@@ -1752,6 +2207,11 @@ class VoicePage(QWidget):
         )
 
     def transcribe_audio(self):
+        if self._transcribing:
+            NotificationService.get().warning(
+                "Transcription is already running."
+            )
+            return
         if not self.project_name:
             NotificationService.get().warning("Select a project first.")
             return
@@ -1775,11 +2235,14 @@ class VoicePage(QWidget):
         self._pipeline.mark_stage_started(self.project_name, "Voice")
 
         self._transcribing = True
+        self._transcript_error = None
         self._set_mode_options_enabled(False)
         self.transcribe_btn.setEnabled(False)
         self.upload_btn.setEnabled(False)
+        self.generate_transcript_btn.setEnabled(False)
         self.progress_widget.setVisible(True)
         self.progress_widget.reset()
+        self._update_transcript_status()
         self._start_progress_animation()
 
         self._worker_thread = QThread()
@@ -1831,6 +2294,7 @@ class VoicePage(QWidget):
 
     def _on_transcription_done(self, transcript, segments):
         self._transcribing = False
+        self._transcript_error = None
         self._stop_progress_animation()
         self._transcript_text = transcript
         self._segments = segments
@@ -1869,8 +2333,9 @@ class VoicePage(QWidget):
         self._saved_text = transcript
         self._update_status_clean()
 
-        self.download_btn.setEnabled(True)
         self.next_btn.setEnabled(True)
+        self.view_transcript_btn.setEnabled(True)
+        self._update_transcript_status()
 
         if segs_out:
             self.timestamps_label.setText(
@@ -1882,6 +2347,7 @@ class VoicePage(QWidget):
         self.transcribe_btn.setEnabled(True)
         self.upload_btn.setEnabled(True)
         self.generate_btn.setEnabled(True)
+        self.generate_transcript_btn.setEnabled(True)
         self._set_mode_options_enabled(True)
         self._refresh_narration_ui()
         self._history.record_action(
@@ -1896,14 +2362,17 @@ class VoicePage(QWidget):
 
     def _on_transcription_error(self, error_msg):
         self._transcribing = False
+        self._transcript_error = error_msg
         self._stop_progress_animation()
         self.progress_widget.setVisible(False)
         self.transcribe_btn.setEnabled(True)
         self.upload_btn.setEnabled(True)
         self.generate_btn.setEnabled(True)
+        self.generate_transcript_btn.setEnabled(True)
         self._set_mode_options_enabled(True)
         self._pipeline.mark_stage_failed(self.project_name, "Voice", error_msg)
         self._set_narration_status("error")
+        self._update_transcript_status()
         NotificationService.get().error(f"Transcription failed: {error_msg}")
 
     def _autosave_save(self):

@@ -57,6 +57,11 @@ class TaskManager:
         return self._current_task_name
 
     @property
+    def status_message(self) -> Optional[str]:
+        """Human-readable status of the running task (or the last update)."""
+        return self._status_message
+
+    @property
     def history(self) -> list[TaskRecord]:
         return list(self._history)
 

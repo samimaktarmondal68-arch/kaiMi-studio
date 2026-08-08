@@ -52,6 +52,19 @@ class _GenerationBridge(QObject):
 _log = get_logger()
 
 
+def _provider_preflight() -> tuple[bool, str]:
+    """Return (ok, message) for the active AI provider's configuration.
+
+    Runs before generation starts so a provider that cannot run at all (no
+    active provider, missing model, missing API key) is reported immediately
+    with an actionable message instead of leaving the page silently on
+    'No Prompts Yet'. Network/quota failures still surface through the
+    worker's failure path.
+    """
+    from providers.provider_manager import get_provider_manager
+    return get_provider_manager().preflight_check()
+
+
 def _format_timestamp(segment: dict) -> str:
     """Format a raw segment start as MM:SS for display."""
     raw = segment.get("start", 0) or 0
@@ -73,12 +86,18 @@ class ImagePromptsPage(QWidget):
         self._pipeline = get_pipeline_service()
         self.project_name = None
         self._prompts = []
+        #: Human-readable failure from the last generation attempt; None when
+        #: idle, running, or successful (RC-6: no silent 'No Prompts Yet').
+        self._generation_error = None
         self._history = HistoryManager()
         self._autosave = get_autosave_manager()
         self._autosave.register("image_prompts", self._autosave_save)
         self._generation_bridge = _GenerationBridge()
         self._generation_bridge.completed.connect(self._on_generation_completed)
         self._generation_bridge.failed.connect(self._on_generation_failed)
+        self._progress_poll = QTimer(self)
+        self._progress_poll.setInterval(200)
+        self._progress_poll.timeout.connect(self._poll_progress)
         ThemeManager.instance().on_change(lambda _: self._on_theme_changed())
         self._build()
 
@@ -99,13 +118,18 @@ class ImagePromptsPage(QWidget):
         self.status_badge.refresh_theme()
         if self.empty_state is not None:
             self.empty_state.refresh_theme()
+        self._refresh_generation_error()
 
     def set_project(self, name):
+        if name != self.project_name:
+            # A failure from another project must not leak into this one.
+            self._generation_error = None
         self.project_name = name
         self._load_project_data()
 
     def cleanup(self):
         """Cancel any in-flight generation task before the app exits."""
+        self._progress_poll.stop()
         self.task_manager.cancel()
 
     def _build(self):
@@ -189,6 +213,13 @@ class ImagePromptsPage(QWidget):
         self.progress_widget.setVisible(False)
         controls_card.content_layout.addWidget(self.progress_widget)
 
+        # Persistent failure banner (RC-6): a failed generation must be
+        # visible and actionable, never a silent 'No Prompts Yet'.
+        self.failure_label = QLabel("")
+        self.failure_label.setWordWrap(True)
+        self.failure_label.setVisible(False)
+        controls_card.content_layout.addWidget(self.failure_label)
+
         parent.addWidget(controls_card)
 
     def _build_source_context(self, parent):
@@ -216,6 +247,7 @@ class ImagePromptsPage(QWidget):
         self._prompts = stored.get("prompts", [])
         self._render_prompts()
         self._load_source_context()
+        self._refresh_generation_error()
 
     def _load_source_context(self):
         """Refresh the source-context summary from stored script and transcript."""
@@ -333,6 +365,15 @@ class ImagePromptsPage(QWidget):
                 NotificationService.get().warning(msg)
             return
 
+        # Fail fast (and visibly) when the provider cannot run at all.
+        ok, preflight_msg = _provider_preflight()
+        if not ok:
+            self._set_generation_error(preflight_msg)
+            NotificationService.get().error(
+                f"Image Prompt generation failed: {preflight_msg}"
+            )
+            return
+
         script_data = self.script_storage.load(self.project_name)
         script_text = script_data.get("script_output", "")
         if not script_text:
@@ -345,21 +386,27 @@ class ImagePromptsPage(QWidget):
         transcript = transcript_data.get("text", "")
         timestamps = transcript_data.get("segments") or None
 
+        self._set_generation_error(None)
         self._pipeline.mark_stage_started(self.project_name, "Image Prompts")
 
         self.generate_btn.setEnabled(False)
         self.export_btn.setEnabled(False)
         self.progress_widget.setVisible(True)
-        self.progress_widget.set_progress(0, status="Starting...")
+        self.progress_widget.reset()
+        self.progress_widget.set_progress(1, status="Starting...")
+        self._progress_poll.start()
 
         def run_task(task_manager):
             task_manager.update_progress(0.3, "Preparing prompt request...")
+            # Guard against a project removed mid-session: a missing project
+            # must fail with an actionable message, not an AttributeError.
+            project = project_data or {}
             request = ImagePromptRequest(
                 script_text=script_text,
                 transcript=transcript,
                 timestamps=timestamps,
-                topic=project_data.get("topic", ""),
-                language=project_data.get("language", "English"),
+                topic=project.get("topic", ""),
+                language=project.get("language", "English"),
             )
             task_manager.update_progress(0.5, "Generating image prompts...")
             raw = self.operator.execute(request)
@@ -384,7 +431,9 @@ class ImagePromptsPage(QWidget):
 
     def _on_generation_completed(self, prompts):
         """Handle successful generation on the GUI thread."""
+        self._progress_poll.stop()
         self._prompts = prompts
+        self._set_generation_error(None)
         self.prompt_storage.save(self.project_name, prompts)
         self._render_prompts()
 
@@ -401,12 +450,45 @@ class ImagePromptsPage(QWidget):
         NotificationService.get().success(f"Generated {len(prompts)} image prompts.")
 
     def _on_generation_failed(self, exc):
-        """Handle a failed generation on the GUI thread."""
+        """Handle a failed generation on the GUI thread.
+
+        The failure is persisted in the page state and shown as a visible
+        banner so the user always sees why the page is not showing prompts
+        (RC-6: no silent 'No Prompts Yet').
+        """
+        self._progress_poll.stop()
+        message = str(exc).strip() or "Unknown generation error."
+        self._set_generation_error(f"Image Prompt generation failed: {message}")
         self.generate_btn.setEnabled(True)
         self.export_btn.setEnabled(True)
         self.progress_widget.setVisible(False)
-        self._pipeline.mark_stage_failed(self.project_name, "Image Prompts", str(exc))
-        NotificationService.get().error(str(exc))
+        self._pipeline.mark_stage_failed(self.project_name, "Image Prompts", message)
+        NotificationService.get().error(f"Image Prompt generation failed: {message}")
+
+    def _set_generation_error(self, message):
+        """Store the last generation failure and refresh the failure banner."""
+        self._generation_error = message
+        self._refresh_generation_error()
+
+    def _refresh_generation_error(self):
+        """Show or hide the persistent failure banner from page state."""
+        c = ThemeManager.instance().colors()
+        if self._generation_error:
+            self.failure_label.setText(self._generation_error)
+            self.failure_label.setStyleSheet(f"color: {c.ERROR}; font-weight: bold;")
+            self.failure_label.setVisible(True)
+        else:
+            self.failure_label.setText("")
+            self.failure_label.setVisible(False)
+
+    def _poll_progress(self):
+        """Mirror TaskManager progress into the ProgressWidget while running."""
+        if not self.task_manager.is_running:
+            self._progress_poll.stop()
+            return
+        pct = int(max(0.0, min(1.0, self.task_manager.progress)) * 100)
+        message = self.task_manager.status_message or "Generating image prompts..."
+        self.progress_widget.set_progress(max(1, pct), status=message)
 
     def _autosave_save(self):
         if not self.project_name:

@@ -180,6 +180,20 @@ class VoiceSelectionDialog(QDialog):
         self.voice_search.textChanged.connect(self._on_search)
         layout.addWidget(self.voice_search)
 
+        # One continuous scroll area for the whole library (RC-6.1 Part 5).
+        # Recommended cards stay pinned at the top, followed by All Voices;
+        # only this scroll area scrolls — no nested scrollbars.
+        self.content_scroll = QScrollArea()
+        self.content_scroll.setWidgetResizable(True)
+        self.content_scroll.setFrameShape(QScrollArea.NoFrame)
+        self.content_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        layout.addWidget(self.content_scroll, 1)
+
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(10)
+
         rec_header = QHBoxLayout()
         rec_header.setSpacing(8)
         rec_title = QLabel("Recommended")
@@ -188,13 +202,13 @@ class VoiceSelectionDialog(QDialog):
         self.recommended_count = MutedLabel("")
         rec_header.addWidget(self.recommended_count)
         rec_header.addStretch()
-        layout.addLayout(rec_header)
+        content_layout.addLayout(rec_header)
 
         self.recommended_container = QWidget()
         self.recommended_grid = QGridLayout(self.recommended_container)
         self.recommended_grid.setContentsMargins(0, 0, 0, 0)
         self.recommended_grid.setSpacing(10)
-        layout.addWidget(self.recommended_container)
+        content_layout.addWidget(self.recommended_container)
 
         all_header = QHBoxLayout()
         all_header.setSpacing(8)
@@ -204,19 +218,16 @@ class VoiceSelectionDialog(QDialog):
         self.all_voices_count = MutedLabel("")
         all_header.addWidget(self.all_voices_count)
         all_header.addStretch()
-        layout.addLayout(all_header)
+        content_layout.addLayout(all_header)
 
-        self.all_voices_scroll = QScrollArea()
-        self.all_voices_scroll.setWidgetResizable(True)
-        self.all_voices_scroll.setFrameShape(QScrollArea.NoFrame)
-        self.all_voices_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.all_voices_scroll.setMaximumHeight(300)
         self.all_voices_container = QWidget()
         self.all_voices_grid = QGridLayout(self.all_voices_container)
         self.all_voices_grid.setContentsMargins(0, 0, 0, 0)
         self.all_voices_grid.setSpacing(10)
-        self.all_voices_scroll.setWidget(self.all_voices_container)
-        layout.addWidget(self.all_voices_scroll, 1)
+        content_layout.addWidget(self.all_voices_container)
+
+        content_layout.addStretch()
+        self.content_scroll.setWidget(content)
 
         hint = MutedLabel("Double-click a voice or click Select to choose it.")
         layout.addWidget(hint)
