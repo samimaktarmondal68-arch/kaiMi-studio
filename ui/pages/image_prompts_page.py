@@ -1,7 +1,9 @@
 import time
+from pathlib import Path
 
 from PySide6.QtCore import QObject, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -141,11 +143,18 @@ class ImagePromptsPage(QWidget):
         if self.empty_state is not None:
             self.empty_state.refresh_theme()
         self._refresh_generation_error()
+        self._refresh_export_status()
 
     def set_project(self, name):
         if name != self.project_name:
             # A failure from another project must not leak into this one.
             self._generation_error = None
+            # An export result belongs to the previous project; never show a
+            # stale success/error message on a freshly opened one (RC-7.1).
+            self._export_status_message = ""
+            self._export_status_error = False
+            self._export_status_muted = False
+            self._refresh_export_status()
             # An in-flight generation belongs to the previous project: request
             # a cooperative cancel. ``_generation_project`` is intentionally
             # NOT cleared here — if the worker still completes (the provider
@@ -255,6 +264,13 @@ class ImagePromptsPage(QWidget):
         self.failure_label.setWordWrap(True)
         self.failure_label.setVisible(False)
         controls_card.content_layout.addWidget(self.failure_label)
+
+        # Persistent export feedback (RC-7.1): success/failure of the last
+        # TXT export stays visible instead of vanishing with a toast.
+        self.export_status_label = QLabel("")
+        self.export_status_label.setWordWrap(True)
+        self.export_status_label.setVisible(False)
+        controls_card.content_layout.addWidget(self.export_status_label)
 
         parent.addWidget(controls_card)
 
@@ -577,6 +593,7 @@ class ImagePromptsPage(QWidget):
         self.generate_btn.setEnabled(True)
         self.export_btn.setEnabled(True)
         self.cancel_btn.setVisible(False)
+        self.progress_widget.stop()
         self.progress_widget.setVisible(False)
         self._pipeline.mark_stage_failed(self.project_name, "Image Prompts", reason)
         NotificationService.get().error(
@@ -596,6 +613,7 @@ class ImagePromptsPage(QWidget):
         self.generate_btn.setEnabled(True)
         self.export_btn.setEnabled(True)
         self.cancel_btn.setVisible(False)
+        self.progress_widget.stop()
         self.progress_widget.setVisible(False)
         if target == self.project_name:
             self._pipeline.mark_stage_reset(self.project_name, "Image Prompts")
@@ -680,17 +698,76 @@ class ImagePromptsPage(QWidget):
         self.prompt_storage.save(self.project_name, self._prompts)
 
     def export_txt(self):
+        """Export the current prompt set to a user-chosen TXT destination.
+
+        The OS save dialog lets the user pick the file; cancelling it is a
+        silent no-op (never an error). The file is written as UTF-8 with the
+        shared RC-7 block format (scene, timestamp, title, full prompt).
+        Success and failure both leave a persistent status line on the page.
+        """
         if not self.project_name:
             return
         # Export from the persisted project state (source of truth), never a
         # possibly-stale in-memory copy (RC-7).
         stored = self.prompt_storage.load(self.project_name)
-        if not stored.get("prompts"):
+        prompts = stored.get("prompts", [])
+        if not prompts:
+            # Informational empty state, not an error (RC-7.1).
+            self._set_export_status("No prompts to export.", muted=True)
             NotificationService.get().warning("No prompts to export.")
             return
+
+        default_dir = self.manager.PROJECTS_DIR / self.project_name / "exports"
+        suggested = default_dir / f"{self.project_name}_image_prompts.txt"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Image Prompts",
+            str(suggested),
+            "Text Files (*.txt)",
+        )
+        if not file_path:
+            # User cancelled the dialog: not an error, nothing to report.
+            return
+        if not file_path.lower().endswith(".txt"):
+            file_path += ".txt"
+
         try:
-            project_data = self.manager.load_project(self.project_name)
-            result = self.export_service.export_project(project_data, fmt="txt")
-            NotificationService.get().success(f"Exported to {result}")
-        except Exception as e:
+            text = ExportService.build_image_prompts_txt(prompts)
+            Path(file_path).write_text(text, encoding="utf-8")
+        except OSError as e:
+            self._set_export_status(f"Export failed: {e}", error=True)
             NotificationService.get().error(f"Export failed: {e}")
+            return
+
+        self._set_export_status("Prompts exported successfully.")
+        NotificationService.get().success("Prompts exported successfully.")
+
+    def _set_export_status(self, message: str, error: bool = False, muted: bool = False):
+        """Store and show a persistent export status line on the page.
+
+        ``error`` renders in the theme's error color, ``muted`` in the
+        secondary text color (used for informational states such as an empty
+        prompt set); the default success render is used otherwise.
+        """
+        self._export_status_message = message
+        self._export_status_error = error
+        self._export_status_muted = muted
+        self._refresh_export_status()
+
+    def _refresh_export_status(self):
+        """Render the export status line with the current theme's colors."""
+        c = ThemeManager.instance().colors()
+        message = getattr(self, "_export_status_message", "")
+        if not message:
+            self.export_status_label.setText("")
+            self.export_status_label.setVisible(False)
+            return
+        if getattr(self, "_export_status_error", False):
+            color = c.ERROR
+        elif getattr(self, "_export_status_muted", False):
+            color = c.TEXT_SECONDARY
+        else:
+            color = c.SUCCESS
+        self.export_status_label.setText(message)
+        self.export_status_label.setStyleSheet(f"color: {color}; font-weight: bold;")
+        self.export_status_label.setVisible(True)

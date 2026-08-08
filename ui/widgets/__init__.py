@@ -1,4 +1,11 @@
-from PySide6.QtCore import Qt, QByteArray
+from PySide6.QtCore import (
+    Property,
+    QAbstractAnimation,
+    QByteArray,
+    QPropertyAnimation,
+    QRectF,
+    Qt,
+)
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QFrame,
@@ -12,7 +19,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtGui import QColor, QIcon, QPixmap, QPainter
+from PySide6.QtGui import QColor, QIcon, QLinearGradient, QPixmap, QPainter
 
 from ..theme_pyside import ThemeManager
 from core.theme import Fonts
@@ -318,6 +325,92 @@ class ModernCard(QFrame):
         super().leaveEvent(event)
 
 
+class IndeterminateBar(QWidget):
+    """Animated indeterminate 'processing' bar for AI generation stages.
+
+    Paints a soft moving highlight across a rounded track instead of a static
+    zero-progress bar. The animation runs only while ``start()`` is in effect
+    and stops immediately on ``stop()`` (or when the widget is hidden), so no
+    CPU is consumed after generation ends. Colors are read from the active
+    theme on every paint, so runtime theme switches need no rebuild (RC-7.1).
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(8)
+        self._offset = 0.0
+        self._anim = QPropertyAnimation(self, b"offset", self)
+        self._anim.setDuration(1400)
+        self._anim.setStartValue(0.0)
+        self._anim.setEndValue(1.0)
+        self._anim.setLoopCount(-1)
+        self._anim.valueChanged.connect(self.update)
+
+    def _get_offset(self) -> float:
+        return self._offset
+
+    def _set_offset(self, value: float) -> None:
+        self._offset = value
+
+    offset = Property(float, _get_offset, _set_offset)
+
+    def start(self):
+        """Begin the marquee animation (no-op when already running)."""
+        if self._anim.state() != QAbstractAnimation.State.Running:
+            self._anim.start()
+
+    def stop(self):
+        """Freeze the animation immediately."""
+        self._anim.stop()
+        self._offset = 0.0
+        self.update()
+
+    def is_animating(self) -> bool:
+        """True while the marquee is actively moving."""
+        return self._anim.state() == QAbstractAnimation.State.Running
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        width = self.width()
+        height = self.height()
+        if width <= 0 or height <= 0:
+            painter.end()
+            return
+        c = ThemeManager.instance().colors()
+        radius = height / 2.0
+
+        # Track
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(c.INPUT_BG))
+        painter.drawRoundedRect(QRectF(0, 0, width, height), radius, radius)
+
+        # Moving highlight: a comet that sweeps left -> right. Three copies
+        # spaced one period apart keep the marquee continuous (a band exits
+        # right as its twin enters from the left).
+        band_w = max(40.0, width * 0.3)
+        span = width + band_w
+        x = -band_w + self._offset * span
+        base = QColor(c.PRIMARY)
+
+        def _draw_band(x0):
+            if x0 + band_w < 0 or x0 > width:
+                return
+            grad = QLinearGradient(x0, 0, x0 + band_w, 0)
+            grad.setColorAt(0.0, QColor(base.red(), base.green(), base.blue(), 0))
+            grad.setColorAt(0.45, QColor(base.red(), base.green(), base.blue(), 70))
+            grad.setColorAt(0.7, base)
+            grad.setColorAt(0.85, QColor(base.red(), base.green(), base.blue(), 120))
+            grad.setColorAt(1.0, QColor(base.red(), base.green(), base.blue(), 0))
+            painter.setBrush(grad)
+            painter.drawRoundedRect(QRectF(x0, 0, band_w, height), radius, radius)
+
+        _draw_band(x)
+        _draw_band(x + span)
+        _draw_band(x - span)
+        painter.end()
+
+
 class ProgressWidget(QWidget):
 
     def __init__(self, parent=None):
@@ -341,6 +434,10 @@ class ProgressWidget(QWidget):
         self.progress_bar.setFixedHeight(8)
         bar_row.addWidget(self.progress_bar, 1)
 
+        self.indeterminate_bar = IndeterminateBar()
+        self.indeterminate_bar.setVisible(False)
+        bar_row.addWidget(self.indeterminate_bar, 1)
+
         self.percentage_label = QLabel("0%")
         self.percentage_label.setObjectName("muted")
         self.percentage_label.setFixedWidth(36)
@@ -358,7 +455,34 @@ class ProgressWidget(QWidget):
         self.eta_label.setAlignment(Qt.AlignLeft)
         layout.addWidget(self.eta_label)
 
+    def setVisible(self, visible: bool):
+        """Stop the marquee whenever the widget is hidden.
+
+        ``hideEvent`` only fires after a widget has been shown, so a page
+        hiding the progress widget before it was ever visible would otherwise
+        leave the animation running (RC-7.1).
+        """
+        if not visible:
+            self.indeterminate_bar.stop()
+        super().setVisible(visible)
+
+    def hideEvent(self, event):
+        """Never leave the marquee animating on a hidden widget (RC-7.1)."""
+        self.indeterminate_bar.stop()
+        super().hideEvent(event)
+
+    def stop(self):
+        """Stop the indeterminate animation immediately (idempotent).
+
+        Called by pages when a generation succeeds, fails, or is cancelled so
+        the marquee never keeps ticking after the run has ended (RC-7.1).
+        """
+        self.indeterminate_bar.stop()
+
     def set_progress(self, pct, status="", step="", eta=""):
+        self.indeterminate_bar.stop()
+        self.indeterminate_bar.setVisible(False)
+        self.progress_bar.setVisible(True)
         self.progress_bar.setValue(pct)
         self.percentage_label.setText(f"{pct}%")
         if status:
@@ -382,12 +506,14 @@ class ProgressWidget(QWidget):
         self.step_label.setText(text)
 
     def set_indeterminate(self, status="", step=""):
-        """Switch the bar to an indeterminate mode with stage text (RC-7).
+        """Switch to the animated processing bar with stage text (RC-7).
 
-        Used when exact progress cannot be measured: the bar animates instead
-        of showing a fabricated percentage.
+        Used when exact progress cannot be measured: the marquee animates
+        instead of showing a fabricated percentage (RC-7.1 polish).
         """
-        self.progress_bar.setRange(0, 0)
+        self.progress_bar.setVisible(False)
+        self.indeterminate_bar.setVisible(True)
+        self.indeterminate_bar.start()
         self.percentage_label.setText("")
         if status:
             self.status_label.setText(status)
@@ -395,7 +521,10 @@ class ProgressWidget(QWidget):
             self.step_label.setText(step)
 
     def set_determinate(self):
-        """Restore the determinate 0-100 bar range."""
+        """Restore the determinate 0-100 bar and stop any animation."""
+        self.indeterminate_bar.stop()
+        self.indeterminate_bar.setVisible(False)
+        self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
 

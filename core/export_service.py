@@ -109,6 +109,36 @@ class ExportService:
             raise OSError(f"Failed to write export file: {e}")
         return out
 
+    @staticmethod
+    def build_image_prompts_txt(prompts: list[dict]) -> str:
+        """Render prompt blocks in the shared RC-7 export format.
+
+        Format per scene (blank line between blocks):
+
+            Scene {number} [{timestamp}]
+            Title: {title}
+            {full prompt text}
+
+        Prompt text is written verbatim and never truncated. Both the
+        Image Prompts page export (user-chosen destination) and
+        ``export_stage`` render through this single definition so the
+        on-disk format can never drift between entry points (RC-7.1).
+        """
+        lines = []
+        for prompt in prompts:
+            scene = prompt.get("scene_number", "")
+            ts = prompt.get("timestamp", "")
+            header = f"Scene {scene}"
+            if ts:
+                header += f" [{ts}]"
+            lines.append(header)
+            title = prompt.get("prompt_title", "")
+            if title:
+                lines.append(f"Title: {title}")
+            lines.append(prompt.get("full_image_prompt", ""))
+            lines.append("")
+        return "\n".join(lines)
+
     def export_stage(self, project_name: str, stage: str, fmt: str = "txt") -> Path | None:
         project_name = _sanitize_project_name(project_name)
         if not project_name:
@@ -132,21 +162,9 @@ class ExportService:
         if stage == "Image Prompts":
             filename = "image_prompts.txt"
             out = export_root / filename
-            lines = []
-            for p in data.get("prompts", []):
-                scene = p.get("scene_number", "")
-                ts = p.get("timestamp", "")
-                header = f"Scene {scene}"
-                if ts:
-                    header += f" [{ts}]"
-                lines.append(header)
-                title = p.get("prompt_title", "")
-                if title:
-                    lines.append(f"Title: {title}")
-                lines.append(p.get("full_image_prompt", ""))
-                lines.append("")
+            text = self.build_image_prompts_txt(data.get("prompts", []))
             try:
-                out.write_text("\n".join(lines), encoding="utf-8")
+                out.write_text(text, encoding="utf-8")
             except OSError as e:
                 self._log.error("Export", f"Failed to write export file: {e}")
                 return None

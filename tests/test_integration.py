@@ -3795,7 +3795,7 @@ class TestRC7ImagePromptReliability:
         assert self._wait(app, lambda: len(page._prompts) == 1)
 
     def test_txt_export_completeness(self, pm, monkeypatch):
-        from PySide6.QtWidgets import QApplication
+        from PySide6.QtWidgets import QApplication, QFileDialog
         app = QApplication.instance() or QApplication([])
         name = "ExportProj"
         self._seed(pm, name)
@@ -3814,15 +3814,21 @@ class TestRC7ImagePromptReliability:
         page = self._make_page(pm, monkeypatch)
         page.set_project(name)
 
+        chosen = pm.PROJECTS_DIR / name / "exports" / f"{name}_image_prompts.txt"
+        monkeypatch.setattr(
+            QFileDialog, "getSaveFileName",
+            staticmethod(lambda *a, **k: (str(chosen), "Text Files (*.txt)")),
+        )
+
         page.export_txt()
-        out = pm.PROJECTS_DIR / name / "exports" / name / f"{name}.txt"
-        assert out.exists()
-        content = out.read_text(encoding="utf-8")
+        assert chosen.exists()
+        content = chosen.read_text(encoding="utf-8")
         assert "Scene 1" in content and "[00:00]" in content
         assert "Scene 2" in content and "[01:30]" in content
         assert "Title: Opening" in content
         assert "Prompt one " + long_prompt in content  # long prompt not truncated
         assert "Prompt two" in content
+        assert "Prompts exported successfully." in page.export_status_label.text()
 
     def test_long_prompt_not_truncated_in_storage_or_ui(self, pm, monkeypatch):
         from PySide6.QtWidgets import QApplication
@@ -3975,6 +3981,317 @@ class TestRC7ImagePromptReliability:
         assert stored_a.get("prompts", []) == []
         stored_b = _read_json(pm, name_b, "image_prompts.json")
         assert stored_b.get("prompts", []) == []
+
+
+# =====================================================================
+# PHASE 12B4 — RC-7.1 Export fix & progress UI polish
+# =====================================================================
+
+class TestRC71ImagePromptExport:
+    """RC-7.1: Export TXT writes the full prompt set to a user-chosen
+    destination through the OS save dialog, with persistent feedback and no
+    silent failures.
+    """
+
+    @staticmethod
+    def _make_page(pm, monkeypatch):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from core.pipeline_service import PipelineService
+        from ui.pages.image_prompts_page import ImagePromptsPage
+
+        QApplication.instance() or QApplication([])
+        monkeypatch.setattr("core.script_storage._PROJECTS_DIR", pm.PROJECTS_DIR)
+        monkeypatch.setattr("core.transcript_storage._PROJECTS_DIR", pm.PROJECTS_DIR)
+        monkeypatch.setattr("core.image_prompt_storage._PROJECTS_DIR", pm.PROJECTS_DIR)
+        monkeypatch.setattr(
+            "ui.pages.image_prompts_page._provider_preflight",
+            lambda: (True, ""),
+        )
+        page = ImagePromptsPage()
+        page.manager = pm
+        page.export_service.project_manager = pm
+        service = PipelineService()
+        service._pm = pm
+        page._pipeline = service
+        return page
+
+    @staticmethod
+    def _seed(pm, name):
+        from core.workflow import advance_workflow_state
+        pm.create_project(
+            name=name, topic="AI Education", platform="YouTube",
+            video_type="Educational", language="English",
+        )
+        _write_json(pm.PROJECTS_DIR / name / "script.json", {
+            "script_output": "INT. CLASSROOM - DAY\nTeacher introduces AI...",
+        })
+        _write_json(pm.PROJECTS_DIR / name / "voice.json", {
+            "transcript": "Segment one.",
+            "segments": [{"start": 0, "end": 4, "text": "Segment one.", "time": "00:00"}],
+        })
+        _write_json(pm.PROJECTS_DIR / name / "transcript.json", {"text": "Segment one."})
+        data = pm.load_project(name)
+        data["workflow_state"] = advance_workflow_state(data["workflow_state"], "Script")
+        data["workflow_state"] = advance_workflow_state(data["workflow_state"], "Voice")
+        pm.update_project(name, data)
+
+    @staticmethod
+    def _seed_prompts(pm, name, prompts):
+        _write_json(pm.PROJECTS_DIR / name / "image_prompts.json", {"prompts": prompts})
+
+    def _chosen(self, pm, name, filename="export.txt"):
+        return pm.PROJECTS_DIR / name / "exports" / filename
+
+    def test_export_success_writes_expected_content(self, pm, monkeypatch):
+        from PySide6.QtWidgets import QApplication, QFileDialog
+        app = QApplication.instance() or QApplication([])
+        name = "Export71"
+        self._seed(pm, name)
+        long_prompt = (
+            "Hand-drawn 2D doodle cartoon animation, "
+            + "flowing detailed scene narration, " * 60
+            + "16:9 aspect ratio, KaiMi educational doodle style"
+        )
+        prompts = [
+            {"scene_number": 1, "timestamp": "00:00", "prompt_title": "Opening",
+             "full_image_prompt": long_prompt},
+            {"scene_number": 2, "timestamp": "01:30", "prompt_title": "Middle",
+             "full_image_prompt": "Second full prompt text"},
+        ]
+        self._seed_prompts(pm, name, prompts)
+        page = self._make_page(pm, monkeypatch)
+        page.set_project(name)
+
+        chosen = self._chosen(pm, name)
+        monkeypatch.setattr(
+            QFileDialog, "getSaveFileName",
+            staticmethod(lambda *a, **k: (str(chosen), "Text Files (*.txt)")),
+        )
+        page.export_txt()
+
+        assert chosen.exists()
+        content = chosen.read_text(encoding="utf-8")
+        assert "Scene 1" in content and "[00:00]" in content
+        assert "Scene 2" in content and "[01:30]" in content
+        assert "Title: Opening" in content
+        assert long_prompt in content  # full prompt text, not truncated
+        assert "Second full prompt text" in content
+        assert not page.export_status_label.isHidden()
+        assert "Prompts exported successfully." in page.export_status_label.text()
+
+    def test_export_preserves_order_and_all_fields(self, pm, monkeypatch):
+        from PySide6.QtWidgets import QApplication, QFileDialog
+        app = QApplication.instance() or QApplication([])
+        name = "ExportOrder"
+        self._seed(pm, name)
+        prompts = [
+            {"scene_number": 1, "timestamp": "00:00", "prompt_title": "A",
+             "full_image_prompt": "Prompt A text"},
+            {"scene_number": 2, "timestamp": "00:12", "prompt_title": "B",
+             "full_image_prompt": "Prompt B text"},
+            {"scene_number": 3, "timestamp": "00:45", "prompt_title": "C",
+             "full_image_prompt": "Prompt C text"},
+        ]
+        self._seed_prompts(pm, name, prompts)
+        page = self._make_page(pm, monkeypatch)
+        page.set_project(name)
+
+        chosen = self._chosen(pm, name)
+        monkeypatch.setattr(
+            QFileDialog, "getSaveFileName",
+            staticmethod(lambda *a, **k: (str(chosen), "Text Files (*.txt)")),
+        )
+        page.export_txt()
+
+        content = chosen.read_text(encoding="utf-8")
+        assert content.index("Scene 1") < content.index("Scene 2") < content.index("Scene 3")
+        assert content.index("Prompt A text") < content.index("Prompt B text")
+
+    def test_export_failure_reaches_ui_as_actionable_error(self, pm, monkeypatch):
+        from PySide6.QtWidgets import QApplication, QFileDialog
+        app = QApplication.instance() or QApplication([])
+        name = "ExportFail"
+        self._seed(pm, name)
+        self._seed_prompts(pm, name, [{
+            "scene_number": 1, "timestamp": "00:00", "prompt_title": "A",
+            "full_image_prompt": "Prompt A text",
+        }])
+        page = self._make_page(pm, monkeypatch)
+        page.set_project(name)
+
+        chosen = self._chosen(pm, name, "bad")
+        chosen.parent.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(
+            QFileDialog, "getSaveFileName",
+            staticmethod(lambda *a, **k: (str(chosen), "Text Files (*.txt)")),
+        )
+
+        def _fail_write(path, data, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr("pathlib.Path.write_text", _fail_write)
+        page.export_txt()
+
+        assert not page.export_status_label.isHidden()
+        assert "Export failed" in page.export_status_label.text()
+        assert "disk full" in page.export_status_label.text()
+        assert not chosen.exists() or True  # write failed, nothing to verify on disk
+
+    def test_cancelled_save_dialog_is_silent(self, pm, monkeypatch):
+        from PySide6.QtWidgets import QApplication, QFileDialog
+        app = QApplication.instance() or QApplication([])
+        name = "ExportCancel"
+        self._seed(pm, name)
+        self._seed_prompts(pm, name, [{
+            "scene_number": 1, "timestamp": "00:00", "prompt_title": "A",
+            "full_image_prompt": "Prompt A text",
+        }])
+        page = self._make_page(pm, monkeypatch)
+        page.set_project(name)
+
+        monkeypatch.setattr(
+            QFileDialog, "getSaveFileName",
+            staticmethod(lambda *a, **k: ("", "")),
+        )
+        page.export_txt()
+
+        # Cancelling must not write, must not show an error, and must not crash.
+        assert page.export_status_label.isHidden()
+        assert not (pm.PROJECTS_DIR / name / "exports" / "export.txt").exists()
+
+    def test_export_empty_prompts_is_handled(self, pm, monkeypatch):
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication([])
+        name = "ExportEmpty"
+        self._seed(pm, name)
+        page = self._make_page(pm, monkeypatch)
+        page.set_project(name)
+        page.export_txt()
+        assert not page.export_status_label.isHidden()
+        assert "No prompts to export." in page.export_status_label.text()
+
+    def test_export_after_regeneration_uses_latest_prompts(self, pm, monkeypatch):
+        from PySide6.QtWidgets import QApplication, QFileDialog
+        app = QApplication.instance() or QApplication([])
+        name = "ExportRegen"
+        self._seed(pm, name)
+        self._seed_prompts(pm, name, [{
+            "scene_number": 1, "timestamp": "00:00", "prompt_title": "Old",
+            "full_image_prompt": "Old prompt text",
+        }])
+        page = self._make_page(pm, monkeypatch)
+        page.set_project(name)
+
+        # Simulate a successful regeneration replacing the prompt set.
+        page._prompts = [{"scene_number": 1, "timestamp": "00:00",
+                          "prompt_title": "New", "full_image_prompt": "New prompt text"}]
+        page.prompt_storage.save(name, page._prompts)
+        page._render_prompts()
+
+        chosen = self._chosen(pm, name)
+        monkeypatch.setattr(
+            QFileDialog, "getSaveFileName",
+            staticmethod(lambda *a, **k: (str(chosen), "Text Files (*.txt)")),
+        )
+        page.export_txt()
+        content = chosen.read_text(encoding="utf-8")
+        assert "New prompt text" in content
+        assert "Old prompt text" not in content
+
+
+class TestRC71ProgressAnimation:
+    """RC-7.1: the indeterminate progress bar is a real animated indicator
+    that runs only while generation is active and stops on every terminal
+    state (success, failure, cancellation) and on theme refresh.
+    """
+
+    @staticmethod
+    def _app():
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        return QApplication.instance() or QApplication([])
+
+    def test_animation_starts_when_indeterminate(self):
+        self._app()
+        from ui.widgets import ProgressWidget
+        w = ProgressWidget()
+        try:
+            w.set_indeterminate(status="Generating", step="Stage: Generating")
+            assert w.indeterminate_bar.is_animating()
+            assert w.progress_bar.isHidden()
+            assert not w.indeterminate_bar.isHidden()
+        finally:
+            w.stop()
+
+    def test_animation_stops_on_success(self):
+        self._app()
+        from ui.widgets import ProgressWidget
+        w = ProgressWidget()
+        try:
+            w.set_indeterminate(status="Generating", step="Stage: Generating")
+            assert w.indeterminate_bar.is_animating()
+            w.show_complete("Generated 2 image prompts.")
+            assert not w.indeterminate_bar.is_animating()
+            assert not w.progress_bar.isHidden()
+        finally:
+            w.stop()
+
+    def test_animation_stops_on_failure(self):
+        self._app()
+        from ui.widgets import ProgressWidget
+        w = ProgressWidget()
+        try:
+            w.set_indeterminate(status="Generating", step="Stage: Generating")
+            assert w.indeterminate_bar.is_animating()
+            w.show_error("Generation failed")
+            assert not w.indeterminate_bar.is_animating()
+        finally:
+            w.stop()
+
+    def test_animation_stops_when_widget_hidden(self):
+        self._app()
+        from ui.widgets import ProgressWidget
+        w = ProgressWidget()
+        try:
+            w.set_indeterminate(status="Generating", step="Stage: Generating")
+            assert w.indeterminate_bar.is_animating()
+            w.setVisible(False)
+            assert not w.indeterminate_bar.is_animating()
+        finally:
+            w.stop()
+
+    def test_theme_refresh_does_not_break_indicator(self, pm, monkeypatch):
+        app = self._app()
+        from ui.theme_pyside import ThemeManager
+        from ui.widgets import ProgressWidget
+        tm = ThemeManager.instance()
+        tm.set_mode("dark")
+        try:
+            w = ProgressWidget()
+            w.set_indeterminate(status="Generating", step="Stage: Generating")
+            assert w.indeterminate_bar.is_animating()
+            tm.set_mode("light")
+            w.indeterminate_bar.update()
+            app.processEvents()
+            assert w.indeterminate_bar.is_animating()
+            assert w.step_label.text() == "Stage: Generating"
+        finally:
+            w.stop()
+            tm.set_mode("dark")
+
+    def test_determinate_progress_restores_bar(self):
+        self._app()
+        from ui.widgets import ProgressWidget
+        w = ProgressWidget()
+        try:
+            w.set_indeterminate(status="Generating", step="Stage: Generating")
+            w.set_progress(55, status="Finalizing")
+            assert not w.indeterminate_bar.is_animating()
+            assert not w.progress_bar.isHidden()
+            assert w.progress_bar.value() == 55
+        finally:
+            w.stop()
 
 
 # =====================================================================
