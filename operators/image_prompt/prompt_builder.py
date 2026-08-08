@@ -102,6 +102,26 @@ class ImagePromptBuilder:
         return system, user
 
     @staticmethod
+    def retry_format_reminder() -> str:
+        """Strict JSON reminder appended on a bounded parse-failure retry.
+
+        The reminder restates the exact output contract without changing the
+        project's visual-style instructions, so a repaired response stays
+        consistent with the Production Stage 7 reference format (RC-7).
+        """
+        return (
+            "Your previous response did not match the required format. "
+            "Respond with ONLY a valid JSON array where every object has "
+            "exactly these keys: scene_number (integer), timestamp "
+            "(MM:SS string), prompt_title (string), and full_image_prompt "
+            "(string: one continuous natural-language paragraph in the "
+            "Production Stage 7 reference format, opening with the hand-drawn "
+            "2D doodle cartoon animation style phrase and ending with the "
+            "16:9 aspect ratio and the KaiMi educational doodle style tag). "
+            "No markdown, no explanations, no extra text."
+        )
+
+    @staticmethod
     def _normalize_text(value: object) -> str:
         if value is None:
             return ""

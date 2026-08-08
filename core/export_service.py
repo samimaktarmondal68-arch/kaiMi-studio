@@ -90,7 +90,15 @@ class ExportService:
 
         prompts = data.get("image_prompts", {})
         for prompt in prompts.get("prompts", []):
-            lines.append(f"--- Scene {prompt.get('scene_number', '')} Prompt ---")
+            scene = prompt.get("scene_number", "")
+            ts = prompt.get("timestamp", "")
+            header = f"--- Scene {scene} Prompt ---"
+            if ts:
+                header += f" [{ts}]"
+            lines.append(header)
+            title = prompt.get("prompt_title", "")
+            if title:
+                lines.append(f"Title: {title}")
             lines.append(prompt.get("full_image_prompt", ""))
             lines.append("")
 
@@ -126,7 +134,17 @@ class ExportService:
             out = export_root / filename
             lines = []
             for p in data.get("prompts", []):
-                lines.append(f"Scene {p.get('scene_number', '')}: {p.get('full_image_prompt', '')}")
+                scene = p.get("scene_number", "")
+                ts = p.get("timestamp", "")
+                header = f"Scene {scene}"
+                if ts:
+                    header += f" [{ts}]"
+                lines.append(header)
+                title = p.get("prompt_title", "")
+                if title:
+                    lines.append(f"Title: {title}")
+                lines.append(p.get("full_image_prompt", ""))
+                lines.append("")
             try:
                 out.write_text("\n".join(lines), encoding="utf-8")
             except OSError as e:

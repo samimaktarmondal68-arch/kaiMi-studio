@@ -1,7 +1,10 @@
+import time
+
 from PySide6.QtCore import QObject, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPlainTextEdit,
     QScrollArea,
     QVBoxLayout,
@@ -17,9 +20,9 @@ from core.notifications import NotificationService
 from core.pipeline_service import get_pipeline_service
 from core.project_manager import ProjectManager
 from core.script_storage import ScriptStorage
-from core.task_manager import TaskManager
-from core.transcript_storage import TranscriptStorage
+from core.task_manager import TaskCancelledError, TaskManager
 from core.theme import Fonts, Spacing, Radius
+from core.transcript_storage import TranscriptStorage
 from operators.image_prompt.models import ImagePromptRequest
 from operators.image_prompt.operator import ImagePromptOperator
 from operators.image_prompt.parser import ImagePromptParser
@@ -47,9 +50,26 @@ class _GenerationBridge(QObject):
 
     completed = Signal(object)
     failed = Signal(object)
+    cancelled = Signal()
 
 
 _log = get_logger()
+
+#: RC-7 pipeline stage keys -> friendly labels for the progress step line
+#: and for failure diagnostics ("failed during Parsing Response").
+STAGE_LABELS = {
+    "idle": "Idle",
+    "validating_source": "Validating Source",
+    "selecting_provider": "Selecting Provider",
+    "generating": "Generating",
+    "parsing": "Parsing Response",
+    "validating": "Validating Prompts",
+    "retrying": "Retrying",
+    "saving": "Saving",
+    "completed": "Completed",
+    "failed": "Failed",
+    "cancelled": "Cancelled",
+}
 
 
 def _provider_preflight() -> tuple[bool, str]:
@@ -89,12 +109,14 @@ class ImagePromptsPage(QWidget):
         #: Human-readable failure from the last generation attempt; None when
         #: idle, running, or successful (RC-6: no silent 'No Prompts Yet').
         self._generation_error = None
+        self._gen_started_at = None
         self._history = HistoryManager()
         self._autosave = get_autosave_manager()
         self._autosave.register("image_prompts", self._autosave_save)
         self._generation_bridge = _GenerationBridge()
         self._generation_bridge.completed.connect(self._on_generation_completed)
         self._generation_bridge.failed.connect(self._on_generation_failed)
+        self._generation_bridge.cancelled.connect(self._on_generation_cancelled)
         self._progress_poll = QTimer(self)
         self._progress_poll.setInterval(200)
         self._progress_poll.timeout.connect(self._poll_progress)
@@ -124,6 +146,14 @@ class ImagePromptsPage(QWidget):
         if name != self.project_name:
             # A failure from another project must not leak into this one.
             self._generation_error = None
+            # An in-flight generation belongs to the previous project: request
+            # a cooperative cancel. ``_generation_project`` is intentionally
+            # NOT cleared here — if the worker still completes (the provider
+            # call was already past the last cancel check), the completion
+            # handler must still persist the result to the project the task
+            # was started for, never to the newly opened one (RC-7).
+            if self.task_manager.is_running:
+                self.task_manager.cancel()
         self.project_name = name
         self._load_project_data()
 
@@ -195,6 +225,7 @@ class ImagePromptsPage(QWidget):
             "Uses your script and transcript to generate production-ready image prompts for each scene."
         )
         self.controls_desc_label.setStyleSheet(f"{Fonts.body(c.TEXT_SECONDARY)}")
+        self.controls_desc_label.setWordWrap(True)
         controls_card.content_layout.addWidget(self.controls_desc_label)
 
         btn_row = QHBoxLayout()
@@ -202,6 +233,11 @@ class ImagePromptsPage(QWidget):
         self.generate_btn = ModernButton("Generate Prompts", primary=True)
         self.generate_btn.clicked.connect(self.generate_prompts)
         btn_row.addWidget(self.generate_btn)
+
+        self.cancel_btn = ModernButton("Cancel", primary=False)
+        self.cancel_btn.clicked.connect(self._cancel_generation)
+        self.cancel_btn.setVisible(False)
+        btn_row.addWidget(self.cancel_btn)
 
         self.export_btn = ModernButton("Export TXT", primary=False)
         self.export_btn.clicked.connect(self.export_txt)
@@ -248,6 +284,7 @@ class ImagePromptsPage(QWidget):
         self._render_prompts()
         self._load_source_context()
         self._refresh_generation_error()
+        self._update_action_labels()
 
     def _load_source_context(self):
         """Refresh the source-context summary from stored script and transcript."""
@@ -311,6 +348,7 @@ class ImagePromptsPage(QWidget):
         card.content_layout.setSpacing(12)
 
         header = QHBoxLayout()
+        header.setSpacing(8)
         scene_label = QLabel(f"Scene {prompt.get('scene_number', 1)}")
         scene_label.setStyleSheet(f"{Fonts.card_title(c.TEXT)}")
         header.addWidget(scene_label)
@@ -332,11 +370,18 @@ class ImagePromptsPage(QWidget):
 
         card.content_layout.addLayout(header)
 
+        title = prompt.get("prompt_title", "")
+        if title:
+            title_label = QLabel(title)
+            title_label.setStyleSheet(f"{Fonts.body_bold(c.TEXT)}")
+            title_label.setWordWrap(True)
+            card.content_layout.addWidget(title_label)
+
         text_edit = QPlainTextEdit()
         text_edit.setReadOnly(True)
         text_edit.setPlainText(prompt.get("full_image_prompt", ""))
-        text_edit.setMinimumHeight(80)
-        text_edit.setMaximumHeight(140)
+        text_edit.setMinimumHeight(90)
+        text_edit.setMaximumHeight(220)
         card.content_layout.addWidget(text_edit)
 
         self.prompts_layout.addWidget(card)
@@ -350,6 +395,10 @@ class ImagePromptsPage(QWidget):
                 clipboard.setText(text)
             NotificationService.get().info("Prompt copied to clipboard.")
 
+    # ------------------------------------------------------------------
+    # Generation pipeline (RC-7)
+    # ------------------------------------------------------------------
+
     def generate_prompts(self):
         if not self.project_name:
             NotificationService.get().warning("Select a project first.")
@@ -357,6 +406,10 @@ class ImagePromptsPage(QWidget):
 
         if self.task_manager.is_running:
             NotificationService.get().warning("Generation already in progress.")
+            return
+
+        # Never silently destroy a completed prompt set (RC-7).
+        if self._prompts and not self._confirm_regenerate():
             return
 
         validation = self._pipeline.validate_stage(self.project_name, "Image Prompts")
@@ -368,9 +421,11 @@ class ImagePromptsPage(QWidget):
         # Fail fast (and visibly) when the provider cannot run at all.
         ok, preflight_msg = _provider_preflight()
         if not ok:
-            self._set_generation_error(preflight_msg)
+            self._set_generation_error(
+                f"Image prompt generation unavailable.\n\n{preflight_msg}"
+            )
             NotificationService.get().error(
-                f"Image Prompt generation failed: {preflight_msg}"
+                f"Image prompt generation unavailable: {preflight_msg}"
             )
             return
 
@@ -388,16 +443,29 @@ class ImagePromptsPage(QWidget):
 
         self._set_generation_error(None)
         self._pipeline.mark_stage_started(self.project_name, "Image Prompts")
+        self._generation_project = self.project_name
 
+        self._gen_started_at = time.monotonic()
         self.generate_btn.setEnabled(False)
         self.export_btn.setEnabled(False)
+        self.cancel_btn.setVisible(True)
+        self.cancel_btn.setEnabled(True)
+        self.cancel_btn.setText("Cancel")
         self.progress_widget.setVisible(True)
         self.progress_widget.reset()
-        self.progress_widget.set_progress(1, status="Starting...")
+        self.progress_widget.set_indeterminate(
+            status="Preparing source...", step="Stage: Validating Source"
+        )
         self._progress_poll.start()
 
         def run_task(task_manager):
-            task_manager.update_progress(0.3, "Preparing prompt request...")
+            task_manager.update_progress(
+                0.02, "Preparing source...", stage="validating_source"
+            )
+
+            def on_stage(stage, message, fraction):
+                task_manager.update_progress(fraction, message, stage=stage)
+
             # Guard against a project removed mid-session: a missing project
             # must fail with an actionable message, not an AttributeError.
             project = project_data or {}
@@ -408,19 +476,22 @@ class ImagePromptsPage(QWidget):
                 topic=project.get("topic", ""),
                 language=project.get("language", "English"),
             )
-            task_manager.update_progress(0.5, "Generating image prompts...")
-            raw = self.operator.execute(request)
-            task_manager.update_progress(0.85, "Parsing prompts...")
-            prompts = self.parser.parse(raw)
-            task_manager.update_progress(0.95, "Finalizing...")
-            return prompts
+            return self.operator.generate_prompts(
+                request,
+                progress_callback=on_stage,
+                cancel_event=task_manager.cancel_event,
+                max_retries=1,
+            )
 
         def on_complete(prompts):
             self._generation_bridge.completed.emit(prompts)
 
         def on_error(exc):
             _log.error("ImagePromptsPage", "generate_prompts failed", exc)
-            self._generation_bridge.failed.emit(exc)
+            if isinstance(exc, TaskCancelledError):
+                self._generation_bridge.cancelled.emit()
+            else:
+                self._generation_bridge.failed.emit(exc)
 
         self.task_manager.run_task(
             task_name="Generate Image Prompts",
@@ -432,38 +503,142 @@ class ImagePromptsPage(QWidget):
     def _on_generation_completed(self, prompts):
         """Handle successful generation on the GUI thread."""
         self._progress_poll.stop()
+        # Persist to the project the task was started for, even if the user
+        # navigated away mid-run (RC-7: results never land in the wrong
+        # project).
+        target = self._generation_project or self.project_name
+        self.prompt_storage.save(target, prompts)
+        self._pipeline.mark_stage_completed(target, "Image Prompts")
+        if target != self.project_name:
+            # The page moved on; restore controls and let the target project
+            # load its fresh prompts from storage next time it is opened.
+            self._generation_project = None
+            self.generate_btn.setEnabled(True)
+            self.export_btn.setEnabled(True)
+            self.cancel_btn.setVisible(False)
+            self.progress_widget.setVisible(False)
+            return
         self._prompts = prompts
         self._set_generation_error(None)
-        self.prompt_storage.save(self.project_name, prompts)
         self._render_prompts()
-
-        self._pipeline.mark_stage_completed(self.project_name, "Image Prompts")
 
         self.generate_btn.setEnabled(True)
         self.export_btn.setEnabled(True)
+        self.cancel_btn.setVisible(False)
         self.progress_widget.show_complete(f"Generated {len(prompts)} image prompts.")
-        QTimer.singleShot(2000, lambda: self.progress_widget.setVisible(False))
+        # Never hide the bar mid-run: a new generation started within the
+        # 2.5s window must keep its progress visible (RC-7).
+        QTimer.singleShot(
+            2500,
+            lambda: (
+                self.progress_widget.setVisible(False)
+                if not self.task_manager.is_running
+                else None
+            ),
+        )
         self._history.record_action(
             self.project_name, "Generated",
             f"Generated {len(prompts)} image prompts"
         )
         NotificationService.get().success(f"Generated {len(prompts)} image prompts.")
+        self._update_action_labels()
 
     def _on_generation_failed(self, exc):
         """Handle a failed generation on the GUI thread.
 
-        The failure is persisted in the page state and shown as a visible
-        banner so the user always sees why the page is not showing prompts
-        (RC-6: no silent 'No Prompts Yet').
+        The failure is persisted in the page state and shown as a visible,
+        stage-tagged banner so the user always sees why the page is not
+        showing prompts (RC-6/RC-7: no silent 'No Prompts Yet').
         """
         self._progress_poll.stop()
-        message = str(exc).strip() or "Unknown generation error."
-        self._set_generation_error(f"Image Prompt generation failed: {message}")
+        reason = str(exc).strip() or "Unknown generation error."
+        stage_key = self.task_manager.stage or "generating"
+        stage_label = STAGE_LABELS.get(stage_key, stage_key.title())
+        target = self._generation_project or self.project_name
+        if target != self.project_name:
+            # The failure belongs to a project the user has left; only the
+            # pipeline state of that project may be marked, never the current
+            # one, and the current page must not show a foreign banner.
+            self._generation_project = None
+            self.generate_btn.setEnabled(True)
+            self.export_btn.setEnabled(True)
+            self.cancel_btn.setVisible(False)
+            self.progress_widget.setVisible(False)
+            self._pipeline.mark_stage_failed(target, "Image Prompts", reason)
+            return
+        if self._prompts:
+            note = "Existing prompts were not modified."
+        else:
+            note = "No prompts were saved."
+        self._set_generation_error(
+            f"Image prompt generation failed during {stage_label}.\n\n"
+            f"Reason: {reason}\n\n{note}"
+        )
         self.generate_btn.setEnabled(True)
         self.export_btn.setEnabled(True)
+        self.cancel_btn.setVisible(False)
         self.progress_widget.setVisible(False)
-        self._pipeline.mark_stage_failed(self.project_name, "Image Prompts", message)
-        NotificationService.get().error(f"Image Prompt generation failed: {message}")
+        self._pipeline.mark_stage_failed(self.project_name, "Image Prompts", reason)
+        NotificationService.get().error(
+            f"Image prompt generation failed during {stage_label}: {reason}"
+        )
+        self._update_action_labels()
+
+    def _on_generation_cancelled(self):
+        """Restore the page after a user-initiated cancellation.
+
+        Project state (including any existing prompt set) is left intact;
+        only the in-flight generation is discarded.
+        """
+        self._progress_poll.stop()
+        target = self._generation_project or self.project_name
+        self._generation_project = None
+        self.generate_btn.setEnabled(True)
+        self.export_btn.setEnabled(True)
+        self.cancel_btn.setVisible(False)
+        self.progress_widget.setVisible(False)
+        if target == self.project_name:
+            self._pipeline.mark_stage_reset(self.project_name, "Image Prompts")
+            self._update_action_labels()
+            NotificationService.get().info(
+                "Generation cancelled. Existing prompts were not modified."
+            )
+
+    def _cancel_generation(self):
+        """Request a cooperative cancel of the running generation."""
+        if not self.task_manager.is_running:
+            return
+        self.task_manager.cancel()
+        self.cancel_btn.setEnabled(False)
+        self.cancel_btn.setText("Cancelling...")
+        self.progress_widget.set_indeterminate(
+            status="Cancelling... the in-flight provider request must finish, "
+            "then generation stops."
+        )
+
+    def _confirm_regenerate(self) -> bool:
+        """Ask before replacing the current prompt set. Returns True on Regenerate."""
+        box = QMessageBox(self)
+        box.setWindowTitle("Regenerate Prompts")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText(
+            f"This will replace the current {len(self._prompts)} image prompts.\n\n"
+            "Continue?"
+        )
+        regenerate_btn = box.addButton(
+            "Regenerate", QMessageBox.ButtonRole.DestructiveRole
+        )
+        cancel_btn = box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(cancel_btn)
+        box.exec()
+        return box.clickedButton() is regenerate_btn
+
+    def _update_action_labels(self):
+        """Keep the action button honest about what it will do (RC-7)."""
+        if self._prompts:
+            self.generate_btn.setText("Regenerate Prompts")
+        else:
+            self.generate_btn.setText("Generate Prompts")
 
     def _set_generation_error(self, message):
         """Store the last generation failure and refresh the failure banner."""
@@ -482,13 +657,22 @@ class ImagePromptsPage(QWidget):
             self.failure_label.setVisible(False)
 
     def _poll_progress(self):
-        """Mirror TaskManager progress into the ProgressWidget while running."""
+        """Mirror TaskManager stage state into an indeterminate progress widget.
+
+        No fabricated percentages: the bar runs indeterminate and the step
+        line shows the real pipeline stage plus elapsed time (RC-7).
+        """
         if not self.task_manager.is_running:
             self._progress_poll.stop()
             return
-        pct = int(max(0.0, min(1.0, self.task_manager.progress)) * 100)
+        stage_key = self.task_manager.stage or "generating"
+        stage_label = STAGE_LABELS.get(stage_key, stage_key.title())
         message = self.task_manager.status_message or "Generating image prompts..."
-        self.progress_widget.set_progress(max(1, pct), status=message)
+        self.progress_widget.set_indeterminate(
+            status=message, step=f"Stage: {stage_label}"
+        )
+        if self._gen_started_at is not None:
+            self.progress_widget.set_elapsed(time.monotonic() - self._gen_started_at)
 
     def _autosave_save(self):
         if not self.project_name:
@@ -498,7 +682,10 @@ class ImagePromptsPage(QWidget):
     def export_txt(self):
         if not self.project_name:
             return
-        if not self._prompts:
+        # Export from the persisted project state (source of truth), never a
+        # possibly-stale in-memory copy (RC-7).
+        stored = self.prompt_storage.load(self.project_name)
+        if not stored.get("prompts"):
             NotificationService.get().warning("No prompts to export.")
             return
         try:

@@ -577,6 +577,27 @@ class ProviderManager:
 
     # ── Core generation ──────────────────────────────────────────────
 
+    @staticmethod
+    def _friendly_provider_error(provider_name: str, exc: Exception) -> str:
+        """Return a short, human-readable reason for a failed provider.
+
+        Used to build the final GenerationFailedError message so the UI never
+        shows raw API JSON or stack traces (RC-7).
+        """
+        display = PROVIDER_METADATA.get(
+            provider_name.strip().lower(), {}
+        ).get("display_name", provider_name.title())
+        if isinstance(exc, QuotaExceededError):
+            return f"{display} has insufficient quota"
+        if isinstance(exc, RateLimitedError):
+            return f"{display} is rate limited"
+        if isinstance(exc, NetworkError):
+            return f"{display} is unreachable"
+        if isinstance(exc, ProviderNotConfiguredError):
+            return f"{display} is not configured"
+        message = str(exc).strip() or type(exc).__name__
+        return f"{display} failed: {message}"
+
     def generate(self, request: GenerationRequest) -> GenerationResponse:
         """Generate text using the active provider with automatic failover.
 
@@ -588,6 +609,11 @@ class ProviderManager:
         surfaced immediately as ProviderNotConfiguredError — they do NOT trigger
         failover, because silently switching providers would hide mis-configuration
         and produce output from an unexpected source.
+
+        Failover is bounded: each provider is attempted at most once, so the
+        loop always terminates. The final GenerationFailedError aggregates a
+        friendly per-provider summary ("Groq is rate limited, Gemini has
+        insufficient quota") instead of raw API payloads.
 
         Args:
             request: Standard generation request.
@@ -612,6 +638,7 @@ class ProviderManager:
             raise ProviderNotConfiguredError(msg)
 
         attempted: set = set()
+        failures: list[str] = []
         last_error: Exception = ProviderNotConfiguredError("No provider available.")
 
         while provider_name and provider_name not in attempted:
@@ -628,6 +655,7 @@ class ProviderManager:
                     provider_name, exc,
                 )
                 last_error = exc
+                failures.append(self._friendly_provider_error(provider_name, exc))
                 provider_name = self._get_next_failover(provider_name, attempted)
                 continue
 
@@ -638,6 +666,7 @@ class ProviderManager:
                     "[Manager] Quota exceeded for '%s', failing over", provider_name,
                 )
                 last_error = exc
+                failures.append(self._friendly_provider_error(provider_name, exc))
                 provider_name = self._get_next_failover(provider_name, attempted)
                 continue
             except RateLimitedError as exc:
@@ -645,6 +674,7 @@ class ProviderManager:
                     "[Manager] Rate limited for '%s', failing over", provider_name,
                 )
                 last_error = exc
+                failures.append(self._friendly_provider_error(provider_name, exc))
                 provider_name = self._get_next_failover(provider_name, attempted)
                 continue
             except NetworkError as exc:
@@ -652,6 +682,7 @@ class ProviderManager:
                     "[Manager] Network error for '%s', failing over", provider_name,
                 )
                 last_error = exc
+                failures.append(self._friendly_provider_error(provider_name, exc))
                 provider_name = self._get_next_failover(provider_name, attempted)
                 continue
             except ProviderError:
@@ -668,6 +699,16 @@ class ProviderManager:
                     provider=provider_name,
                     cause=exc,
                 ) from exc
+
+        if failures:
+            summary = "; ".join(failures)
+            raise GenerationFailedError(
+                f"Image prompt generation unavailable: {summary}",
+                provider=provider_name,
+                cause=(last_error if isinstance(last_error, Exception) else None),
+            ) from (
+                last_error if isinstance(last_error, Exception) else None
+            )
 
         raise GenerationFailedError(
             "All available providers exhausted. "

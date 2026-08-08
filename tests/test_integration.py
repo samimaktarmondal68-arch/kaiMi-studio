@@ -3191,13 +3191,17 @@ class TestRC6ImagePromptGeneration:
         page = self._make_page(pm, monkeypatch)
 
         class _FakeOperator:
-            def execute(self, request):
-                return json.dumps([{
+            def generate_prompts(
+                self, request, progress_callback=None, cancel_event=None, max_retries=1
+            ):
+                if progress_callback:
+                    progress_callback("generating", "Generating image prompts", 0.4)
+                return [{
                     "scene_number": 1,
                     "timestamp": "00:00",
                     "prompt_title": "Opening",
                     "full_image_prompt": "A classroom scene, photorealistic",
-                }])
+                }]
 
         page.operator = _FakeOperator()
         page.set_project(name)
@@ -3229,7 +3233,9 @@ class TestRC6ImagePromptGeneration:
         page = self._make_page(pm, monkeypatch)
 
         class _FailingOperator:
-            def execute(self, request):
+            def generate_prompts(
+                self, request, progress_callback=None, cancel_event=None, max_retries=1
+            ):
                 raise ImagePromptGenerationError(
                     "Quota exceeded: insufficient balance"
                 )
@@ -3258,7 +3264,9 @@ class TestRC6ImagePromptGeneration:
         page = self._make_page(pm, monkeypatch)
 
         class _ExplodingOperator:
-            def execute(self, request):
+            def generate_prompts(
+                self, request, progress_callback=None, cancel_event=None, max_retries=1
+            ):
                 raise RuntimeError("provider connection reset")
 
         page.operator = _ExplodingOperator()
@@ -3291,6 +3299,682 @@ class TestRC6ImagePromptGeneration:
         assert not page.failure_label.isHidden()
         assert page.empty_state is not None
         assert page.generate_btn.isEnabled()
+
+
+# =====================================================================
+# PHASE 12B3 — RC-7 Image Prompt reliability & production pipeline
+# =====================================================================
+
+class TestRC7ImagePromptReliability:
+    """RC-7: the Image Prompt stage is a reliable, observable production
+    pipeline — explicit stages, bounded retry, provider error aggregation,
+    strict validation, regeneration safety, cancellation, persistence,
+    export completeness, and no silent failures.
+    """
+
+    @staticmethod
+    def _make_page(pm, monkeypatch):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from core.pipeline_service import PipelineService
+        from ui.pages.image_prompts_page import ImagePromptsPage
+
+        QApplication.instance() or QApplication([])
+        monkeypatch.setattr("core.script_storage._PROJECTS_DIR", pm.PROJECTS_DIR)
+        monkeypatch.setattr("core.transcript_storage._PROJECTS_DIR", pm.PROJECTS_DIR)
+        monkeypatch.setattr("core.image_prompt_storage._PROJECTS_DIR", pm.PROJECTS_DIR)
+        monkeypatch.setattr(
+            "ui.pages.image_prompts_page._provider_preflight",
+            lambda: (True, ""),
+        )
+        page = ImagePromptsPage()
+        page.manager = pm
+        page.export_service.project_manager = pm
+        service = PipelineService()
+        service._pm = pm
+        page._pipeline = service
+        return page
+
+    @staticmethod
+    def _seed(pm, name):
+        _create_sample_project(pm, name)
+        _fill_script(pm, name)
+        _write_json(pm.PROJECTS_DIR / name / "voice.json", {
+            "transcript": "Segment one.",
+            "segments": [{"start": 0, "end": 4, "text": "Segment one.", "time": "00:00"}],
+        })
+        _write_json(pm.PROJECTS_DIR / name / "transcript.json", {"text": "Segment one."})
+        data = pm.load_project(name)
+        data["workflow_state"] = advance_workflow_state(data["workflow_state"], "Script")
+        data["workflow_state"] = advance_workflow_state(data["workflow_state"], "Voice")
+        pm.update_project(name, data)
+
+    @staticmethod
+    def _seed_prompts(pm, name, prompts):
+        _write_json(pm.PROJECTS_DIR / name / "image_prompts.json", {"prompts": prompts})
+
+    @staticmethod
+    def _wait(app, predicate, timeout=10.0):
+        """Pump the event loop until predicate is true or timeout elapses."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            app.processEvents()
+            if predicate():
+                return True
+            time.sleep(0.02)
+        return predicate()
+
+    # --- Operator pipeline ----------------------------------------------
+
+    def test_valid_prompt_generation_reports_stages(self):
+        from operators.image_prompt.models import ImagePromptRequest
+        from operators.image_prompt.operator import ImagePromptOperator
+        from providers.models import GenerationResponse
+
+        class FakeProviderManager:
+            def generate(self, request):
+                return GenerationResponse(text=json.dumps([{
+                    "scene_number": 1,
+                    "timestamp": "00:00",
+                    "prompt_title": "Opening",
+                    "full_image_prompt": (
+                        "Hand-drawn 2D doodle cartoon animation, a classroom, "
+                        "16:9 aspect ratio, KaiMi educational doodle style"
+                    ),
+                }]))
+
+        stages = []
+        operator = ImagePromptOperator(provider_manager=FakeProviderManager())
+        request = ImagePromptRequest(
+            script_text="A short script.",
+            transcript="[0:00] Hello",
+            timestamps=[{"start": 0, "end": 3, "text": "Hello", "time": "00:00"}],
+            topic="Science",
+            language="English",
+        )
+        prompts = operator.generate_prompts(
+            request,
+            progress_callback=lambda stage, message, fraction: stages.append(stage),
+            max_retries=0,
+        )
+        assert len(prompts) == 1
+        assert prompts[0]["scene_number"] == 1
+        assert prompts[0]["timestamp"] == "00:00"
+        assert stages == [
+            "validating_source",
+            "selecting_provider",
+            "generating",
+            "parsing",
+            "validating",
+        ]
+
+    def test_bounded_retry_recovers_from_malformed_output(self):
+        from operators.image_prompt.models import ImagePromptRequest
+        from operators.image_prompt.operator import ImagePromptOperator
+        from providers.models import GenerationResponse
+
+        calls = {"count": 0}
+        good = json.dumps([{
+            "scene_number": 1, "timestamp": "00:00", "prompt_title": "Opening",
+            "full_image_prompt": "Hand-drawn 2D doodle cartoon animation, a scene, KaiMi educational doodle style",
+        }])
+
+        class FakeProviderManager:
+            def generate(self, request):
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    return GenerationResponse(text="Sorry, here is prose without JSON.")
+                return GenerationResponse(text=good)
+
+        operator = ImagePromptOperator(provider_manager=FakeProviderManager())
+        request = ImagePromptRequest(
+            script_text="Script.", transcript="[0:00] Hello",
+            timestamps=[{"start": 0, "end": 3, "text": "Hello", "time": "00:00"}],
+        )
+        prompts = operator.generate_prompts(request, max_retries=1)
+        assert calls["count"] == 2
+        assert len(prompts) == 1
+
+    def test_malformed_ai_response_reports_invalid_prompt_data(self):
+        from operators.image_prompt.models import (
+            ImagePromptGenerationError, ImagePromptRequest,
+        )
+        from operators.image_prompt.operator import ImagePromptOperator
+        from providers.models import GenerationResponse
+
+        class FakeProviderManager:
+            def generate(self, request):
+                return GenerationResponse(text="not json at all")
+
+        operator = ImagePromptOperator(provider_manager=FakeProviderManager())
+        request = ImagePromptRequest(
+            script_text="Script.", transcript="[0:00] Hi",
+            timestamps=[{"start": 0, "end": 2, "text": "Hi", "time": "00:00"}],
+        )
+        with pytest.raises(ImagePromptGenerationError) as exc_info:
+            operator.generate_prompts(request, max_retries=0)
+        assert "invalid prompt data" in str(exc_info.value)
+
+    def test_empty_ai_response_fails_cleanly(self):
+        from operators.image_prompt.models import (
+            ImagePromptGenerationError, ImagePromptRequest,
+        )
+        from operators.image_prompt.operator import ImagePromptOperator
+        from providers.models import GenerationResponse
+
+        class FakeProviderManager:
+            def generate(self, request):
+                return GenerationResponse(text="   ")
+
+        operator = ImagePromptOperator(provider_manager=FakeProviderManager())
+        with pytest.raises(ImagePromptGenerationError) as exc_info:
+            operator.generate_prompts(
+                ImagePromptRequest(script_text="Script.", transcript="[0:00] Hi"),
+                max_retries=0,
+            )
+        assert "empty content" in str(exc_info.value).lower()
+
+    def test_duplicate_scene_rejected(self):
+        from operators.image_prompt.models import ImagePromptParseError
+        from operators.image_prompt.parser import ImagePromptParser
+
+        payload = json.dumps([
+            {"scene_number": 1, "timestamp": "00:00", "prompt_title": "A",
+             "full_image_prompt": "Prompt A"},
+            {"scene_number": 1, "timestamp": "00:05", "prompt_title": "B",
+             "full_image_prompt": "Prompt B"},
+        ])
+        with pytest.raises(ImagePromptParseError) as exc_info:
+            ImagePromptParser().parse(payload)
+        assert "duplicates scene number" in str(exc_info.value)
+
+    def test_out_of_order_timestamps_rejected(self):
+        from operators.image_prompt.models import ImagePromptParseError
+        from operators.image_prompt.parser import ImagePromptParser
+
+        payload = json.dumps([
+            {"scene_number": 1, "timestamp": "00:10", "prompt_title": "A",
+             "full_image_prompt": "Prompt A"},
+            {"scene_number": 2, "timestamp": "00:05", "prompt_title": "B",
+             "full_image_prompt": "Prompt B"},
+        ])
+        with pytest.raises(ImagePromptParseError) as exc_info:
+            ImagePromptParser().parse(payload)
+        assert "out of order" in str(exc_info.value)
+
+    def test_prompt_count_validation_rejects_coverage_gaps(self):
+        from operators.image_prompt.models import (
+            ImagePromptGenerationError, ImagePromptRequest,
+        )
+        from operators.image_prompt.operator import ImagePromptOperator
+        from providers.models import GenerationResponse
+
+        class FakeProviderManager:
+            def generate(self, request):
+                return GenerationResponse(text=json.dumps([
+                    {"scene_number": 1, "timestamp": "00:00", "prompt_title": "A",
+                     "full_image_prompt": "Prompt A"},
+                ]))
+
+        operator = ImagePromptOperator(provider_manager=FakeProviderManager())
+        request = ImagePromptRequest(
+            script_text="Script.", transcript="x",
+            timestamps=[
+                {"start": i, "end": i + 1, "text": "s", "time": "00:00"}
+                for i in range(6)
+            ],
+        )
+        with pytest.raises(ImagePromptGenerationError) as exc_info:
+            operator.generate_prompts(request, max_retries=0)
+        assert "coverage is incomplete" in str(exc_info.value)
+
+    # --- Provider handling ----------------------------------------------
+
+    @staticmethod
+    def _provider_manager_with_fakes(tmp_path, monkeypatch, provider_cls, names):
+        from providers.provider_manager import ProviderManager
+
+        class FakeProvider:
+            is_initialized = True
+
+            def __init__(self, name):
+                self.name = name
+
+            def generate(self, request):
+                return provider_cls(self.name)
+
+        pm = ProviderManager(config_path=tmp_path / "providers.json")
+        pm.set_active_provider(names[0])
+        for name in names:
+            pm.save_provider_config(name, api_key="k", model="m")
+        monkeypatch.setattr(pm, "_get_provider", lambda name: FakeProvider(name))
+        return pm
+
+    def test_provider_quota_failure_aggregates_friendly_message(
+        self, tmp_path, monkeypatch
+    ):
+        from providers.exceptions import (
+            GenerationFailedError, QuotaExceededError,
+        )
+        from providers.models import GenerationRequest
+
+        def failing(name):
+            raise QuotaExceededError("Insufficient Balance", provider=name)
+
+        pm = self._provider_manager_with_fakes(
+            tmp_path, monkeypatch, failing, ["groq", "gemini"]
+        )
+        with pytest.raises(GenerationFailedError) as exc_info:
+            pm.generate(GenerationRequest(prompt="x"))
+        message = str(exc_info.value)
+        assert "Groq" in message and "insufficient quota" in message
+        assert "Gemini" in message
+        assert "{" not in message  # no raw API payload in the UI-facing message
+
+    def test_provider_rate_limit_failure(self, tmp_path, monkeypatch):
+        from providers.exceptions import GenerationFailedError, RateLimitedError
+        from providers.models import GenerationRequest
+
+        def failing(name):
+            raise RateLimitedError("429 too many requests", provider=name)
+
+        pm = self._provider_manager_with_fakes(
+            tmp_path, monkeypatch, failing, ["groq"]
+        )
+        with pytest.raises(GenerationFailedError) as exc_info:
+            pm.generate(GenerationRequest(prompt="x"))
+        assert "rate limited" in str(exc_info.value)
+
+    def test_provider_fallback_succeeds(self, tmp_path, monkeypatch):
+        from providers.exceptions import RateLimitedError
+        from providers.models import GenerationRequest, GenerationResponse
+
+        def behavior(name):
+            if name == "groq":
+                raise RateLimitedError("429", provider=name)
+            return GenerationResponse(text="fallback success", provider=name, model="m")
+
+        pm = self._provider_manager_with_fakes(
+            tmp_path, monkeypatch, behavior, ["groq", "gemini"]
+        )
+        response = pm.generate(GenerationRequest(prompt="x"))
+        assert response.provider == "gemini"
+        assert response.text == "fallback success"
+
+    # --- Page pipeline --------------------------------------------------
+
+    def test_reopening_project_preserves_prompts(self, pm, monkeypatch):
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication([])
+        name = "ReopenProj"
+        self._seed(pm, name)
+        self._seed_prompts(pm, name, [{
+            "scene_number": 1, "timestamp": "00:00", "prompt_title": "Opening",
+            "full_image_prompt": "Hand-drawn 2D doodle cartoon animation, a classroom, KaiMi educational doodle style",
+        }])
+
+        page = self._make_page(pm, monkeypatch)
+        page.set_project(name)
+        assert page.empty_state is None
+        assert len(page._prompts) == 1
+
+        # Reopening (fresh page instance == restart) restores from storage.
+        page2 = self._make_page(pm, monkeypatch)
+        page2.set_project(name)
+        assert len(page2._prompts) == 1
+        assert page2.empty_state is None
+        assert page2.generate_btn.text() == "Regenerate Prompts"
+
+    def test_failed_regeneration_preserves_previous_prompts(self, pm, monkeypatch):
+        from PySide6.QtWidgets import QApplication
+        from operators.image_prompt.models import ImagePromptGenerationError
+        app = QApplication.instance() or QApplication([])
+        name = "RegenFail"
+        self._seed(pm, name)
+        existing = [{
+            "scene_number": 1, "timestamp": "00:00", "prompt_title": "Old",
+            "full_image_prompt": "Existing prompt one",
+        }]
+        self._seed_prompts(pm, name, existing)
+        page = self._make_page(pm, monkeypatch)
+        page.set_project(name)
+
+        class _FailingOperator:
+            def generate_prompts(
+                self, request, progress_callback=None, cancel_event=None, max_retries=1
+            ):
+                raise ImagePromptGenerationError("provider exploded")
+
+        page.operator = _FailingOperator()
+        page._confirm_regenerate = lambda: True
+
+        page.generate_prompts()
+        assert self._wait(app, lambda: not page.task_manager.is_running)
+        assert self._wait(app, lambda: page._generation_error is not None)
+
+        # The previous successful prompt set must survive the failed attempt.
+        assert len(page._prompts) == 1
+        assert page._prompts == existing
+        assert "Existing prompts were not modified" in page._generation_error
+        stored = _read_json(pm, name, "image_prompts.json")
+        assert stored["prompts"] == existing
+
+    def test_successful_regeneration_replaces_prompts(self, pm, monkeypatch):
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication([])
+        name = "RegenOk"
+        self._seed(pm, name)
+        self._seed_prompts(pm, name, [{
+            "scene_number": 1, "timestamp": "00:00", "prompt_title": "Old",
+            "full_image_prompt": "Old prompt",
+        }])
+        page = self._make_page(pm, monkeypatch)
+
+        class _FakeOperator:
+            def generate_prompts(
+                self, request, progress_callback=None, cancel_event=None, max_retries=1
+            ):
+                return [
+                    {"scene_number": 1, "timestamp": "00:00", "prompt_title": "New A",
+                     "full_image_prompt": "New prompt A"},
+                    {"scene_number": 2, "timestamp": "00:04", "prompt_title": "New B",
+                     "full_image_prompt": "New prompt B"},
+                ]
+
+        page.operator = _FakeOperator()
+        page._confirm_regenerate = lambda: True
+        page.set_project(name)
+
+        page.generate_prompts()
+        assert self._wait(app, lambda: not page.task_manager.is_running)
+        assert self._wait(app, lambda: len(page._prompts) == 2)
+        stored = _read_json(pm, name, "image_prompts.json")
+        assert len(stored["prompts"]) == 2
+        assert stored["prompts"][0]["prompt_title"] == "New A"
+
+    def test_regeneration_asks_confirmation_before_overwrite(self, pm, monkeypatch):
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication([])
+        name = "RegenConfirm"
+        self._seed(pm, name)
+        self._seed_prompts(pm, name, [{
+            "scene_number": 1, "timestamp": "00:00", "prompt_title": "Old",
+            "full_image_prompt": "Old prompt",
+        }])
+        page = self._make_page(pm, monkeypatch)
+        page.set_project(name)
+
+        asked = []
+        page._confirm_regenerate = lambda: asked.append(True) or False  # declined
+        page.generate_prompts()
+        assert asked == [True]
+        assert not page.task_manager.is_running
+        assert page._generation_error is None
+        assert len(page._prompts) == 1
+
+    def test_cancellation_safety(self, pm, monkeypatch):
+        import threading
+        from PySide6.QtWidgets import QApplication
+        from core.task_manager import TaskCancelledError
+        app = QApplication.instance() or QApplication([])
+        name = "CancelProj"
+        self._seed(pm, name)
+        self._seed_prompts(pm, name, [{
+            "scene_number": 1, "timestamp": "00:00", "prompt_title": "Old",
+            "full_image_prompt": "Existing prompt",
+        }])
+        page = self._make_page(pm, monkeypatch)
+        page.set_project(name)
+
+        class _BlockingOperator:
+            started = threading.Event()
+
+            def generate_prompts(
+                self, request, progress_callback=None, cancel_event=None, max_retries=1
+            ):
+                if progress_callback:
+                    progress_callback("generating", "Generating image prompts", 0.4)
+                self.started.set()
+                while not cancel_event.is_set():
+                    time.sleep(0.01)
+                raise TaskCancelledError("Image prompt generation cancelled.")
+
+        page.operator = _BlockingOperator()
+        page._confirm_regenerate = lambda: True  # deterministic, no modal dialog
+        page.generate_prompts()
+        assert self._wait(app, lambda: _BlockingOperator.started.is_set())
+        assert page.task_manager.is_running
+
+        page._cancel_generation()
+        assert self._wait(app, lambda: not page.task_manager.is_running)
+
+        # Cancellation is not a failure: no banner, prompts preserved intact.
+        assert self._wait(app, lambda: page.cancel_btn.isHidden())
+        assert page._generation_error is None
+        assert page.failure_label.isHidden()
+        assert page.generate_btn.isEnabled()
+        assert len(page._prompts) == 1
+        assert _read_json(pm, name, "image_prompts.json")["prompts"]  # intact
+
+    def test_repeated_generate_clicks_cannot_create_duplicate_jobs(self, pm, monkeypatch):
+        import threading
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication([])
+        name = "DoubleClick"
+        self._seed(pm, name)
+        page = self._make_page(pm, monkeypatch)
+
+        class _CountingOperator:
+            def __init__(self):
+                self.calls = 0
+                self.release = threading.Event()
+
+            def generate_prompts(
+                self, request, progress_callback=None, cancel_event=None, max_retries=1
+            ):
+                self.calls += 1
+                while not self.release.is_set() and not cancel_event.is_set():
+                    time.sleep(0.01)
+                return [{
+                    "scene_number": 1, "timestamp": "00:00", "prompt_title": "A",
+                    "full_image_prompt": "Prompt A",
+                }]
+
+        operator = _CountingOperator()
+        page.operator = operator
+        page.set_project(name)
+
+        page.generate_prompts()
+        assert self._wait(app, lambda: operator.calls == 1)
+        page.generate_prompts()  # second click while running -> guarded
+        assert operator.calls == 1
+        assert page.task_manager.get_queue_size() == 0
+
+        operator.release.set()
+        assert self._wait(app, lambda: not page.task_manager.is_running)
+        assert self._wait(app, lambda: len(page._prompts) == 1)
+
+    def test_txt_export_completeness(self, pm, monkeypatch):
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication([])
+        name = "ExportProj"
+        self._seed(pm, name)
+        long_prompt = (
+            "Hand-drawn 2D doodle cartoon animation, "
+            + "detailed scene description, " * 40
+            + "16:9 aspect ratio, KaiMi educational doodle style"
+        )
+        prompts = [
+            {"scene_number": 1, "timestamp": "00:00", "prompt_title": "Opening",
+             "full_image_prompt": "Prompt one " + long_prompt},
+            {"scene_number": 2, "timestamp": "01:30", "prompt_title": "Middle",
+             "full_image_prompt": "Prompt two"},
+        ]
+        self._seed_prompts(pm, name, prompts)
+        page = self._make_page(pm, monkeypatch)
+        page.set_project(name)
+
+        page.export_txt()
+        out = pm.PROJECTS_DIR / name / "exports" / name / f"{name}.txt"
+        assert out.exists()
+        content = out.read_text(encoding="utf-8")
+        assert "Scene 1" in content and "[00:00]" in content
+        assert "Scene 2" in content and "[01:30]" in content
+        assert "Title: Opening" in content
+        assert "Prompt one " + long_prompt in content  # long prompt not truncated
+        assert "Prompt two" in content
+
+    def test_long_prompt_not_truncated_in_storage_or_ui(self, pm, monkeypatch):
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication([])
+        name = "LongPrompt"
+        self._seed(pm, name)
+        page = self._make_page(pm, monkeypatch)
+        long_prompt = (
+            "Hand-drawn 2D doodle cartoon animation, "
+            + "flowing scene text, " * 300
+            + "KaiMi educational doodle style"
+        )
+        assert len(long_prompt) > 5000
+
+        class _FakeOperator:
+            def generate_prompts(
+                self, request, progress_callback=None, cancel_event=None, max_retries=1
+            ):
+                return [{"scene_number": 1, "timestamp": "00:00",
+                         "prompt_title": "Long", "full_image_prompt": long_prompt}]
+
+        page.operator = _FakeOperator()
+        page.set_project(name)
+        page.generate_prompts()
+        assert self._wait(app, lambda: not page.task_manager.is_running)
+        assert self._wait(app, lambda: len(page._prompts) == 1)
+        stored = _read_json(pm, name, "image_prompts.json")
+        assert stored["prompts"][0]["full_image_prompt"] == long_prompt
+
+    def test_light_theme_colors(self, pm, monkeypatch):
+        from ui.theme_pyside import ThemeManager
+        tm = ThemeManager.instance()
+        tm.set_mode("dark")
+        try:
+            name = "LightTheme"
+            self._seed(pm, name)
+            page = self._make_page(pm, monkeypatch)
+            page.set_project(name)
+            page._set_generation_error("Test failure message")
+
+            tm.set_mode("light")
+            page._refresh_theme_static()
+            assert "#6B7280" in page.controls_desc_label.styleSheet()
+            assert "#DC2626" in page.failure_label.styleSheet()
+        finally:
+            tm.set_mode("dark")
+
+    def test_dark_theme_colors(self, pm, monkeypatch):
+        from ui.theme_pyside import ThemeManager
+        tm = ThemeManager.instance()
+        tm.set_mode("light")
+        try:
+            name = "DarkTheme"
+            self._seed(pm, name)
+            page = self._make_page(pm, monkeypatch)
+            page.set_project(name)
+
+            light_sheet = page.controls_desc_label.styleSheet()
+            tm.set_mode("dark")
+            page._refresh_theme_static()
+            dark_sheet = page.controls_desc_label.styleSheet()
+            assert light_sheet != dark_sheet  # no color leakage between themes
+        finally:
+            tm.set_mode("dark")
+
+    def test_smaller_window_layout(self, pm, monkeypatch):
+        from PySide6.QtWidgets import QApplication, QScrollArea
+        app = QApplication.instance() or QApplication([])
+        name = "SmallWindow"
+        self._seed(pm, name)
+        page = self._make_page(pm, monkeypatch)
+        page.set_project(name)
+        page.resize(820, 560)
+        page.show()
+        app.processEvents()
+
+        assert page.generate_btn.isVisible()
+        assert page.export_btn.isVisible()
+        scroll = page.findChildren(QScrollArea)[0]
+        assert scroll.width() > 0 and scroll.height() > 0
+        assert page.prompts_container.width() > 0
+
+    def test_stage_tagged_failure_message(self, pm, monkeypatch):
+        from PySide6.QtWidgets import QApplication
+        from operators.image_prompt.models import ImagePromptGenerationError
+        app = QApplication.instance() or QApplication([])
+        name = "StageTagged"
+        self._seed(pm, name)
+        page = self._make_page(pm, monkeypatch)
+
+        class _FailingOperator:
+            def generate_prompts(
+                self, request, progress_callback=None, cancel_event=None, max_retries=1
+            ):
+                if progress_callback:
+                    progress_callback("parsing", "Parsing AI response", 0.7)
+                raise ImagePromptGenerationError(
+                    "Generation completed but the provider returned invalid prompt data. Details: bad JSON"
+                )
+
+        page.operator = _FailingOperator()
+        page.set_project(name)
+        page.generate_prompts()
+        assert self._wait(app, lambda: not page.task_manager.is_running)
+        assert self._wait(app, lambda: page._generation_error is not None)
+        assert "failed during Parsing Response" in page._generation_error
+        assert "No prompts were saved." in page._generation_error
+
+    def test_inflight_result_never_lands_in_switched_project(self, pm, monkeypatch):
+        """RC-7: a generation started for project A must persist to A even if
+        the user navigates to project B before it finishes (no cross-project
+        data leakage).
+        """
+        import threading
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication([])
+        name_a, name_b = "SwitchA", "SwitchB"
+        self._seed(pm, name_a)
+        self._seed(pm, name_b)
+        page = self._make_page(pm, monkeypatch)
+        page.set_project(name_a)
+
+        class _SlowOperator:
+            release = threading.Event()
+
+            def generate_prompts(
+                self, request, progress_callback=None, cancel_event=None, max_retries=1
+            ):
+                while not self.release.is_set() and not cancel_event.is_set():
+                    time.sleep(0.01)
+                return [{"scene_number": 1, "timestamp": "00:00",
+                         "prompt_title": "A", "full_image_prompt": "Prompt A"}]
+
+        page.operator = _SlowOperator()
+        page._confirm_regenerate = lambda: True
+        page.generate_prompts()
+        assert self._wait(app, lambda: page.task_manager.is_running)
+
+        # User switches to project B while A's generation is in flight.
+        page.set_project(name_b)
+        # The in-flight run is cancelled; the worker observes the event.
+        assert self._wait(app, lambda: not page.task_manager.is_running)
+        _SlowOperator.release.set()
+
+        # B must not receive A's prompts, and A's prompts were never written
+        # because the run was cancelled before completion.
+        assert self._wait(app, lambda: len(page._prompts) == 0)
+        assert page._generation_error is None
+        stored_a = _read_json(pm, name_a, "image_prompts.json")
+        assert stored_a.get("prompts", []) == []
+        stored_b = _read_json(pm, name_b, "image_prompts.json")
+        assert stored_b.get("prompts", []) == []
 
 
 # =====================================================================

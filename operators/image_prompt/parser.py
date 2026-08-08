@@ -48,8 +48,8 @@ class ImagePromptParser:
 
         Raises:
             ImagePromptParseError: If JSON is malformed, schema is wrong,
-                types are incorrect, timestamps are invalid, or required
-                fields are empty.
+                types are incorrect, timestamps are invalid or out of order,
+                scene numbers are duplicated, or required fields are empty.
         """
         if not raw_response or not raw_response.strip():
             raise ImagePromptParseError("AI response is empty.")
@@ -59,6 +59,8 @@ class ImagePromptParser:
         prompts = self._validate_schema(data)
         self._validate_types(prompts)
         self._validate_timestamps(prompts)
+        self._validate_ordering(prompts)
+        self._validate_duplicates(prompts)
         self._validate_non_empty(prompts)
         return prompts
 
@@ -140,6 +142,41 @@ class ImagePromptParser:
                     f"invalid format '{timestamp}'. "
                     f"Expected MM:SS (e.g. '00:00', '01:30')."
                 )
+
+    def _validate_ordering(self, prompts: list[dict]) -> None:
+        """Validate that scene timestamps appear in non-decreasing order.
+
+        Prompt order defines narration order, so a later scene must never
+        carry an earlier timestamp (out-of-order scenes would misalign the
+        visuals with the narration). Zero-padded MM:SS strings compare
+        lexicographically, which matches chronological order.
+        """
+        previous = None
+        for index, prompt in enumerate(prompts):
+            timestamp = prompt["timestamp"]
+            if previous is not None and timestamp < previous:
+                raise ImagePromptParseError(
+                    f"Prompt at index {index}, scene {prompt.get('scene_number')}: "
+                    f"timestamp '{timestamp}' is out of order "
+                    f"(previous scene was '{previous}')."
+                )
+            previous = timestamp
+
+    def _validate_duplicates(self, prompts: list[dict]) -> None:
+        """Validate that scene numbers are unique.
+
+        A duplicated scene number means the provider emitted the same scene
+        twice, which would corrupt the visual-sequence mapping (RC-7).
+        """
+        seen: set[int] = set()
+        for index, prompt in enumerate(prompts):
+            scene_number = prompt["scene_number"]
+            if scene_number in seen:
+                raise ImagePromptParseError(
+                    f"Prompt at index {index} duplicates scene number "
+                    f"{scene_number}."
+                )
+            seen.add(scene_number)
 
     def _validate_non_empty(self, prompts: list[dict]) -> None:
         """Validate that prompt_title and full_image_prompt are not empty."""

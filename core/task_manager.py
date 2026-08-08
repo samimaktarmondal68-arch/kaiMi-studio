@@ -40,6 +40,9 @@ class TaskManager:
         self._current_task_name: Optional[str] = None
         self._progress = 0.0
         self._status_message: Optional[str] = None
+        #: Current pipeline stage key (e.g. "generating", "parsing"); used by
+        #: the UI's stage-based progress display (RC-7).
+        self._stage: str = "idle"
         self._task_queue: queue.Queue = queue.Queue()
         self._history: list[TaskRecord] = []
         self._max_history = 50
@@ -62,6 +65,20 @@ class TaskManager:
         return self._status_message
 
     @property
+    def stage(self) -> str:
+        """Current pipeline stage key reported by the running task (RC-7)."""
+        return self._stage
+
+    @property
+    def cancel_event(self) -> threading.Event:
+        """The cooperative-cancellation event for the current run.
+
+        Consumers (e.g. operators) check ``cancel_event.is_set()`` between
+        long-running stages so a cancel takes effect as soon as it is safe.
+        """
+        return self._cancel_event
+
+    @property
     def history(self) -> list[TaskRecord]:
         return list(self._history)
 
@@ -82,6 +99,7 @@ class TaskManager:
         self._current_task_name = task_name
         self._progress = 0.0
         self._status_message = "Starting..."
+        self._stage = "idle"
 
         record = TaskRecord(
             name=task_name,
@@ -148,10 +166,17 @@ class TaskManager:
             task_name, task_func, on_complete, on_error = self._task_queue.get()
             self.run_task(task_name, task_func, on_complete, on_error)
 
-    def update_progress(self, progress: float, message: Optional[str] = None) -> None:
+    def update_progress(
+        self,
+        progress: float,
+        message: Optional[str] = None,
+        stage: Optional[str] = None,
+    ) -> None:
         self._progress = max(0.0, min(1.0, float(progress)))
         if message is not None:
             self._status_message = message
+        if stage is not None:
+            self._stage = stage
         if self._history and self._history[0].status == "running":
             self._history[0].progress = self._progress
             self._history[0].message = message or ""

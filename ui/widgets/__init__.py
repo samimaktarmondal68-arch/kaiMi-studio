@@ -381,8 +381,27 @@ class ProgressWidget(QWidget):
         """Show a reassurance hint below the progress bar."""
         self.step_label.setText(text)
 
+    def set_indeterminate(self, status="", step=""):
+        """Switch the bar to an indeterminate mode with stage text (RC-7).
+
+        Used when exact progress cannot be measured: the bar animates instead
+        of showing a fabricated percentage.
+        """
+        self.progress_bar.setRange(0, 0)
+        self.percentage_label.setText("")
+        if status:
+            self.status_label.setText(status)
+        if step:
+            self.step_label.setText(step)
+
+    def set_determinate(self):
+        """Restore the determinate 0-100 bar range."""
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+
     def show_error(self, message: str):
         """Switch the status line to an error state (red, bold)."""
+        self.set_determinate()
         c = ThemeManager.instance().colors()
         self.progress_bar.setValue(0)
         self.percentage_label.setText("0%")
@@ -392,6 +411,7 @@ class ProgressWidget(QWidget):
         self.eta_label.setText("")
 
     def show_complete(self, message="Complete"):
+        self.set_determinate()
         self.progress_bar.setValue(100)
         self.percentage_label.setText("100%")
         c = ThemeManager.instance().colors()
@@ -401,6 +421,7 @@ class ProgressWidget(QWidget):
         self.eta_label.setText("")
 
     def reset(self):
+        self.set_determinate()
         self.progress_bar.setValue(0)
         self.percentage_label.setText("0%")
         self.status_label.setText("")
