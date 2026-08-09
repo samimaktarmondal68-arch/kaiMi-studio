@@ -60,6 +60,16 @@ def app_icon_ico_path() -> Path:
     return branding_dir() / "app_icon.ico"
 
 
+def installer_wizard_image_path() -> Path:
+    """Path to the Inno Setup welcome/sidebar bitmap derived from logo.png."""
+    return branding_dir() / "installer_wizard.bmp"
+
+
+def installer_wizard_small_image_path() -> Path:
+    """Path to the Inno Setup header bitmap derived from logo.png."""
+    return branding_dir() / "installer_wizard_small.bmp"
+
+
 def app_icon():
     """QIcon for the application window and taskbar (lazy Qt import).
 

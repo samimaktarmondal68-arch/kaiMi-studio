@@ -52,16 +52,18 @@ def write_release_metadata():
 
 
 def write_branding_icon():
-    """Regenerate app_icon.ico from the official app_icon.png (Pillow).
+    """Regenerate all derived branding assets from the official logo.
 
-    The .ico is a build-time-only artifact: PyInstaller and the Inno
-    installer consume it, while the running app uses app_icon.png directly.
-    It is kept fresh from the single branding source so a swapped official
-    icon is always picked up without touching build code.
+    Produces app_icon.ico (consumed by PyInstaller and the Inno installer)
+    and the two Inno Setup wizard bitmaps. These are build-time-only
+    artifacts: the running app uses app_icon.png / logo.png directly. All
+    are kept fresh from the single branding source so a swapped official
+    logo is always picked up without touching build code.
     """
     # generate_icon.py already fails loudly with a Pillow install hint.
-    from generate_icon import ensure_app_icon_ico
+    from generate_icon import ensure_app_icon_ico, ensure_installer_wizard_images
     ensure_app_icon_ico()
+    ensure_installer_wizard_images()
 
 
 def clean():
@@ -100,7 +102,7 @@ def build(onefile: bool = False):
         "--name", APP_NAME,
         "--windowed",
         "--icon", str(ROOT / "resources" / "branding" / "app_icon.ico"),
-        "--version", str(ROOT / "file_version_info.txt"),
+        "--version-file", str(ROOT / "file_version_info.txt"),
         "--add-data", f"resources{os.pathsep}resources",
         "--add-data", f"config{os.pathsep}config",
         "--strip",

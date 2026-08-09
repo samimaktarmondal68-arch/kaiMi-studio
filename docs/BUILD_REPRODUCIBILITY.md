@@ -43,6 +43,30 @@ python build.py
 python build.py --onefile
 ```
 
+### Build Installer (Inno Setup 6.3+)
+
+The installer (`KaiMiStudio-Setup-{version}.exe`) is compiled from
+`installer.iss` with Inno Setup's command-line compiler `ISCC.exe`.
+
+```powershell
+# 1. Install Inno Setup 6 (https://jrsoftware.org/isinfo.php) or:
+winget install JRSoftware.InnoSetup
+
+# 2. Build the executable first (installer packages dist\KaiMi Studio)
+python build.py
+
+# 3. Compile the installer
+& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+
+# 4. Output location
+installer_output\KaiMiStudio-Setup-1.0.0.exe
+```
+
+The installer metadata (`installer_metadata.iss`) and the branded wizard
+bitmaps (`resources\branding\installer_wizard.bmp`, `installer_wizard_small.bmp`)
+are regenerated automatically by `python build.py` from `core/version.py` and
+`resources/branding/logo.png`.
+
 ## Build Output
 
 ```

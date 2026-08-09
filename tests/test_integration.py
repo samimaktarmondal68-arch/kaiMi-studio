@@ -2706,6 +2706,106 @@ class TestBrandingIntegration:
         assert hits == []
 
 
+    # ------------------------------------------------------------------
+    # RC-8 - installer & release packaging branding
+    # ------------------------------------------------------------------
+
+    def test_wizard_image_accessors_resolve_to_files(self):
+        from core.branding import (
+            installer_wizard_image_path,
+            installer_wizard_small_image_path,
+        )
+        from generate_icon import ensure_installer_wizard_images
+
+        ensure_installer_wizard_images()  # derived assets exist on fresh clones
+        assert installer_wizard_image_path().name == "installer_wizard.bmp"
+        assert installer_wizard_small_image_path().name == "installer_wizard_small.bmp"
+        assert installer_wizard_image_path().is_file()
+        assert installer_wizard_small_image_path().is_file()
+
+    def test_wizard_images_have_expected_format_and_size(self):
+        from PIL import Image
+        from core.branding import (
+            installer_wizard_image_path,
+            installer_wizard_small_image_path,
+        )
+        with Image.open(installer_wizard_image_path()) as im:
+            assert im.format == "BMP"
+            assert im.size == (240, 459)
+        with Image.open(installer_wizard_small_image_path()) as im:
+            assert im.format == "BMP"
+            assert im.size == (147, 147)
+
+    def test_wizard_image_generation_uses_official_logo(self, tmp_path):
+        from PIL import Image, ImageChops
+        from core.branding import logo_path
+        from generate_icon import (
+            generate_installer_wizard_image,
+            generate_installer_wizard_small_image,
+        )
+
+        big = tmp_path / "wizard.bmp"
+        small = tmp_path / "wizard_small.bmp"
+        assert generate_installer_wizard_image(logo_path(), big) == big
+        assert generate_installer_wizard_small_image(logo_path(), small) == small
+        with Image.open(big) as im:
+            assert im.format == "BMP"
+            assert im.size == (240, 459)
+        with Image.open(small) as im:
+            assert im.format == "BMP"
+            assert im.size == (147, 147)
+        # The official master logo is never modified by generation.
+        with Image.open(logo_path()) as source:
+            with Image.open(logo_path()) as reopened:
+                diff = ImageChops.difference(
+                    source.convert("RGBA"), reopened.convert("RGBA")
+                )
+                assert diff.getbbox() is None
+
+    def test_installer_iss_references_branded_wizard_images(self):
+        iss = (self._root() / "installer.iss").read_text(encoding="utf-8")
+        assert "WizardImageFile=resources\\branding\\installer_wizard.bmp" in iss
+        assert "WizardSmallImageFile=resources\\branding\\installer_wizard_small.bmp" in iss
+        assert "WizardStyle=modern" in iss
+        assert "SetupIconFile=resources\\branding\\app_icon.ico" in iss
+        assert "UninstallDisplayIcon={app}\\{#MyAppExeName}" in iss
+
+    def test_installer_iss_has_real_product_identity(self):
+        iss = (self._root() / "installer.iss").read_text(encoding="utf-8")
+        # The AppId must be a real GUID, not the placeholder block GUID.
+        assert "A1B2C3D4" not in iss
+        app_id_line = next(line for line in iss.splitlines() if line.startswith("AppId="))
+        guid = app_id_line.split("AppId=", 1)[1]
+        assert guid.startswith("{{") and guid.endswith("}")
+        assert len(guid) == 39
+        # The installer derives its identity from the generated defines.
+        assert '#include "installer_metadata.iss"' in iss
+        # Every identity directive derives from the generated defines.
+        assert 'AppName={#MyAppName}' in iss
+        assert 'AppVersion={#MyAppVersion}' in iss
+        assert 'AppPublisher={#MyAppPublisher}' in iss
+        assert 'VersionInfoProductName={#MyAppName}' in iss
+        assert 'VersionInfoVersion={#MyAppVersion}.0' in iss
+
+    def test_installer_progress_uses_real_installer_progress(self):
+        iss = (self._root() / "installer.iss").read_text(encoding="utf-8")
+        # Real progress: driven by the installer engine's progress event.
+        assert "CurInstallProgressChanged" in iss
+        assert "CurProgress * 100" in iss
+        # No fake timer-based 0% -> 100% animation may exist.
+        assert "TTimer" not in iss
+        assert "OnTimer" not in iss
+    def test_build_script_uses_pyinstaller_version_file_flag(self):
+        """RC-8: build.py must embed the version resource with
+        --version-file; --version prints the tool version and exits 0,
+        which would silently skip the whole build."""
+        build_src = (self._root() / "build.py").read_text(encoding="utf-8")
+        assert '"--version-file"' in build_src
+        assert '"file_version_info.txt"' in build_src
+        assert "main.py" in build_src
+
+
+
 # =====================================================================
 # PHASE 12B — RC-6.2 Voice Page State Layout Repair
 # =====================================================================
