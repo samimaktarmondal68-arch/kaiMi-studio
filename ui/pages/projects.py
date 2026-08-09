@@ -4,6 +4,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -49,16 +50,62 @@ def _format_size(bytes_val: int) -> str:
 
 
 class _ProjectCard(ModernCard):
-    def __init__(self, project, navigate_callback, generate_script_callback=None):
+    """Selectable project card.
+
+    Clicking the card body selects the project for the page-level actions
+    (e.g. Delete Project, RC-7.2); the per-card action buttons (Resume,
+    History, Generate Script) keep their own handlers and never trigger
+    selection.
+    """
+
+    def __init__(self, project, navigate_callback, generate_script_callback=None,
+                 select_callback=None):
         super().__init__()
         self._project = project
         self._navigate_callback = navigate_callback
         self._generate_script_callback = generate_script_callback
+        self._select_callback = select_callback
+        self._selected = False
         # Tall enough for the badge plus up to three 36px action buttons
         # (RC-5 button-height standardization).
         self.setFixedHeight(180)
+        self.setCursor(Qt.PointingHandCursor)
         self._outer_layout.setContentsMargins(0, 0, 0, 0)
         self._build()
+
+    def mouseReleaseEvent(self, event):
+        """Select the project when the card body is clicked.
+
+        Child widgets (buttons, badges) consume their own mouse events, so
+        this fires only for clicks on the card background/text.
+        """
+        if event.button() == Qt.LeftButton and self._select_callback:
+            self._select_callback(self._project.get("name", ""))
+        super().mouseReleaseEvent(event)
+
+    def set_selected(self, selected: bool):
+        """Apply/remove the selection highlight border (RC-7.2)."""
+        self._selected = selected
+        self._sync_selection_style()
+
+    def _sync_selection_style(self):
+        """Keep the selection border visible across hover enter/leave."""
+        c = ThemeManager.instance().colors()
+        if self._selected:
+            self.setStyleSheet(
+                f"QFrame#card {{ border: 2px solid {c.PRIMARY}; "
+                f"background-color: {c.CARD}; }}"
+            )
+        else:
+            self.setStyleSheet("")
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        self._sync_selection_style()
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        self._sync_selection_style()
 
     def _build(self):
         name = self._project.get("name", "Untitled")
@@ -244,6 +291,12 @@ class ProjectsPage(QWidget):
         self._sort_by = "last_modified"
         self._sort_reverse = True
         self._filter_status = "All"
+        #: RC-7.2: the currently selected project (None until a card is
+        #: clicked). Page-level actions such as Delete Project operate only
+        #: on this selection.
+        self._selected_project = None
+        self._selected_card = None
+        self._cards: dict[str, _ProjectCard] = {}
         ThemeManager.instance().on_change(lambda _: self._on_theme_changed())
         self._build()
 
@@ -264,6 +317,18 @@ class ProjectsPage(QWidget):
         title = PageTitle("Projects")
         header.addWidget(title)
         header.addStretch()
+
+        # Selected-project action area (RC-7.2): the destructive Delete
+        # action lives here, only enabled once a project card is selected.
+        self.selected_label = MutedLabel("")
+        self.selected_label.setVisible(False)
+        header.addWidget(self.selected_label)
+
+        self.delete_btn = ModernButton("Delete Project", primary=False, danger=True)
+        self.delete_btn.setFixedSize(150, 36)
+        self.delete_btn.setEnabled(False)
+        self.delete_btn.clicked.connect(self._delete_selected)
+        header.addWidget(self.delete_btn)
 
         new_btn = ModernButton("+ New Project", primary=True)
         new_btn.setFixedSize(140, 36)
@@ -340,7 +405,9 @@ class ProjectsPage(QWidget):
                 project,
                 lambda n=name: self._navigate("", n),
                 lambda n=name: self._generate_script(n),
+                select_callback=self._select_project,
             )
+            self._cards[name] = card
             self.cards_layout.addWidget(card)
 
         self.cards_layout.addStretch()
@@ -400,7 +467,153 @@ class ProjectsPage(QWidget):
         label = f"{count} project{'s' if count != 1 else ''}"
         self.count_label.setText(label)
 
+        self._cards = {}
         self._build_cards(display)
+        self._reconcile_selection(display)
+
+    # ------------------------------------------------------------------
+    # RC-7.2 — Project selection & deletion
+    # ------------------------------------------------------------------
+
+    def _select_project(self, name):
+        """Select a project card, highlighting it and enabling Delete."""
+        card = self._cards.get(name)
+        if card is None:
+            return
+        if self._selected_card is not None and self._selected_card is not card:
+            self._selected_card.set_selected(False)
+        self._selected_project = name
+        self._selected_card = card
+        card.set_selected(True)
+        self._update_selection_ui()
+
+    def _clear_selection(self):
+        """Deselect the current project (if any) and disable Delete."""
+        if self._selected_card is not None:
+            self._selected_card.set_selected(False)
+        self._selected_card = None
+        self._selected_project = None
+        self._update_selection_ui()
+
+    def _reconcile_selection(self, display):
+        """Keep the selection valid after a list rebuild (RC-7.2).
+
+        Cards are recreated on every refresh, so the stored card reference
+        must be re-linked; a selected project that no longer exists (e.g.
+        deleted) is deselected.
+        """
+        names = {p.get("name") for p in display}
+        if self._selected_project and self._selected_project not in names:
+            self._selected_project = None
+            self._selected_card = None
+            self._update_selection_ui()
+            return
+        if self._selected_project:
+            self._selected_card = self._cards.get(self._selected_project)
+            if self._selected_card is not None:
+                self._selected_card.set_selected(True)
+        self._update_selection_ui()
+
+    def _update_selection_ui(self):
+        """Enable/disable Delete and show the selected project name."""
+        if self._selected_project:
+            self.delete_btn.setEnabled(True)
+            self.selected_label.setText(f"Selected: {self._selected_project}")
+            self.selected_label.setVisible(True)
+        else:
+            self.delete_btn.setEnabled(False)
+            self.selected_label.setVisible(False)
+
+    def _confirm_delete(self, name) -> bool:
+        """Show the destructive confirmation dialog. Returns True on confirm."""
+        box = QMessageBox(self)
+        box.setWindowTitle("Delete Project")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText(
+            "Delete Project?\n\n"
+            f'You are about to permanently delete:\n"{name}"\n\n'
+            "This will remove the project and its stored project data/assets. "
+            "This action cannot be undone."
+        )
+        delete_btn = box.addButton(
+            "Delete Project", QMessageBox.ButtonRole.DestructiveRole
+        )
+        cancel_btn = box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(cancel_btn)
+        # Make the destructive confirm button visually distinct from Cancel.
+        c = ThemeManager.instance().colors()
+        delete_btn.setStyleSheet(
+            f"background-color: {c.ERROR}; color: {c.TEXT_ON_PRIMARY}; "
+            f"border: none; border-radius: 6px; padding: 6px 16px; "
+            f"font-weight: 600;"
+        )
+        box.exec()
+        return box.clickedButton() is delete_btn
+
+    def _delete_selected(self):
+        """Delete the selected project after confirmation (RC-7.2).
+
+        Reuses the existing ``ProjectManager.delete_project`` primitive which
+        removes exactly the selected project's own storage directory (path
+        validated against the projects root). Nothing is deleted before the
+        user confirms. On failure the project is preserved and the list is
+        left unchanged.
+        """
+        name = self._selected_project
+        if not name:
+            return
+        if not self._confirm_delete(name):
+            return
+        if not self.manager.delete_project(name):
+            NotificationService.get().error(
+                f"Project deletion failed. '{name}' was not removed. "
+                "Please check the project folder and try again."
+            )
+            self.refresh()
+            return
+        self._clear_selection()
+        fallback = self._active_project_after_delete(name)
+        # The project_deleted listener refreshes the project list.
+        self._events.project_deleted.emit(name)
+        if fallback:
+            self._select_project(fallback)
+        NotificationService.get().success("Project deleted successfully.")
+
+    def _active_project_after_delete(self, deleted_name):
+        """Reset stale active-project state after deleting the active project.
+
+        Returns the fallback project name to auto-select, or None when no
+        projects remain or the deleted project was not the active one. Uses
+        the existing project-selection mechanisms (navigation controller,
+        sidebar, per-page ``set_project``) instead of patching widgets.
+        """
+        parent = self.window()
+        if parent is None or getattr(parent, "_project_name", None) != deleted_name:
+            return None
+        watcher = getattr(parent, "_file_watcher", None)
+        if watcher is not None and hasattr(watcher, "unwatch_project"):
+            watcher.unwatch_project(self.manager.PROJECTS_DIR / deleted_name)
+        remaining = self.manager.get_projects()
+        nav = getattr(parent, "nav", None)
+        if remaining:
+            fallback = remaining[0]["name"]
+            if nav is not None and hasattr(nav, "set_project_context"):
+                nav.set_project_context(fallback)
+            else:
+                parent.set_project_context(fallback)
+        else:
+            if nav is not None and hasattr(nav, "set_project_context"):
+                nav.set_project_context(None)
+            parent.set_project_context(None)
+            sidebar = getattr(parent, "sidebar", None)
+            if sidebar is not None and hasattr(sidebar, "set_project_context"):
+                sidebar.set_project_context(None)
+        # Refresh the currently visible page through its own set_project hook.
+        content = getattr(parent, "content", None)
+        current = content.currentWidget() if content is not None else None
+        if current is not None and hasattr(current, "set_project"):
+            current.set_project(remaining[0]["name"] if remaining else None)
+        return remaining[0]["name"] if remaining else None
 
     def set_project(self, name=None):
         self.refresh()

@@ -6056,3 +6056,402 @@ class TestSprint34EReleasePolish:
         assert data["script_max"] == 5000
         assert data["script_min_characters"] == data["script_min"]
         assert data["script_max_characters"] == data["script_max"]
+
+
+# =====================================================================
+# PHASE 12C — RC-7.2 Project delete
+# =====================================================================
+
+class _DeleteConfirmBtn:
+    def setStyleSheet(self, stylesheet):
+        self.stylesheet = stylesheet
+
+
+class _DeleteMessageBox:
+    """Fake QMessageBox capturing the RC-7.2 delete confirmation dialog."""
+
+    result = "cancel"  # "cancel" | "delete"
+    instances = []
+
+    class Icon:
+        Warning = object()
+
+    class ButtonRole:
+        DestructiveRole = 3
+        RejectRole = 5
+
+    def __init__(self, parent=None):
+        self.window_title = ""
+        self.text = ""
+        self._delete_btn = None
+        self._cancel_btn = None
+        self._default = None
+        _DeleteMessageBox.instances.append(self)
+
+    def setWindowTitle(self, text):
+        self.window_title = text
+
+    def setIcon(self, icon):
+        self.icon = icon
+
+    def setText(self, text):
+        self.text = text
+
+    def addButton(self, text, role):
+        btn = _DeleteConfirmBtn()
+        if text == "Delete Project":
+            self._delete_btn = btn
+        else:
+            self._cancel_btn = btn
+        return btn
+
+    def setDefaultButton(self, button):
+        self._default = button
+
+    def exec(self):
+        return 0
+
+    def clickedButton(self):
+        if _DeleteMessageBox.result == "delete" and self._delete_btn:
+            return self._delete_btn
+        return self._cancel_btn
+
+
+class TestRC72ProjectDelete:
+    """RC-7.2: Delete Project on the Projects page — selection, destructive
+    confirmation, scoped deletion via the existing ProjectManager primitive,
+    active-project cleanup, empty-state transition, and failure safety.
+    """
+
+    @staticmethod
+    def _make_page(pm, monkeypatch):
+        from core.pipeline_service import get_pipeline_service
+        from ui.pages.projects import ProjectsPage
+
+        monkeypatch.setattr(ProjectManager, "PROJECTS_DIR", pm.PROJECTS_DIR)
+        service = get_pipeline_service()
+        service._pm = pm
+
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication([])
+
+        page = ProjectsPage()
+        page.manager = pm
+        page.refresh()
+        app.processEvents()
+        return page
+
+    @staticmethod
+    def _install_message_box(monkeypatch):
+        import ui.pages.projects as projects_mod
+        _DeleteMessageBox.result = "cancel"
+        _DeleteMessageBox.instances = []
+        monkeypatch.setattr(projects_mod, "QMessageBox", _DeleteMessageBox)
+
+    @staticmethod
+    def _select(page, name):
+        page._select_project(name)
+
+    # ------------------------------------------------------------------
+    # Action availability & selection
+    # ------------------------------------------------------------------
+
+    def test_delete_action_available_when_project_selected(self, pm, monkeypatch):
+        _create_sample_project(pm, "Alpha")
+        page = self._make_page(pm, monkeypatch)
+        assert not page.delete_btn.isEnabled()
+
+        self._select(page, "Alpha")
+        assert page.delete_btn.isEnabled()
+        assert page._selected_project == "Alpha"
+        assert not page.selected_label.isHidden()
+        assert "Alpha" in page.selected_label.text()
+
+    def test_delete_action_disabled_without_selection(self, pm, monkeypatch):
+        _create_sample_project(pm, "Alpha")
+        page = self._make_page(pm, monkeypatch)
+        assert page._selected_project is None
+        assert not page.delete_btn.isEnabled()
+        assert page.selected_label.isHidden()
+
+    def test_card_click_selects_project(self, pm, monkeypatch):
+        from PySide6.QtCore import QPoint, Qt
+        from PySide6.QtTest import QTest
+        _create_sample_project(pm, "Alpha")
+        page = self._make_page(pm, monkeypatch)
+        card = page._cards["Alpha"]
+        card.show()
+        QTest.mouseClick(card, Qt.LeftButton, pos=QPoint(5, 5))
+        assert page._selected_project == "Alpha"
+        assert page.delete_btn.isEnabled()
+
+    # ------------------------------------------------------------------
+    # Confirmation dialog
+    # ------------------------------------------------------------------
+
+    def test_delete_opens_confirmation_dialog(self, pm, monkeypatch):
+        _create_sample_project(pm, "Alpha")
+        page = self._make_page(pm, monkeypatch)
+        self._install_message_box(monkeypatch)
+        self._select(page, "Alpha")
+
+        page.delete_btn.click()
+
+        assert len(_DeleteMessageBox.instances) == 1
+        box = _DeleteMessageBox.instances[0]
+        assert box.window_title == "Delete Project"
+        assert "Delete Project?" in box.text
+        assert "permanently delete" in box.text
+        assert '"Alpha"' in box.text
+        assert "cannot be undone" in box.text
+        # Cancelled -> nothing deleted before confirmation.
+        assert pm.load_project("Alpha") is not None
+
+    def test_cancel_leaves_project_unchanged(self, pm, monkeypatch):
+        _create_sample_project(pm, "Alpha")
+        page = self._make_page(pm, monkeypatch)
+        self._install_message_box(monkeypatch)
+        self._select(page, "Alpha")
+
+        page.delete_btn.click()  # result == "cancel"
+
+        assert pm.load_project("Alpha") is not None
+        assert (pm.PROJECTS_DIR / "Alpha").exists()
+        assert "Alpha" in page._cards
+        assert page._selected_project == "Alpha"
+        assert page.delete_btn.isEnabled()
+
+    # ------------------------------------------------------------------
+    # Confirmed deletion
+    # ------------------------------------------------------------------
+
+    def test_confirm_removes_selected_project(self, pm, monkeypatch):
+        _create_sample_project(pm, "Alpha")
+        _create_sample_project(pm, "Beta")
+        page = self._make_page(pm, monkeypatch)
+        self._install_message_box(monkeypatch)
+        _DeleteMessageBox.result = "delete"
+        self._select(page, "Alpha")
+
+        page.delete_btn.click()
+
+        assert pm.load_project("Alpha") is None
+        assert not (pm.PROJECTS_DIR / "Alpha").exists()
+        assert pm.load_project("Beta") is not None
+
+    def test_deleted_project_gone_from_list(self, pm, monkeypatch):
+        from PySide6.QtWidgets import QApplication
+        _create_sample_project(pm, "Alpha")
+        _create_sample_project(pm, "Beta")
+        page = self._make_page(pm, monkeypatch)
+        self._install_message_box(monkeypatch)
+        _DeleteMessageBox.result = "delete"
+        self._select(page, "Alpha")
+
+        page.delete_btn.click()
+        page.refresh()
+        QApplication.instance().processEvents()
+
+        assert "Alpha" not in page._cards
+        assert "Beta" in page._cards
+        assert page._selected_project is None
+        assert not page.delete_btn.isEnabled()
+
+    def test_stored_project_data_removed(self, pm, monkeypatch):
+        name = _create_sample_project(pm)
+        _fill_script(pm, name)
+        _fill_image_prompts(pm, name)
+        assert (pm.PROJECTS_DIR / name / "script.json").exists()
+        page = self._make_page(pm, monkeypatch)
+        self._install_message_box(monkeypatch)
+        _DeleteMessageBox.result = "delete"
+        self._select(page, name)
+        page.delete_btn.click()
+        assert not (pm.PROJECTS_DIR / name).exists()
+
+    # ------------------------------------------------------------------
+    # Active-project behaviour
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _make_active_window(page, active_name, current_page=None):
+        from PySide6.QtWidgets import QWidget
+
+        class _FakePage(QWidget):
+            def __init__(self):
+                super().__init__()
+                self.project = None
+
+            def set_project(self, name):
+                self.project = name
+
+        class _FakeContent(QWidget):
+            def __init__(self, current):
+                super().__init__()
+                self._current = current
+
+            def currentWidget(self):
+                return self._current
+
+        class _FakeSidebar:
+            def __init__(self):
+                self.calls = []
+                self.context = None
+
+            def set_project_context(self, name, workflow_state=None):
+                self.calls.append(name)
+                self.context = name
+
+        class _FakeWatcher:
+            def __init__(self):
+                self.unwatched = []
+
+            def unwatch_project(self, path):
+                self.unwatched.append(path)
+
+        class _FakeNav:
+            def __init__(self, window):
+                self.window = window
+                self.context = None
+
+            def set_project_context(self, name):
+                self.context = name
+                self.window._project_name = name
+                if name:
+                    self.window._update_sidebar_project(name)
+
+        class _FakeWindow(QWidget):
+            def __init__(self, current_page):
+                super().__init__()
+                self.content = _FakeContent(current_page)
+                self.sidebar = _FakeSidebar()
+                self.nav = _FakeNav(self)
+                self._file_watcher = _FakeWatcher()
+                self._project_name = None
+                self.navigated = []
+
+            def set_project_context(self, name):
+                self._project_name = name
+
+            def _update_sidebar_project(self, project_name):
+                self.sidebar.set_project_context(project_name)
+
+            def navigate_to(self, label, project_name=None):
+                self.navigated.append((label, project_name))
+
+        window = _FakeWindow(current_page or _FakePage())
+        window._project_name = active_name
+        page.setParent(window)
+        return window
+
+    def test_deleting_active_project_clears_stale_reference(self, pm, monkeypatch):
+        _create_sample_project(pm, "Alpha")
+        _create_sample_project(pm, "Beta")
+        page = self._make_page(pm, monkeypatch)
+        self._install_message_box(monkeypatch)
+        _DeleteMessageBox.result = "delete"
+        window = self._make_active_window(page, "Alpha")
+        self._select(page, "Alpha")
+
+        page.delete_btn.click()
+
+        assert window._project_name == "Beta"
+        assert window.nav.context == "Beta"
+        assert str(pm.PROJECTS_DIR / "Alpha") in [
+            str(p) for p in window._file_watcher.unwatched
+        ]
+
+    def test_other_project_becomes_active_and_auto_selected(self, pm, monkeypatch):
+        _create_sample_project(pm, "Alpha")
+        _create_sample_project(pm, "Beta")
+        page = self._make_page(pm, monkeypatch)
+        self._install_message_box(monkeypatch)
+        _DeleteMessageBox.result = "delete"
+        window = self._make_active_window(page, "Alpha")
+        self._select(page, "Alpha")
+
+        page.delete_btn.click()
+
+        # Sidebar/current-project indicator moved to the remaining project.
+        assert window.sidebar.context == "Beta"
+        assert page._selected_project == "Beta"
+        assert page.delete_btn.isEnabled()
+        # The remaining project still opens normally.
+        assert pm.load_project("Beta") is not None
+        page._navigate("", "Beta")
+        assert window.navigated and window.navigated[0][1] == "Beta"
+
+    def test_deleting_last_project_shows_empty_state(self, pm, monkeypatch):
+        from PySide6.QtWidgets import QApplication
+        from ui.widgets import EmptyState
+        _create_sample_project(pm, "Solo")
+        page = self._make_page(pm, monkeypatch)
+        self._install_message_box(monkeypatch)
+        _DeleteMessageBox.result = "delete"
+        window = self._make_active_window(page, "Solo", current_page=page)
+        self._select(page, "Solo")
+
+        page.delete_btn.click()
+        QApplication.instance().processEvents()
+
+        assert window._project_name is None
+        assert window.nav.context is None
+        assert window.sidebar.context is None
+        assert page._selected_project is None
+        assert not page.delete_btn.isEnabled()
+        widgets = [
+            page.cards_layout.itemAt(i).widget()
+            for i in range(page.cards_layout.count())
+        ]
+        assert any(isinstance(w, EmptyState) for w in widgets if w is not None)
+
+    # ------------------------------------------------------------------
+    # Failure safety & unaffected behaviour
+    # ------------------------------------------------------------------
+
+    def test_delete_failure_preserves_project(self, pm, monkeypatch):
+        _create_sample_project(pm, "Alpha")
+        page = self._make_page(pm, monkeypatch)
+        self._install_message_box(monkeypatch)
+        _DeleteMessageBox.result = "delete"
+        self._select(page, "Alpha")
+
+        monkeypatch.setattr(pm, "delete_project", lambda name: False)
+        page.delete_btn.click()
+
+        assert pm.load_project("Alpha") is not None
+        assert (pm.PROJECTS_DIR / "Alpha").exists()
+        assert "Alpha" in page._cards
+        assert page._selected_project == "Alpha"
+        assert page.delete_btn.isEnabled()
+
+    def test_project_switching_works_after_deletion(self, pm, monkeypatch):
+        from PySide6.QtWidgets import QPushButton
+        _create_sample_project(pm, "Alpha")
+        _create_sample_project(pm, "Beta")
+        page = self._make_page(pm, monkeypatch)
+        self._install_message_box(monkeypatch)
+        _DeleteMessageBox.result = "delete"
+        self._select(page, "Alpha")
+        page.delete_btn.click()
+
+        assert pm.load_project("Beta") is not None
+        self._select(page, "Beta")
+        assert page._selected_project == "Beta"
+        assert page.delete_btn.isEnabled()
+        texts = [b.text() for b in page._cards["Beta"].findChildren(QPushButton)]
+        assert "Resume" in texts
+
+    def test_create_unaffected_after_deletion(self, pm, monkeypatch):
+        _create_sample_project(pm, "Alpha")
+        page = self._make_page(pm, monkeypatch)
+        self._install_message_box(monkeypatch)
+        _DeleteMessageBox.result = "delete"
+        self._select(page, "Alpha")
+        page.delete_btn.click()
+
+        pm.create_project("Gamma", "New topic", "en", "Educational")
+        page.refresh()
+        assert pm.load_project("Gamma") is not None
+        assert "Gamma" in page._cards
