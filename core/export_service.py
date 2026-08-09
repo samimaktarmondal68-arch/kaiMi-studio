@@ -89,18 +89,10 @@ class ExportService:
             lines.append("")
 
         prompts = data.get("image_prompts", {})
-        for prompt in prompts.get("prompts", []):
-            scene = prompt.get("scene_number", "")
-            ts = prompt.get("timestamp", "")
-            header = f"--- Scene {scene} Prompt ---"
-            if ts:
-                header += f" [{ts}]"
-            lines.append(header)
-            title = prompt.get("prompt_title", "")
-            if title:
-                lines.append(f"Title: {title}")
-            lines.append(prompt.get("full_image_prompt", ""))
+        prompt_list = prompts.get("prompts", [])
+        if prompt_list:
             lines.append("")
+            lines.append(self.build_image_prompts_txt(prompt_list))
 
         out = export_root / f"{name}.txt"
         try:
@@ -111,32 +103,38 @@ class ExportService:
 
     @staticmethod
     def build_image_prompts_txt(prompts: list[dict]) -> str:
-        """Render prompt blocks in the shared RC-7 export format.
+        """Render image prompts in the Google Flow TXT queue format (RC-7.1).
 
-        Format per scene (blank line between blocks):
+        Google Flow's "one prompt per line" queue treats every physical line
+        as a separate prompt, so each scene occupies EXACTLY one physical
+        line:
 
-            Scene {number} [{timestamp}]
-            Title: {title}
-            {full prompt text}
+            [MM:SS] <full image prompt>
 
-        Prompt text is written verbatim and never truncated. Both the
-        Image Prompts page export (user-chosen destination) and
-        ``export_stage`` render through this single definition so the
-        on-disk format can never drift between entry points (RC-7.1).
+        The timestamp opens the same line, the full generated prompt follows
+        verbatim, and no other metadata is serialized: no "Scene N" headers,
+        no "Title:" lines, no separate timestamp lines, no blank lines, no
+        numbering. Scene order and timestamps are preserved exactly and the
+        prompt text is never shortened or rewritten.
+
+        Any newline characters inside a prompt are collapsed into spaces so
+        a single prompt can never wrap across physical lines (the prompt
+        builder already forbids line breaks inside prompts). Both the Image
+        Prompts page export (user-chosen destination) and ``export_stage``
+        render through this single definition so the on-disk format can
+        never drift between entry points (RC-7.1).
         """
         lines = []
         for prompt in prompts:
-            scene = prompt.get("scene_number", "")
             ts = prompt.get("timestamp", "")
-            header = f"Scene {scene}"
+            full = (prompt.get("full_image_prompt") or "").strip()
+            # One physical line per prompt: embedded line breaks would make
+            # Google Flow read a single scene as several queue items.
+            full = full.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
             if ts:
-                header += f" [{ts}]"
-            lines.append(header)
-            title = prompt.get("prompt_title", "")
-            if title:
-                lines.append(f"Title: {title}")
-            lines.append(prompt.get("full_image_prompt", ""))
-            lines.append("")
+                lines.append(f"[{ts}] {full}")
+            else:
+                lines.append(full)
         return "\n".join(lines)
 
     def export_stage(self, project_name: str, stage: str, fmt: str = "txt") -> Path | None:

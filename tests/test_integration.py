@@ -3823,11 +3823,13 @@ class TestRC7ImagePromptReliability:
         page.export_txt()
         assert chosen.exists()
         content = chosen.read_text(encoding="utf-8")
-        assert "Scene 1" in content and "[00:00]" in content
-        assert "Scene 2" in content and "[01:30]" in content
-        assert "Title: Opening" in content
-        assert "Prompt one " + long_prompt in content  # long prompt not truncated
-        assert "Prompt two" in content
+        # RC-7.1 Google Flow format: exactly one physical line per prompt.
+        lines = content.splitlines()
+        assert len(lines) == 2
+        assert lines[0] == "[00:00] Prompt one " + long_prompt  # long prompt intact
+        assert lines[1] == "[01:30] Prompt two"
+        assert "Scene 1" not in content and "Scene 2" not in content
+        assert "Title:" not in content
         assert "Prompts exported successfully." in page.export_status_label.text()
 
     def test_long_prompt_not_truncated_in_storage_or_ui(self, pm, monkeypatch):
@@ -4072,11 +4074,13 @@ class TestRC71ImagePromptExport:
 
         assert chosen.exists()
         content = chosen.read_text(encoding="utf-8")
-        assert "Scene 1" in content and "[00:00]" in content
-        assert "Scene 2" in content and "[01:30]" in content
-        assert "Title: Opening" in content
-        assert long_prompt in content  # full prompt text, not truncated
-        assert "Second full prompt text" in content
+        # RC-7.1 Google Flow format: one physical line per prompt, no metadata.
+        lines = content.splitlines()
+        assert len(lines) == 2
+        assert lines[0] == "[00:00] " + long_prompt  # full prompt text, not truncated
+        assert lines[1] == "[01:30] Second full prompt text"
+        assert "Scene" not in content
+        assert "Title:" not in content
         assert not page.export_status_label.isHidden()
         assert "Prompts exported successfully." in page.export_status_label.text()
 
@@ -4105,8 +4109,13 @@ class TestRC71ImagePromptExport:
         page.export_txt()
 
         content = chosen.read_text(encoding="utf-8")
-        assert content.index("Scene 1") < content.index("Scene 2") < content.index("Scene 3")
-        assert content.index("Prompt A text") < content.index("Prompt B text")
+        # RC-7.1 Google Flow format: order preserved, one line per prompt.
+        lines = content.splitlines()
+        assert len(lines) == 3
+        assert lines[0] == "[00:00] Prompt A text"
+        assert lines[1] == "[00:12] Prompt B text"
+        assert lines[2] == "[00:45] Prompt C text"
+        assert content.index("Prompt A text") < content.index("Prompt B text") < content.index("Prompt C text")
 
     def test_export_failure_reaches_ui_as_actionable_error(self, pm, monkeypatch):
         from PySide6.QtWidgets import QApplication, QFileDialog
@@ -4198,6 +4207,157 @@ class TestRC71ImagePromptExport:
         content = chosen.read_text(encoding="utf-8")
         assert "New prompt text" in content
         assert "Old prompt text" not in content
+
+
+# =====================================================================
+# PHASE 12B5 — RC-7.1 Google Flow TXT queue format
+# =====================================================================
+
+class TestRC71GoogleFlowExportFormat:
+    """RC-7.1: the exported image-prompts TXT is compatible with Google
+    Flow's "one prompt per line" queue — each scene is EXACTLY one physical
+    line in the form ``[MM:SS] <full image prompt>`` with no headers,
+    titles, separate timestamp lines, blank lines, or other metadata.
+    """
+
+    @staticmethod
+    def _ts(seconds):
+        return f"{seconds // 60:02d}:{seconds % 60:02d}"
+
+    @staticmethod
+    def _make_prompts(count):
+        return [
+            {
+                "scene_number": i + 1,
+                "timestamp": TestRC71GoogleFlowExportFormat._ts(i * 8),
+                "prompt_title": f"Prompt title {i + 1}",
+                "full_image_prompt": (
+                    f"Hand-drawn 2D doodle cartoon animation, "
+                    f"full generated prompt {i + 1}, "
+                    f"16:9 aspect ratio, KaiMi educational doodle style"
+                ),
+            }
+            for i in range(count)
+        ]
+
+    def test_34_scenes_export_to_exactly_34_lines(self):
+        """Requirement A: 34 scenes -> exactly 34 physical non-empty lines."""
+        prompts = self._make_prompts(34)
+        text = ExportService.build_image_prompts_txt(prompts)
+        lines = text.splitlines()
+        assert len(lines) == 34
+        assert len([ln for ln in lines if ln.strip()]) == 34
+
+    def test_every_line_starts_with_mm_ss_timestamp_and_holds_prompt(self):
+        """Requirements B+C: each line is ``[MM:SS] <prompt>``."""
+        import re
+        prompts = self._make_prompts(34)
+        lines = ExportService.build_image_prompts_txt(prompts).splitlines()
+        for line, prompt in zip(lines, prompts):
+            assert re.match(r"^\[\d{2}:\d{2}\] ", line), line
+            assert line == f"[{prompt['timestamp']}] {prompt['full_image_prompt']}"
+
+    def test_no_scene_title_or_metadata_lines(self):
+        """Requirement D: no Scene/Title:/standalone metadata lines."""
+        prompts = self._make_prompts(34)
+        text = ExportService.build_image_prompts_txt(prompts)
+        assert "Scene" not in text
+        assert "Title:" not in text
+        assert all(
+            not line.startswith("Scene") and not line.startswith("Title:")
+            for line in text.splitlines()
+        )
+
+    def test_no_blank_lines_and_no_trailing_newline(self):
+        """Requirement E: no blank lines anywhere in the export."""
+        prompts = self._make_prompts(34)
+        text = ExportService.build_image_prompts_txt(prompts)
+        assert "\n\n" not in text
+        assert not text.endswith("\n")
+        assert all(line.strip() for line in text.splitlines())
+
+    def test_long_prompt_remains_a_single_physical_line(self):
+        """Requirement F: a >5000-char prompt still exports as one line."""
+        long_prompt = (
+            "Hand-drawn 2D doodle cartoon animation, "
+            + "flowing detailed scene narration, " * 300
+            + "16:9 aspect ratio, KaiMi educational doodle style"
+        )
+        assert len(long_prompt) > 5000
+        prompts = [{"scene_number": 1, "timestamp": "00:00",
+                    "prompt_title": "Long", "full_image_prompt": long_prompt}]
+        lines = ExportService.build_image_prompts_txt(prompts).splitlines()
+        assert len(lines) == 1
+        assert lines[0] == "[00:00] " + long_prompt
+
+    def test_scene_order_and_timestamps_preserved(self):
+        """Requirement G: order and timestamps are preserved exactly."""
+        prompts = self._make_prompts(34)
+        lines = ExportService.build_image_prompts_txt(prompts).splitlines()
+        assert lines[0].startswith("[00:00] ")
+        assert lines[1].startswith("[00:08] ")
+        assert lines[33].startswith("[04:24] ")
+        assert [ln.split("] ", 1)[1] for ln in lines] == [
+            p["full_image_prompt"] for p in prompts
+        ]
+
+    def test_ui_display_still_shows_scene_and_title(self, pm, monkeypatch):
+        """Requirement H: the in-app Scene/Title display is unchanged."""
+        from PySide6.QtWidgets import QApplication, QLabel
+        app = QApplication.instance() or QApplication([])
+        name = "UIIntact"
+        TestRC71ImagePromptExport._seed(pm, name)
+        TestRC71ImagePromptExport._seed_prompts(pm, name, [{
+            "scene_number": 1, "timestamp": "00:00",
+            "prompt_title": "Opening Curiosity Title",
+            "full_image_prompt": "Prompt one text",
+        }])
+        page = TestRC71ImagePromptExport._make_page(pm, monkeypatch)
+        page.set_project(name)
+        assert len(page._prompts) == 1
+        texts = [label.text() for label in page.findChildren(QLabel)]
+        assert any("Scene 1" in t for t in texts)
+        assert any("Opening Curiosity Title" in t for t in texts)
+
+    def test_generated_prompt_content_unchanged_in_storage_and_export(self, pm, es):
+        """Requirements I+J: storage content and export_stage still work."""
+        name = "ContentIntact"
+        prompts = self._make_prompts(34)
+        TestRC71ImagePromptExport._seed(pm, name)
+        TestRC71ImagePromptExport._seed_prompts(pm, name, prompts)
+        stored = _read_json(pm, name, "image_prompts.json")["prompts"]
+        assert stored == prompts  # storage schema/content untouched
+
+        out = es.export_stage(name, "Image Prompts", fmt="txt")
+        assert out is not None and out.exists()
+        lines = out.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 34
+        for line, prompt in zip(lines, stored):
+            assert line == f"[{prompt['timestamp']}] {prompt['full_image_prompt']}"
+
+    def test_page_export_still_writes_google_flow_txt(self, pm, monkeypatch):
+        """Requirement J: the page's Export TXT button still works end-to-end."""
+        from PySide6.QtWidgets import QApplication, QFileDialog
+        app = QApplication.instance() or QApplication([])
+        name = "PageExport71"
+        prompts = self._make_prompts(34)
+        TestRC71ImagePromptExport._seed(pm, name)
+        TestRC71ImagePromptExport._seed_prompts(pm, name, prompts)
+        page = TestRC71ImagePromptExport._make_page(pm, monkeypatch)
+        page.set_project(name)
+
+        chosen = pm.PROJECTS_DIR / name / "exports" / f"{name}_image_prompts.txt"
+        monkeypatch.setattr(
+            QFileDialog, "getSaveFileName",
+            staticmethod(lambda *a, **k: (str(chosen), "Text Files (*.txt)")),
+        )
+        page.export_txt()
+
+        assert chosen.exists()
+        lines = chosen.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 34
+        assert all(line.startswith("[") and "] " in line for line in lines)
+        assert "Prompts exported successfully." in page.export_status_label.text()
 
 
 class TestRC71ProgressAnimation:
