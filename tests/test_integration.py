@@ -6455,3 +6455,242 @@ class TestRC72ProjectDelete:
         page.refresh()
         assert pm.load_project("Gamma") is not None
         assert "Gamma" in page._cards
+
+
+# =====================================================================
+# PHASE 12D — RC-7.2.1 Project page selection + card layout polish
+# =====================================================================
+
+class _FakeHistoryDialog:
+    """Fake VersionHistoryDialog: records construction instead of blocking."""
+
+    instances = []
+
+    def __init__(self, project_name, parent=None):
+        self.project_name = project_name
+        _FakeHistoryDialog.instances.append(self)
+
+    def exec(self):
+        return 0
+
+
+class TestRC721ProjectSelection:
+    """RC-7.2.1: distinct ACTIVE vs SELECTED project states, single-click
+    card selection, non-interfering Resume/History controls, and a card
+    layout that never clips the right-side action rail.
+    """
+
+    @staticmethod
+    def _make_page(pm, monkeypatch):
+        return TestRC72ProjectDelete._make_page(pm, monkeypatch)
+
+    @staticmethod
+    def _install_message_box(monkeypatch):
+        return TestRC72ProjectDelete._install_message_box(monkeypatch)
+
+    @staticmethod
+    def _select(page, name):
+        page._select_project(name)
+
+    @staticmethod
+    def _cards(page):
+        return page._cards
+
+    # ------------------------------------------------------------------
+    # Selection state
+    # ------------------------------------------------------------------
+
+    def test_selected_card_has_distinct_selection_state(self, pm, monkeypatch):
+        _create_sample_project(pm, "Alpha")
+        _create_sample_project(pm, "Beta")
+        page = self._make_page(pm, monkeypatch)
+        self._select(page, "Alpha")
+        alpha = page._cards["Alpha"]
+        beta = page._cards["Beta"]
+        assert alpha._selected is True
+        assert beta._selected is False
+        # Distinct selected treatment: stronger outline + tinted background,
+        # applied to the card (not a label).
+        style = alpha.styleSheet()
+        assert "border: 2px" in style
+        assert "background-color" in style
+        assert page.delete_btn.isEnabled()
+
+    def test_selecting_another_card_changes_selection(self, pm, monkeypatch):
+        _create_sample_project(pm, "Alpha")
+        _create_sample_project(pm, "Beta")
+        page = self._make_page(pm, monkeypatch)
+        self._select(page, "Alpha")
+        assert page._selected_project == "Alpha"
+
+        self._select(page, "Beta")
+        assert page._selected_project == "Beta"
+        assert page._cards["Alpha"]._selected is False
+        assert page._cards["Beta"]._selected is True
+        assert page.delete_btn.isEnabled()
+
+    def test_clicking_selected_card_again_keeps_selection(self, pm, monkeypatch):
+        _create_sample_project(pm, "Alpha")
+        page = self._make_page(pm, monkeypatch)
+        self._select(page, "Alpha")
+        self._select(page, "Alpha")
+        assert page._selected_project == "Alpha"
+        assert page._cards["Alpha"]._selected is True
+        assert page.delete_btn.isEnabled()
+
+    # ------------------------------------------------------------------
+    # Active vs selected
+    # ------------------------------------------------------------------
+
+    def test_active_indicator_tracks_set_project(self, pm, monkeypatch):
+        _create_sample_project(pm, "Alpha")
+        _create_sample_project(pm, "Beta")
+        page = self._make_page(pm, monkeypatch)
+        page.set_project("Alpha")
+        assert page._active_project == "Alpha"
+        assert page._cards["Alpha"]._active is True
+        assert not page._cards["Alpha"].active_label.isHidden()
+        assert page._cards["Beta"]._active is False
+        assert page._cards["Beta"].active_label.isHidden()
+
+    def test_active_and_selected_states_coexist_without_conflation(self, pm, monkeypatch):
+        _create_sample_project(pm, "Alpha")
+        _create_sample_project(pm, "Beta")
+        page = self._make_page(pm, monkeypatch)
+        page.set_project("Alpha")   # ACTIVE project
+        self._select(page, "Beta")  # SELECTED project is different
+
+        alpha = page._cards["Alpha"]
+        beta = page._cards["Beta"]
+        # Active indicator stays on Alpha; selection outline on Beta.
+        assert alpha._active is True and alpha._selected is False
+        assert beta._active is False and beta._selected is True
+        # Sidebar-style active context is not driven by page selection.
+        assert page._selected_project == "Beta"
+
+    def test_delete_inactive_project_keeps_active(self, pm, monkeypatch):
+        _create_sample_project(pm, "ActiveProj")
+        _create_sample_project(pm, "OtherProj")
+        page = self._make_page(pm, monkeypatch)
+        self._install_message_box(monkeypatch)
+        _DeleteMessageBox.result = "delete"
+        page.set_project("ActiveProj")
+        window = TestRC72ProjectDelete._make_active_window(page, "ActiveProj")
+        self._select(page, "OtherProj")
+
+        page.delete_btn.click()
+
+        # Inactive project deleted; the active project and its indicators
+        # remain untouched.
+        assert pm.load_project("OtherProj") is None
+        assert pm.load_project("ActiveProj") is not None
+        assert window._project_name == "ActiveProj"
+        assert window.sidebar.calls == []
+        assert page._active_project == "ActiveProj"
+        assert page._cards["ActiveProj"]._active is True
+        assert not page._cards["ActiveProj"].active_label.isHidden()
+
+    def test_delete_active_project_uses_rc72_fallback(self, pm, monkeypatch):
+        _create_sample_project(pm, "Alpha")
+        _create_sample_project(pm, "Beta")
+        page = self._make_page(pm, monkeypatch)
+        self._install_message_box(monkeypatch)
+        _DeleteMessageBox.result = "delete"
+        page.set_project("Alpha")
+        # Deletion happens on the Projects page, so the current widget is the
+        # page itself (matches the real app flow).
+        window = TestRC72ProjectDelete._make_active_window(page, "Alpha", current_page=page)
+        self._select(page, "Alpha")
+
+        page.delete_btn.click()
+
+        # Existing RC-7.2 fallback: another project becomes active/selected.
+        assert window._project_name == "Beta"
+        assert page._active_project == "Beta"
+        assert page._selected_project == "Beta"
+        assert page._cards["Beta"]._active is True
+
+    # ------------------------------------------------------------------
+    # Resume / History must not trigger selection
+    # ------------------------------------------------------------------
+
+    def test_resume_click_does_not_select_and_still_navigates(self, pm, monkeypatch):
+        from PySide6.QtCore import QPoint, Qt
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QPushButton
+        _create_sample_project(pm, "Alpha")
+        page = self._make_page(pm, monkeypatch)
+        navigated = []
+        page._navigate = lambda label, project_name=None: navigated.append((label, project_name))
+
+        card = page._cards["Alpha"]
+        card.show()
+        resume = next(b for b in card.findChildren(QPushButton) if b.text() == "Resume")
+        QTest.mouseClick(resume, Qt.LeftButton, pos=QPoint(40, 18))
+
+        # Resume navigates, and does NOT change the selection state.
+        assert navigated == [("", "Alpha")]
+        assert page._selected_project is None
+        assert page._cards["Alpha"]._selected is False
+        assert not page.delete_btn.isEnabled()
+
+    def test_history_click_does_not_select_or_delete(self, pm, monkeypatch):
+        from PySide6.QtCore import QPoint, Qt
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QPushButton
+        import ui.pages.projects as projects_mod
+        _FakeHistoryDialog.instances = []
+        monkeypatch.setattr(projects_mod, "VersionHistoryDialog", _FakeHistoryDialog)
+        _create_sample_project(pm, "Alpha")
+        page = self._make_page(pm, monkeypatch)
+
+        card = page._cards["Alpha"]
+        card.show()
+        history = next(b for b in card.findChildren(QPushButton) if b.text() == "History")
+        QTest.mouseClick(history, Qt.LeftButton, pos=QPoint(40, 18))
+
+        assert len(_FakeHistoryDialog.instances) == 1
+        assert _FakeHistoryDialog.instances[0].project_name == "Alpha"
+        assert page._selected_project is None
+        assert page._cards["Alpha"]._selected is False
+        assert pm.load_project("Alpha") is not None  # no deletion happened
+
+    # ------------------------------------------------------------------
+    # Geometry: right-side controls are never clipped
+    # ------------------------------------------------------------------
+
+    def test_resume_and_history_fully_inside_card(self, pm, monkeypatch):
+        from PySide6.QtCore import QPoint
+        from PySide6.QtWidgets import QApplication, QPushButton
+        app = QApplication.instance() or QApplication([])
+        _create_sample_project(pm, "Alpha")
+        _create_sample_project(pm, "Beta")
+        page = self._make_page(pm, monkeypatch)
+        page.resize(1230, 900)
+        page.show()
+        app.processEvents()
+
+        for name in ("Alpha", "Beta"):
+            card = page._cards[name]
+            cw, ch = card.width(), card.height()
+            buttons = {
+                b.text(): b for b in card.findChildren(QPushButton)
+                if b.text() in ("Resume", "History")
+            }
+            assert "Resume" in buttons and "History" in buttons
+            for text, btn in buttons.items():
+                tl = btn.mapTo(card, QPoint(0, 0))
+                g = btn.geometry()
+                right = tl.x() + g.width()
+                bottom = tl.y() + g.height()
+                assert tl.x() >= 6, f"{text} clipped on left"
+                assert right <= cw - 6, f"{text} clipped on right ({cw - right}px)"
+                assert tl.y() >= 6, f"{text} clipped on top"
+                assert bottom <= ch - 6, f"{text} clipped on bottom"
+                assert g.width() >= 120, f"{text} too small ({g.width()}px)"
+            # Resume and History must not overlap each other.
+            resume, history = buttons["Resume"], buttons["History"]
+            r = resume.mapTo(card, QPoint(0, 0)).y()
+            h = history.mapTo(card, QPoint(0, 0)).y()
+            assert h >= r + resume.height(), "Resume and History overlap"
+        page.close()

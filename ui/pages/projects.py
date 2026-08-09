@@ -66,9 +66,10 @@ class _ProjectCard(ModernCard):
         self._generate_script_callback = generate_script_callback
         self._select_callback = select_callback
         self._selected = False
-        # Tall enough for the badge plus up to three 36px action buttons
-        # (RC-5 button-height standardization).
-        self.setFixedHeight(180)
+        self._active = False
+        # Tall enough for the badge plus up to three 36px action buttons and
+        # the content column with comfortable bottom spacing (RC-7.2.1).
+        self.setFixedHeight(196)
         self.setCursor(Qt.PointingHandCursor)
         self._outer_layout.setContentsMargins(0, 0, 0, 0)
         self._build()
@@ -84,17 +85,33 @@ class _ProjectCard(ModernCard):
         super().mouseReleaseEvent(event)
 
     def set_selected(self, selected: bool):
-        """Apply/remove the selection highlight border (RC-7.2)."""
+        """Apply/remove the SELECTED treatment (RC-7.2/7.2.1).
+
+        A selected card gets a stronger outline plus a subtle tinted
+        background. This is intentionally different from the ACTIVE
+        indicator (a small green label next to the project name) so the two
+        states never look the same.
+        """
         self._selected = selected
         self._sync_selection_style()
 
+    def set_active(self, active: bool):
+        """Show/hide the ACTIVE-project indicator (RC-7.2.1).
+
+        ``active`` reflects the project currently opened in the app, which
+        is tracked independently from the SELECTED project.
+        """
+        self._active = active
+        if self.active_label is not None:
+            self.active_label.setVisible(active)
+
     def _sync_selection_style(self):
-        """Keep the selection border visible across hover enter/leave."""
+        """Keep the selection treatment visible across hover enter/leave."""
         c = ThemeManager.instance().colors()
         if self._selected:
             self.setStyleSheet(
                 f"QFrame#card {{ border: 2px solid {c.PRIMARY}; "
-                f"background-color: {c.CARD}; }}"
+                f"background-color: {c.PRIMARY_LIGHT}; }}"
             )
         else:
             self.setStyleSheet("")
@@ -160,9 +177,22 @@ class _ProjectCard(ModernCard):
         content.setContentsMargins(16, 14, 16, 14)
         content.setSpacing(4)
 
+        # Name row carries the ACTIVE-project indicator (green label) so the
+        # active project is always identifiable independently of selection
+        # (RC-7.2.1).
+        name_row = QHBoxLayout()
+        name_row.setSpacing(8)
         name_label = QLabel(name)
         name_label.setStyleSheet(f"{Fonts.css(16, '600', c.TEXT)}")
-        content.addWidget(name_label)
+        name_row.addWidget(name_label)
+        self.active_label = QLabel("\u25CF  Active")
+        self.active_label.setStyleSheet(
+            f"{Fonts.tiny(c.SUCCESS)} font-weight: 600; background: transparent;"
+        )
+        self.active_label.setVisible(False)
+        name_row.addWidget(self.active_label)
+        name_row.addStretch()
+        content.addLayout(name_row)
 
         meta = QLabel(f"{topic}  \u00B7  {language}" + (f"  \u00B7  {platform}" if platform else ""))
         meta.setStyleSheet(f"{Fonts.caption(c.TEXT_SECONDARY)}")
@@ -231,14 +261,25 @@ class _ProjectCard(ModernCard):
 
         layout.addLayout(content, 1)
 
-        actions = QVBoxLayout()
-        actions.setContentsMargins(8, 8, 8, 8)
-        actions.setSpacing(6)
-        actions.setAlignment(Qt.AlignTop | Qt.AlignRight)
+        # Reserved-width action rail (RC-7.2.1): the column always keeps room
+        # for the stage badge, the primary stage/action button, Resume and
+        # History. The rail width is derived from the widest control (stage
+        # badge or the action buttons) so nothing is ever squeezed or clipped
+        # against the card boundary, regardless of font metrics.
+        actions_container = QWidget()
+        actions = QVBoxLayout(actions_container)
+        actions.setContentsMargins(10, 10, 10, 10)
+        actions.setSpacing(8)
+        actions.setAlignment(Qt.AlignTop)
 
         badge = StatusBadge(action.label if action.label else active_stage,
                            color=c.TEXT_ON_PRIMARY, bg=badge_color)
+        badge.setAlignment(Qt.AlignCenter)
         actions.addWidget(badge)
+
+        rail_width = max(badge.sizeHint().width(), 150)
+        badge.setFixedWidth(rail_width)
+        actions_container.setFixedWidth(rail_width + 20)
 
         # A dedicated "Generate Script" action: opens the project, navigates
         # to the Script page, and starts generation automatically (Sprint 3.4C).
@@ -250,24 +291,23 @@ class _ProjectCard(ModernCard):
             and script_status in (StageStatus.NOT_STARTED, StageStatus.FAILED)
         ):
             gen_btn = ModernButton(action.label, primary=True)
-            gen_btn.setFixedSize(150, 36)
+            gen_btn.setFixedSize(rail_width, 36)
             gen_btn.clicked.connect(
                 lambda checked, n=name: self._generate_script_callback(n)
             )
             actions.addWidget(gen_btn)
 
         open_btn = ModernButton("Resume", primary=True)
-        open_btn.setFixedSize(80, 36)
+        open_btn.setFixedSize(rail_width, 36)
         open_btn.clicked.connect(lambda checked, n=name: self._navigate_callback(n))
         actions.addWidget(open_btn)
 
         history_btn = ModernButton("History", primary=False)
-        history_btn.setFixedSize(80, 36)
+        history_btn.setFixedSize(rail_width, 36)
         history_btn.clicked.connect(lambda checked, n=name: self._show_history(n))
         actions.addWidget(history_btn)
 
-        actions.addStretch()
-        layout.addLayout(actions)
+        layout.addWidget(actions_container)
 
         self.content_layout.addLayout(layout)
 
@@ -297,6 +337,10 @@ class ProjectsPage(QWidget):
         self._selected_project = None
         self._selected_card = None
         self._cards: dict[str, _ProjectCard] = {}
+        #: RC-7.2.1: the ACTIVE project (opened in the app). Tracked
+        #: independently of the SELECTED project and fed by ``set_project``
+        #: through the existing navigation context.
+        self._active_project = None
         ThemeManager.instance().on_change(lambda _: self._on_theme_changed())
         self._build()
 
@@ -407,6 +451,7 @@ class ProjectsPage(QWidget):
                 lambda n=name: self._generate_script(n),
                 select_callback=self._select_project,
             )
+            card.set_active(name == self._effective_active_project())
             self._cards[name] = card
             self.cards_layout.addWidget(card)
 
@@ -453,6 +498,20 @@ class ProjectsPage(QWidget):
             target = action.stage if action.stage else STAGE_LABELS[0]
             parent.set_project_context(name)
             parent.navigate_to(target, name)
+
+    def _effective_active_project(self):
+        """Return the project currently opened in the app (ACTIVE).
+
+        Prefers the main window's current project so the indicator stays
+        correct even when the active project changed through a path that did
+        not call ``set_project`` (RC-7.2.1).
+        """
+        parent = self.window()
+        if parent is not None:
+            name = getattr(parent, "_project_name", None)
+            if name:
+                return name
+        return self._active_project
 
     def refresh(self):
         projects = self.manager.search_projects(self._search_query)
@@ -616,6 +675,13 @@ class ProjectsPage(QWidget):
         return remaining[0]["name"] if remaining else None
 
     def set_project(self, name=None):
+        """Record the ACTIVE project context (RC-7.2.1).
+
+        Called by the navigation controller with the current project; the
+        active indicator on the cards reflects this value while the SELECTED
+        project stays independent.
+        """
+        self._active_project = name
         self.refresh()
 
     def _on_search_changed(self, text):
