@@ -6,7 +6,6 @@ from PySide6.QtWidgets import (
 )
 
 from core.notifications import NotificationService
-from core.settings import AppSettings
 from core.task_manager import TaskManager
 from core.theme import Fonts
 from core.version import (
@@ -39,7 +38,6 @@ class _ConnectionBridge(QObject):
 class SettingsPage(QWidget):
     def __init__(self):
         super().__init__()
-        self.settings = AppSettings()
         self.task_manager = TaskManager()
         self._loading_providers = False
         self._connection_bridge = _ConnectionBridge()
@@ -55,7 +53,6 @@ class SettingsPage(QWidget):
             if w:
                 w.setParent(None)
                 w.deleteLater()
-        self._build_appearance()
         self._build_language()
         self._build_provider()
         self._build_about()
@@ -82,7 +79,6 @@ class SettingsPage(QWidget):
         self._scroll_layout.setContentsMargins(0, 0, 0, 0)
         self._scroll_layout.setSpacing(12)
 
-        self._build_appearance()
         self._build_language()
         self._build_provider()
         self._build_about()
@@ -105,27 +101,6 @@ class SettingsPage(QWidget):
         row.addWidget(widget)
         row.addStretch()
         return row
-
-    def _build_appearance(self):
-        c = ThemeManager.instance().colors()
-        card = ModernCard()
-        card.content_layout.setSpacing(8)
-
-        title = SectionLabel("Appearance")
-        card.content_layout.addWidget(title)
-
-        desc = MutedLabel("Switch between dark and light themes")
-        card.content_layout.addWidget(desc)
-
-        self.theme_combo = QComboBox()
-        self.theme_combo.addItems(["Dark", "Light"])
-        current = self.settings.get_theme()
-        self.theme_combo.setCurrentText(current.title() if current else "Dark")
-        self.theme_combo.setMinimumWidth(220)
-        self.theme_combo.currentTextChanged.connect(self._on_theme_selected)
-
-        card.content_layout.addLayout(self._make_field_row("Theme", self.theme_combo))
-        self._scroll_layout.addWidget(card)
 
     def _build_language(self):
         c = ThemeManager.instance().colors()
@@ -294,11 +269,6 @@ class SettingsPage(QWidget):
         from ui.dialogs.about_dialog import AboutDialog
         dialog = AboutDialog(self)
         dialog.exec()
-
-    def _on_theme_selected(self, value):
-        mode = value.lower()
-        self.settings.set_theme(mode)
-        ThemeManager.instance().set_mode(mode)
 
     # ── Provider configuration ───────────────────────────────────────
 

@@ -75,10 +75,22 @@ class AppSettings:
         self.save()
 
     def get_theme(self) -> str:
-        return self._data.get("theme", "dark")
+        """Return the active theme.
+
+        Dark Mode is the only supported appearance (v1.x). Any legacy stored
+        value (e.g. a previous "light" selection) safely resolves to "dark"
+        so an old config can never leave the app in an invalid theme state.
+        """
+        theme = self._data.get("theme", "dark")
+        return theme if theme == "dark" else "dark"
 
     def set_theme(self, theme: str) -> None:
-        self.set("theme", theme)
+        """Persist the theme, clamping to Dark Mode (the only v1.x theme).
+
+        Anything other than "dark" (including legacy "light") is stored as
+        "dark" so the persisted config never contains an unsupported value.
+        """
+        self.set("theme", theme if theme == "dark" else "dark")
 
     def get_window_geometry(self) -> tuple[int, int]:
         return (

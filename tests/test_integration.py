@@ -4685,14 +4685,16 @@ class TestThemeStartup:
         tm.set_mode("dark")  # class default is already "dark"
         assert applied == [True]
 
-    def test_main_window_init_theme_uses_saved_mode(self, monkeypatch):
-        """_init_theme must read the saved preference instead of hard-coding."""
+    def test_main_window_legacy_light_falls_back_to_dark(self, monkeypatch):
+        """_init_theme reads the saved preference; Dark Mode is the only
+        supported theme (v1.x), so a legacy "light" value safely falls back
+        to "dark" instead of being applied."""
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         from ui.main_window import MainWindow
 
         class FakeSettings:
             def get_theme(self):
-                return "light"
+                return "light"  # legacy value from a pre-v1.x config
 
         fake_tm = SimpleNamespace()
         fake_tm.set_mode_calls = []
@@ -4710,7 +4712,7 @@ class TestThemeStartup:
 
         win = MainWindow.__new__(MainWindow)
         win._init_theme()
-        assert fake_tm.set_mode_calls == ["light"]
+        assert fake_tm.set_mode_calls == ["dark"]
 
     def test_invalid_saved_theme_falls_back_to_dark(self, monkeypatch):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -4769,6 +4771,68 @@ class TestThemeStartup:
             ThemeManager._instance = None
             ThemeManager._current = "dark"
             settings_mod.AppSettings._instance = None
+
+
+# =====================================================================
+# PHASE 12B2 — Dark Mode Only (v1.x Light Mode removal)
+# =====================================================================
+
+class TestDarkOnlyTheme:
+    """v1.x: Dark Mode is the only supported appearance.
+
+    The Settings UI no longer exposes a theme selector, AppSettings clamps
+    any non-dark value to "dark" so legacy "light" configs migrate safely,
+    and persisted theme values round-trip as "dark" only.
+    """
+
+    @staticmethod
+    def _fresh_settings(tmp_path, monkeypatch):
+        """Build an AppSettings rooted in a temp file, restoring the real
+        module state afterward so no other test inherits the override."""
+        import core.settings as settings_mod
+        from core.settings import AppSettings
+        monkeypatch.setattr(settings_mod, "_SETTINGS_FILE", tmp_path / "settings.json")
+        monkeypatch.setattr(settings_mod, "_SETTINGS_DIR", tmp_path)
+        monkeypatch.setattr(AppSettings, "_instance", None)
+        return AppSettings()
+
+    def test_settings_page_does_not_expose_theme_selector(self):
+        """The Appearance card no longer offers a theme choice: no theme
+        combo and no "Dark"/"Light" selector items anywhere in Settings."""
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication, QLabel
+        from ui.pages.settings_page import SettingsPage
+
+        QApplication.instance() or QApplication([])
+        page = SettingsPage()
+        assert not hasattr(page, "theme_combo")
+        texts = [lbl.text() for lbl in page.findChildren(QLabel)]
+        assert "Light" not in texts
+        assert "dark and light themes" not in " ".join(texts)
+
+    def test_legacy_light_setting_reads_as_dark(self, tmp_path, monkeypatch):
+        """A stored "light" value from an old config resolves to "dark"."""
+        _write_json(tmp_path / "settings.json", {"theme": "light"})
+        s = self._fresh_settings(tmp_path, monkeypatch)
+        assert s.get_theme() == "dark"
+
+    def test_set_theme_clamps_to_dark(self, tmp_path, monkeypatch):
+        """set_theme never persists an unsupported value."""
+        s = self._fresh_settings(tmp_path, monkeypatch)
+        s.set_theme("light")
+        assert s._data["theme"] == "dark"
+        assert s.get_theme() == "dark"
+        s.set_theme("banana")
+        assert s._data["theme"] == "dark"
+
+    def test_theme_persistence_round_trip(self, tmp_path, monkeypatch):
+        """Dark Mode persists and reloads as "dark"."""
+        s = self._fresh_settings(tmp_path, monkeypatch)
+        s.set_theme("dark")
+        saved = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
+        assert saved["theme"] == "dark"
+        reloaded = self._fresh_settings(tmp_path, monkeypatch)
+        assert reloaded.get_theme() == "dark"
 
 
 # =====================================================================
@@ -6694,3 +6758,386 @@ class TestRC721ProjectSelection:
             h = history.mapTo(card, QPoint(0, 0)).y()
             assert h >= r + resume.height(), "Resume and History overlap"
         page.close()
+
+# =====================================================================
+# PHASE 12C3 — RC-7.3 Batched image prompt generation
+# =====================================================================
+
+import re as _re
+
+
+def _rc73_scenes_from_prompt(user_prompt):
+    """Extract (absolute scene number, MM:SS) pairs from a batch user prompt.
+
+    Batch prompts list their scenes as 'Scene N [MM:SS]: text' lines. The
+    style-anchor section (previously generated prompts) never matches because
+    it renders as '1. Hand-drawn ... scene 5 at 00:04 ...' without the
+    '[MM:SS]' bracket form.
+    """
+    return [
+        (int(number), timestamp)
+        for number, timestamp in _re.findall(
+            r"Scene (\d+) \[(\d{2}:\d{2})\]", user_prompt
+        )
+    ]
+
+
+def _rc73_prompt(scene_number, timestamp):
+    """A valid prompt dict for a scene, echoing the given identity."""
+    return {
+        "scene_number": scene_number,
+        "timestamp": timestamp,
+        "prompt_title": f"Scene {scene_number}",
+        "full_image_prompt": (
+            f"Hand-drawn 2D doodle cartoon animation, scene {scene_number} "
+            f"at {timestamp}, 16:9 aspect ratio, KaiMi educational doodle style"
+        ),
+    }
+
+
+class TestRC73BatchedGeneration:
+    """RC-7.3: long transcripts are generated in bounded scene batches so every
+    transcript scene receives exactly one prompt — with per-batch retry,
+    lossless recombination, cancellation safety, and unchanged single-shot
+    behavior for short transcripts.
+    """
+
+    @staticmethod
+    def _timestamps(n, start=0, step=1):
+        segments = []
+        for i in range(n):
+            total = start + i * step
+            segments.append({
+                "start": total,
+                "end": total + step,
+                "text": f"Segment {i + 1} narration.",
+                "time": f"{total // 60:02d}:{total % 60:02d}",
+            })
+        return segments
+
+    @staticmethod
+    def _request(n, topic="Why Do Humans Dream"):
+        from operators.image_prompt.models import ImagePromptRequest
+
+        timestamps = TestRC73BatchedGeneration._timestamps(n)
+        return ImagePromptRequest(
+            script_text="A long educational script about sleep.",
+            transcript="\n".join(
+                f"[{t['time']}] {t['text']}" for t in timestamps
+            ),
+            timestamps=timestamps,
+            topic=topic,
+            language="English",
+        )
+
+    def test_67_scenes_generate_67_prompts_in_batches(self):
+        """67 input scenes -> exactly 67 prompts, no missing/duplicate scenes,
+        original order and timestamps preserved, via 7 ordered batches."""
+        from operators.image_prompt.operator import ImagePromptOperator
+
+        request = self._request(67)
+        requested_batches = []
+
+        class FakeProviderManager:
+            def generate(self, gen_request):
+                scenes = _rc73_scenes_from_prompt(gen_request.prompt)
+                requested_batches.append([n for n, _ in scenes])
+                return SimpleNamespace(text=json.dumps(
+                    [_rc73_prompt(n, ts) for n, ts in scenes]
+                ))
+
+        operator = ImagePromptOperator(provider_manager=FakeProviderManager())
+        prompts = operator.generate_prompts(request, batch_size=10, max_retries=1)
+
+        assert len(prompts) == 67                       # final count == source
+        assert [p["scene_number"] for p in prompts] == list(range(1, 68))
+        assert [p["timestamp"] for p in prompts] == [t["time"] for t in request.timestamps]
+        assert len({p["scene_number"] for p in prompts}) == 67  # no duplicates
+        assert all(p["full_image_prompt"] for p in prompts)     # non-empty
+        # 7 batches: 10,10,10,10,10,10,7 — original order preserved.
+        assert [len(b) for b in requested_batches] == [10, 10, 10, 10, 10, 10, 7]
+        assert [b[0] for b in requested_batches] == [1, 11, 21, 31, 41, 51, 61]
+
+    def test_truncating_provider_still_covers_all_scenes(self):
+        """A provider that caps any response at 26 prompts (the RC-7.3 bug:
+        67 scenes -> 26 prompts) must now yield complete coverage, because
+        every request only ever asks for one batch of <= 10 scenes."""
+        from operators.image_prompt.operator import ImagePromptOperator
+
+        request = self._request(67)
+
+        class FakeProviderManager:
+            def generate(self, gen_request):
+                scenes = _rc73_scenes_from_prompt(gen_request.prompt)
+                payload = [_rc73_prompt(n, ts) for n, ts in scenes[:26]]
+                return SimpleNamespace(text=json.dumps(payload))
+
+        operator = ImagePromptOperator(provider_manager=FakeProviderManager())
+        prompts = operator.generate_prompts(request, batch_size=10)
+        assert len(prompts) == 67
+        assert [p["scene_number"] for p in prompts] == list(range(1, 68))
+
+    def test_unbatched_large_transcript_still_rejects_incomplete_coverage(self):
+        """The RC-7 validator must stay intact: a single-shot request for 67
+        scenes returning only 26 prompts must still fail loudly — batching is
+        the fix, not a weakened validator."""
+        from operators.image_prompt.models import ImagePromptGenerationError
+        from operators.image_prompt.operator import ImagePromptOperator
+
+        request = self._request(67)
+
+        class FakeProviderManager:
+            def generate(self, gen_request):
+                payload = [
+                    _rc73_prompt(n, request.timestamps[n - 1]["time"])
+                    for n in range(1, 27)
+                ]
+                return SimpleNamespace(text=json.dumps(payload))
+
+        operator = ImagePromptOperator(provider_manager=FakeProviderManager())
+        with pytest.raises(ImagePromptGenerationError) as exc_info:
+            operator.generate_prompts(request, batch_size=100)
+        assert "coverage is incomplete" in str(exc_info.value)
+
+    def test_failed_batch_is_retried_alone(self):
+        """A batch whose first attempt is malformed is retried alone; other
+        batches are generated exactly once."""
+        from operators.image_prompt.operator import ImagePromptOperator
+
+        request = self._request(20)
+        call_counts = {}
+
+        class FakeProviderManager:
+            def generate(self, gen_request):
+                scenes = _rc73_scenes_from_prompt(gen_request.prompt)
+                first = scenes[0][0]
+                call_counts[first] = call_counts.get(first, 0) + 1
+                if first == 11 and call_counts[first] == 1:
+                    return SimpleNamespace(text="definitely not json")
+                return SimpleNamespace(text=json.dumps(
+                    [_rc73_prompt(n, ts) for n, ts in scenes]
+                ))
+
+        operator = ImagePromptOperator(provider_manager=FakeProviderManager())
+        prompts = operator.generate_prompts(request, batch_size=10, max_retries=1)
+        assert len(prompts) == 20
+        assert call_counts[1] == 1    # batch 1: single attempt
+        assert call_counts[11] == 2   # batch 2: failed once, retried once
+
+    def test_batch_truncation_is_retried(self):
+        """A batch returning fewer prompts than its scenes is rejected and
+        retried (exact coverage is enforced per batch)."""
+        from operators.image_prompt.operator import ImagePromptOperator
+
+        request = self._request(20)
+        call_counts = {}
+
+        class FakeProviderManager:
+            def generate(self, gen_request):
+                scenes = _rc73_scenes_from_prompt(gen_request.prompt)
+                first = scenes[0][0]
+                call_counts[first] = call_counts.get(first, 0) + 1
+                if first == 1 and call_counts[first] == 1:
+                    payload = [_rc73_prompt(n, ts) for n, ts in scenes[:5]]
+                    return SimpleNamespace(text=json.dumps(payload))
+                return SimpleNamespace(text=json.dumps(
+                    [_rc73_prompt(n, ts) for n, ts in scenes]
+                ))
+
+        operator = ImagePromptOperator(provider_manager=FakeProviderManager())
+        prompts = operator.generate_prompts(request, batch_size=10, max_retries=1)
+        assert len(prompts) == 20
+        assert call_counts[1] == 2
+
+    def test_persistently_failing_batch_fails_generation_safely(self):
+        """A batch that keeps failing fails the WHOLE generation with an error
+        identifying the batch and its scenes — never a partial success."""
+        from operators.image_prompt.models import ImagePromptGenerationError
+        from operators.image_prompt.operator import ImagePromptOperator
+
+        request = self._request(20)
+
+        class FakeProviderManager:
+            def generate(self, gen_request):
+                scenes = _rc73_scenes_from_prompt(gen_request.prompt)
+                if scenes[0][0] == 11:
+                    return SimpleNamespace(text="still not json")
+                return SimpleNamespace(text=json.dumps(
+                    [_rc73_prompt(n, ts) for n, ts in scenes]
+                ))
+
+        operator = ImagePromptOperator(provider_manager=FakeProviderManager())
+        with pytest.raises(ImagePromptGenerationError) as exc_info:
+            operator.generate_prompts(request, batch_size=10, max_retries=1)
+        message = str(exc_info.value)
+        assert "Batch 2/2" in message
+        assert "scenes 11" in message
+
+    def test_failed_regeneration_leaves_stored_prompts_untouched(self, pm, monkeypatch):
+        """A failed regeneration never touches previously saved prompts."""
+        from core.image_prompt_storage import ImagePromptStorage
+        from operators.image_prompt.models import ImagePromptGenerationError
+        from operators.image_prompt.operator import ImagePromptOperator
+
+        monkeypatch.setattr("core.image_prompt_storage._PROJECTS_DIR", pm.PROJECTS_DIR)
+        name = "RC73Keep"
+        _create_sample_project(pm, name)
+        _fill_script(pm, name)
+        existing = [_rc73_prompt(1, "00:00")]
+        _write_json(pm.PROJECTS_DIR / name / "image_prompts.json", {"prompts": existing})
+
+        request = self._request(20)
+
+        class FakeProviderManager:
+            def generate(self, gen_request):
+                scenes = _rc73_scenes_from_prompt(gen_request.prompt)
+                if scenes[0][0] == 11:
+                    raise RuntimeError("provider connection reset")
+                return SimpleNamespace(text=json.dumps(
+                    [_rc73_prompt(n, ts) for n, ts in scenes]
+                ))
+
+        operator = ImagePromptOperator(provider_manager=FakeProviderManager())
+        with pytest.raises(ImagePromptGenerationError):
+            operator.generate_prompts(request, batch_size=10, max_retries=0)
+
+        stored = ImagePromptStorage().load(name)
+        assert stored.get("prompts") == existing
+
+    def test_batch_returning_local_numbers_is_rejected_and_retried(self):
+        """A model numbering scenes 1..N within each batch instead of using
+        absolute numbers is rejected and retried, never aggregated."""
+        from operators.image_prompt.operator import ImagePromptOperator
+
+        request = self._request(20)
+        call_counts = {}
+
+        class FakeProviderManager:
+            def generate(self, gen_request):
+                scenes = _rc73_scenes_from_prompt(gen_request.prompt)
+                first = scenes[0][0]
+                call_counts[first] = call_counts.get(first, 0) + 1
+                if first == 11 and call_counts[first] == 1:
+                    payload = [
+                        _rc73_prompt(local, ts)
+                        for local, (_, ts) in enumerate(scenes, start=1)
+                    ]
+                    return SimpleNamespace(text=json.dumps(payload))
+                return SimpleNamespace(text=json.dumps(
+                    [_rc73_prompt(n, ts) for n, ts in scenes]
+                ))
+
+        operator = ImagePromptOperator(provider_manager=FakeProviderManager())
+        prompts = operator.generate_prompts(request, batch_size=10, max_retries=1)
+        assert len(prompts) == 20
+        assert call_counts[11] == 2  # rejected once, retried successfully
+
+    def test_batch_inventing_timestamps_is_rejected(self):
+        """A model inventing timestamps is rejected and retried — the parser
+        never trusts the LLM to normalize time."""
+        from operators.image_prompt.operator import ImagePromptOperator
+
+        request = self._request(20)
+        call_counts = {}
+
+        class FakeProviderManager:
+            def generate(self, gen_request):
+                scenes = _rc73_scenes_from_prompt(gen_request.prompt)
+                first = scenes[0][0]
+                call_counts[first] = call_counts.get(first, 0) + 1
+                if first == 11 and call_counts[first] == 1:
+                    payload = [_rc73_prompt(n, "09:09") for n, _ in scenes]
+                    return SimpleNamespace(text=json.dumps(payload))
+                return SimpleNamespace(text=json.dumps(
+                    [_rc73_prompt(n, ts) for n, ts in scenes]
+                ))
+
+        operator = ImagePromptOperator(provider_manager=FakeProviderManager())
+        prompts = operator.generate_prompts(request, batch_size=10, max_retries=1)
+        assert len(prompts) == 20
+        assert call_counts[11] == 2
+
+    def test_cancellation_between_batches_saves_nothing(self):
+        """Cancelling during a batch stops the run; no partial output is ever
+        returned or persisted."""
+        import threading
+
+        from core.task_manager import TaskCancelledError
+        from operators.image_prompt.operator import ImagePromptOperator
+
+        request = self._request(20)
+        cancel_event = threading.Event()
+        calls = {"n": 0}
+
+        class FakeProviderManager:
+            def generate(self, gen_request):
+                calls["n"] += 1
+                if calls["n"] == 2:
+                    cancel_event.set()
+                scenes = _rc73_scenes_from_prompt(gen_request.prompt)
+                return SimpleNamespace(text=json.dumps(
+                    [_rc73_prompt(n, ts) for n, ts in scenes]
+                ))
+
+        operator = ImagePromptOperator(provider_manager=FakeProviderManager())
+        with pytest.raises(TaskCancelledError):
+            operator.generate_prompts(
+                request, batch_size=10, cancel_event=cancel_event, max_retries=1
+            )
+        assert calls["n"] == 2  # batch 2 started, then the cancel check fired
+
+    def test_batch_progress_reports_batch_information(self):
+        """Progress messages carry batch/scene information for the UI."""
+        from operators.image_prompt.operator import ImagePromptOperator
+
+        request = self._request(15)
+        messages = []
+
+        class FakeProviderManager:
+            def generate(self, gen_request):
+                scenes = _rc73_scenes_from_prompt(gen_request.prompt)
+                return SimpleNamespace(text=json.dumps(
+                    [_rc73_prompt(n, ts) for n, ts in scenes]
+                ))
+
+        operator = ImagePromptOperator(provider_manager=FakeProviderManager())
+        operator.generate_prompts(
+            request,
+            batch_size=10,
+            progress_callback=lambda stage, message, fraction: messages.append(message),
+        )
+        joined = "\n".join(messages)
+        assert "Batch 1/2" in joined
+        assert "Batch 2/2" in joined
+        assert "scenes 1\u201310 of 15" in joined
+        assert "scenes 11\u201315 of 15" in joined
+
+    def test_short_transcript_uses_single_request(self):
+        """Short transcripts keep the legacy single-request path (one call)."""
+        from operators.image_prompt.operator import ImagePromptOperator
+
+        timestamps = self._timestamps(3)
+        request = self._request(3)
+        calls = {"n": 0}
+
+        class FakeProviderManager:
+            def generate(self, gen_request):
+                calls["n"] += 1
+                payload = [
+                    _rc73_prompt(i + 1, timestamps[i]["time"])
+                    for i in range(len(timestamps))
+                ]
+                return SimpleNamespace(text=json.dumps(payload))
+
+        operator = ImagePromptOperator(provider_manager=FakeProviderManager())
+        prompts = operator.generate_prompts(request, max_retries=1)
+        assert calls["n"] == 1
+        assert len(prompts) == 3
+
+    def test_default_batch_size_derives_from_token_budget(self):
+        """The default batch size is derived from the provider token budget,
+        not hardcoded, and an explicit value wins."""
+        from operators.image_prompt.operator import ImagePromptOperator
+
+        assert ImagePromptOperator._resolve_batch_size(None, 67) == 10
+        assert ImagePromptOperator._resolve_batch_size(3, 67) == 3

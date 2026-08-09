@@ -44,7 +44,10 @@ class MainWindow(QMainWindow):
     def _init_theme(self):
         self.theme = ThemeManager.instance()
         saved = AppSettings().get_theme()
-        mode = saved if saved in ("dark", "light") else "dark"
+        # Dark Mode is the only supported appearance (v1.x). A legacy
+        # "light" preference (or any other value) falls back safely to
+        # "dark" so old configs never produce an invalid theme state.
+        mode = saved if saved == "dark" else "dark"
         self.theme.set_mode(mode)
         self.theme.on_change(lambda mode: self._on_theme_changed())
 
