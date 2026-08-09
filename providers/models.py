@@ -35,6 +35,7 @@ class GenerationRequest:
     temperature: float = 0.7
     max_tokens: int = 8192
     model: str = ""
+    response_format: str = ""
 
 
 @dataclass

@@ -8156,6 +8156,367 @@ class TestRC73BatchedGeneration:
 # FIX F — No duplicate timestamps at the generation/storage boundary
 # =====================================================================
 
+class TestFixGProviderJsonReliability:
+    """FIX G: JSON handling stays tolerant of wrappers and strict on content."""
+
+    @staticmethod
+    def _request(n):
+        return TestRC73BatchedGeneration._request(n, topic="Dream Science")
+
+    @staticmethod
+    def _payload(scenes, prefix=""):
+        return json.dumps([
+            {
+                **_rc73_prompt(number, timestamp),
+                "full_image_prompt": (
+                    f"{prefix}Hand-drawn 2D doodle cartoon animation, "
+                    f'a curious student asks, "Why do we dream?", scene '
+                    f"{number}, 16:9 aspect ratio, KaiMi educational doodle style"
+                ),
+            }
+            for number, timestamp in scenes
+        ])
+
+    def test_valid_json_parses_exactly_as_before(self):
+        prompts = ImagePromptParser().parse(self._payload([(1, "00:00")]))
+        assert prompts[0]["scene_number"] == 1
+        assert prompts[0]["timestamp"] == "00:00"
+        assert 'asks, "Why do we dream?"' in prompts[0]["full_image_prompt"]
+
+    def test_markdown_json_fence_is_unwrapped(self):
+        raw = "```json\n" + self._payload([(1, "00:00")]) + "\n```"
+        assert ImagePromptParser().parse(raw)[0]["scene_number"] == 1
+
+    def test_leading_and_trailing_whitespace_is_accepted(self):
+        raw = "\n\n  " + self._payload([(1, "00:00")]) + "  \n"
+        assert ImagePromptParser().parse(raw)[0]["timestamp"] == "00:00"
+
+    def test_escaped_quotes_survive_decoding_unchanged(self):
+        body = (
+            'Hand-drawn 2D doodle cartoon animation, a student asks, '
+            '"Why do we dream?", 16:9 aspect ratio, KaiMi educational doodle style'
+        )
+        raw = json.dumps([{
+            "scene_number": 1,
+            "timestamp": "00:00",
+            "prompt_title": "Question",
+            "full_image_prompt": body,
+        }])
+        assert ImagePromptParser().parse(raw)[0]["full_image_prompt"] == body
+
+    def test_long_prompt_with_punctuation_and_quotes_remains_intact(self):
+        body = (
+            'Hand-drawn 2D doodle cartoon animation, "dream symbols" swirl; '
+            + "soft classroom details, " * 200
+            + 'a student asks, "What changes during sleep?", 16:9 aspect ratio, '
+            "KaiMi educational doodle style"
+        )
+        raw = json.dumps([{
+            "scene_number": 1,
+            "timestamp": "00:00",
+            "prompt_title": "Long",
+            "full_image_prompt": body,
+        }])
+        assert ImagePromptParser().parse(raw)[0]["full_image_prompt"] == body
+
+    def test_genuine_malformed_json_is_rejected(self):
+        with pytest.raises(ImagePromptParseError) as exc_info:
+            ImagePromptParser().parse(
+                '[{"scene_number": 1 "timestamp": "00:00"}]'
+            )
+        assert "Invalid JSON" in str(exc_info.value)
+
+    def test_malformed_first_attempt_then_valid_json_succeeds(self):
+        from operators.image_prompt.operator import ImagePromptOperator
+
+        request = self._request(20)
+        attempts = []
+        self_outer = self
+
+        class FakeProviderManager:
+            def generate(self, gen_request):
+                attempts.append(gen_request.prompt)
+                scenes = _rc73_scenes_from_prompt(gen_request.prompt)
+                if scenes[0][0] == 11 and len(attempts) == 2:
+                    return SimpleNamespace(text='[{"scene_number": 11 "timestamp": "00:10"}]')
+                return SimpleNamespace(text=self_outer._payload(scenes))
+
+        prompts = ImagePromptOperator(provider_manager=FakeProviderManager()).generate_prompts(
+            request, batch_size=10, max_retries=1
+        )
+        assert len(prompts) == 20
+        assert "Your previous response could not be parsed as valid JSON" in attempts[-1]
+        assert "escape quotation marks inside strings" in attempts[-1]
+
+    def test_retry_count_remains_bounded_by_max_retries(self):
+        from operators.image_prompt.models import ImagePromptGenerationError
+        from operators.image_prompt.operator import ImagePromptOperator
+
+        request = self._request(20)
+        calls = 0
+
+        class FakeProviderManager:
+            def generate(self, gen_request):
+                nonlocal calls
+                calls += 1
+                return SimpleNamespace(text='[{"scene_number": 1 "timestamp": "00:00"}]')
+
+        with pytest.raises(ImagePromptGenerationError):
+            ImagePromptOperator(provider_manager=FakeProviderManager()).generate_prompts(
+                request, batch_size=10, max_retries=1
+            )
+        assert calls == 2
+
+    def test_exhausted_malformed_attempts_report_batch_context(self):
+        from operators.image_prompt.models import ImagePromptGenerationError
+        from operators.image_prompt.operator import ImagePromptOperator
+
+        request = self._request(20)
+        self_outer = self
+
+        class FakeProviderManager:
+            def generate(self, gen_request):
+                scenes = _rc73_scenes_from_prompt(gen_request.prompt)
+                if scenes[0][0] == 11:
+                    return SimpleNamespace(text='[{"scene_number": 11 "timestamp": "00:10"}]')
+                return SimpleNamespace(text=self_outer._payload(scenes))
+
+        with pytest.raises(ImagePromptGenerationError) as exc_info:
+            ImagePromptOperator(provider_manager=FakeProviderManager()).generate_prompts(
+                request, batch_size=10, max_retries=1
+            )
+        message = str(exc_info.value)
+        assert "Batch 2/2" in message
+        assert "scenes 11" in message
+        assert "Invalid JSON" in message
+
+    def test_missing_scene_fails_exact_batch_validation(self):
+        from operators.image_prompt.models import ImagePromptGenerationError
+        from operators.image_prompt.operator import ImagePromptOperator
+
+        request = self._request(20)
+        self_outer = self
+
+        class FakeProviderManager:
+            def generate(self, gen_request):
+                scenes = _rc73_scenes_from_prompt(gen_request.prompt)
+                if scenes[0][0] == 1:
+                    scenes = scenes[:-1]
+                return SimpleNamespace(text=self_outer._payload(scenes))
+
+        with pytest.raises(ImagePromptGenerationError) as exc_info:
+            ImagePromptOperator(provider_manager=FakeProviderManager()).generate_prompts(
+                request, batch_size=10, max_retries=0
+            )
+        assert "returned 9 prompts for 10 scenes" in str(exc_info.value)
+
+    def test_duplicate_scene_fails_exact_batch_validation(self):
+        from operators.image_prompt.models import ImagePromptGenerationError
+        from operators.image_prompt.operator import ImagePromptOperator
+
+        request = self._request(20)
+        self_outer = self
+
+        class FakeProviderManager:
+            def generate(self, gen_request):
+                scenes = _rc73_scenes_from_prompt(gen_request.prompt)
+                payload = json.loads(self_outer._payload(scenes))
+                if scenes[0][0] == 1:
+                    payload[-1]["scene_number"] = payload[0]["scene_number"]
+                return SimpleNamespace(text=json.dumps(payload))
+
+        with pytest.raises(ImagePromptGenerationError) as exc_info:
+            ImagePromptOperator(provider_manager=FakeProviderManager()).generate_prompts(
+                request, batch_size=10, max_retries=0
+            )
+        assert "duplicates scene number" in str(exc_info.value)
+
+    def test_structured_timestamps_remain_exact(self):
+        from operators.image_prompt.operator import ImagePromptOperator
+
+        request = self._request(20)
+        self_outer = self
+
+        class FakeProviderManager:
+            def generate(self, gen_request):
+                scenes = _rc73_scenes_from_prompt(gen_request.prompt)
+                return SimpleNamespace(text=self_outer._payload(scenes))
+
+        prompts = ImagePromptOperator(provider_manager=FakeProviderManager()).generate_prompts(
+            request, batch_size=10
+        )
+        assert [p["timestamp"] for p in prompts] == [t["time"] for t in request.timestamps]
+
+    def test_full_image_prompt_does_not_gain_leading_timestamp(self):
+        prompts = ImagePromptParser().parse(self._payload([(1, "00:00")], prefix="[0:00] "))
+        assert not has_leading_timestamp_prefix(prompts[0]["full_image_prompt"])
+
+    def test_existing_prompts_not_modified_after_failed_regeneration(self, pm, monkeypatch):
+        from core.image_prompt_storage import ImagePromptStorage
+        from operators.image_prompt.models import ImagePromptGenerationError
+        from operators.image_prompt.operator import ImagePromptOperator
+
+        monkeypatch.setattr("core.image_prompt_storage._PROJECTS_DIR", pm.PROJECTS_DIR)
+        name = "FixGExisting"
+        _create_sample_project(pm, name)
+        existing = [_rc73_prompt(1, "00:00")]
+        _write_json(pm.PROJECTS_DIR / name / "image_prompts.json", {"prompts": existing})
+
+        class FakeProviderManager:
+            def generate(self, gen_request):
+                return SimpleNamespace(text='[{"scene_number": 1 "timestamp": "00:00"}]')
+
+        with pytest.raises(ImagePromptGenerationError):
+            ImagePromptOperator(provider_manager=FakeProviderManager()).generate_prompts(
+                self._request(20), batch_size=10, max_retries=0
+            )
+        assert ImagePromptStorage().load(name)["prompts"] == existing
+
+    def test_failed_batch_does_not_partially_persist(self, pm, monkeypatch):
+        from core.image_prompt_storage import ImagePromptStorage
+        from operators.image_prompt.models import ImagePromptGenerationError
+        from operators.image_prompt.operator import ImagePromptOperator
+
+        monkeypatch.setattr("core.image_prompt_storage._PROJECTS_DIR", pm.PROJECTS_DIR)
+        name = "FixGPartial"
+        _create_sample_project(pm, name)
+        self_outer = self
+
+        class FakeProviderManager:
+            def generate(self, gen_request):
+                scenes = _rc73_scenes_from_prompt(gen_request.prompt)
+                if scenes[0][0] == 11:
+                    return SimpleNamespace(text='[{"scene_number": 11 "timestamp": "00:10"}]')
+                return SimpleNamespace(text=self_outer._payload(scenes))
+
+        with pytest.raises(ImagePromptGenerationError):
+            ImagePromptOperator(provider_manager=FakeProviderManager()).generate_prompts(
+                self._request(20), batch_size=10, max_retries=0
+            )
+        assert ImagePromptStorage().load(name).get("prompts", []) == []
+
+    def test_successful_batches_remain_ordered(self):
+        from operators.image_prompt.operator import ImagePromptOperator
+
+        request = self._request(30)
+        seen = []
+        self_outer = self
+
+        class FakeProviderManager:
+            def generate(self, gen_request):
+                scenes = _rc73_scenes_from_prompt(gen_request.prompt)
+                seen.append([number for number, _ in scenes])
+                return SimpleNamespace(text=self_outer._payload(scenes))
+
+        prompts = ImagePromptOperator(provider_manager=FakeProviderManager()).generate_prompts(
+            request, batch_size=10
+        )
+        assert seen == [list(range(1, 11)), list(range(11, 21)), list(range(21, 31))]
+        assert [p["scene_number"] for p in prompts] == list(range(1, 31))
+
+    def test_export_still_one_timestamp_per_physical_line(self):
+        prompts = [
+            {
+                "scene_number": 1,
+                "timestamp": "00:00",
+                "prompt_title": "A",
+                "full_image_prompt": "prompt",
+            },
+            {
+                "scene_number": 2,
+                "timestamp": "00:08",
+                "prompt_title": "B",
+                "full_image_prompt": "prompt",
+            },
+        ]
+        assert ExportService.build_image_prompts_txt(prompts) == (
+            "[00:00] prompt\n[00:08] prompt"
+        )
+
+    def test_image_prompt_requests_ask_for_json_array_response_format(self):
+        from operators.image_prompt.operator import ImagePromptOperator
+
+        captured = []
+        self_outer = self
+
+        class FakeProviderManager:
+            def generate(self, gen_request):
+                captured.append(gen_request.response_format)
+                scenes = _rc73_scenes_from_prompt(gen_request.prompt) or [(1, "00:00")]
+                return SimpleNamespace(text=self_outer._payload(scenes))
+
+        ImagePromptOperator(provider_manager=FakeProviderManager()).generate_prompts(
+            self._request(1), max_retries=0
+        )
+        assert captured == ["json_array"]
+
+    def test_67_scene_batch_three_retry_succeeds_end_to_end(self):
+        from operators.image_prompt.operator import ImagePromptOperator
+
+        request = self._request(67)
+        calls_by_first = {}
+        batches = []
+        self_outer = self
+
+        class FakeProviderManager:
+            def generate(self, gen_request):
+                scenes = _rc73_scenes_from_prompt(gen_request.prompt)
+                first = scenes[0][0]
+                calls_by_first[first] = calls_by_first.get(first, 0) + 1
+                if calls_by_first[first] == 1:
+                    batches.append([number for number, _ in scenes])
+                if first == 21 and calls_by_first[first] == 1:
+                    return SimpleNamespace(text='[{"scene_number": 21 "timestamp": "00:20"}]')
+                return SimpleNamespace(text=self_outer._payload(scenes))
+
+        prompts = ImagePromptOperator(provider_manager=FakeProviderManager()).generate_prompts(
+            request, batch_size=10, max_retries=1
+        )
+        assert len(prompts) == 67
+        assert batches == [
+            list(range(1, 11)),
+            list(range(11, 21)),
+            list(range(21, 31)),
+            list(range(31, 41)),
+            list(range(41, 51)),
+            list(range(51, 61)),
+            list(range(61, 68)),
+        ]
+        assert calls_by_first[21] == 2
+        assert [p["scene_number"] for p in prompts] == list(range(1, 68))
+        assert [p["timestamp"] for p in prompts] == [t["time"] for t in request.timestamps]
+        assert len({p["scene_number"] for p in prompts}) == 67
+        assert all(not has_leading_timestamp_prefix(p["full_image_prompt"]) for p in prompts)
+
+    def test_67_scene_batch_three_retry_exhaustion_fails_safely(self, pm, monkeypatch):
+        from core.image_prompt_storage import ImagePromptStorage
+        from operators.image_prompt.models import ImagePromptGenerationError
+        from operators.image_prompt.operator import ImagePromptOperator
+
+        monkeypatch.setattr("core.image_prompt_storage._PROJECTS_DIR", pm.PROJECTS_DIR)
+        name = "FixG67Fail"
+        _create_sample_project(pm, name)
+        existing = [_rc73_prompt(1, "00:00")]
+        _write_json(pm.PROJECTS_DIR / name / "image_prompts.json", {"prompts": existing})
+        self_outer = self
+
+        class FakeProviderManager:
+            def generate(self, gen_request):
+                scenes = _rc73_scenes_from_prompt(gen_request.prompt)
+                if scenes[0][0] == 21:
+                    return SimpleNamespace(text='[{"scene_number": 21 "timestamp": "00:20"}]')
+                return SimpleNamespace(text=self_outer._payload(scenes))
+
+        with pytest.raises(ImagePromptGenerationError) as exc_info:
+            ImagePromptOperator(provider_manager=FakeProviderManager()).generate_prompts(
+                self._request(67), batch_size=10, max_retries=1
+            )
+        message = str(exc_info.value)
+        assert "Batch 3/7" in message
+        assert "scenes 21" in message and "30" in message
+        assert ImagePromptStorage().load(name)["prompts"] == existing
+
+
 class TestFixFDeduplicateTimestamps:
     """FIX F: the scene timestamp is structured metadata ONLY. The stored
     ``full_image_prompt`` must NEVER begin with a timestamp — the generation

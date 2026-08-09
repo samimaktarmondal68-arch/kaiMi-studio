@@ -209,16 +209,20 @@ class ImagePromptBuilder:
         consistent with the Production Stage 7 reference format (RC-7).
         """
         return (
-            "Your previous response did not match the required format. "
-            "Respond with ONLY a valid JSON array where every object has "
-            "exactly these keys: scene_number (integer), timestamp "
-            "(MM:SS string), prompt_title (string), and full_image_prompt "
-            "(string: one continuous natural-language paragraph in the "
-            "Production Stage 7 reference format, opening with the hand-drawn "
-            "2D doodle cartoon animation style phrase and ending with the "
-            "16:9 aspect ratio and the KaiMi educational doodle style tag, "
-            "with no leading timestamp or metadata prefix). "
-            "No markdown, no explanations, no extra text."
+            "Your previous response could not be parsed as valid JSON. "
+            "Respond with valid JSON only: no Markdown fences, no commentary "
+            "before the JSON, and no commentary after the JSON. Return one "
+            "JSON array where every requested scene is represented exactly "
+            "once and every object has exactly these keys: scene_number "
+            "(integer), timestamp (MM:SS string structured metadata), "
+            "prompt_title (string), and full_image_prompt (string containing "
+            "only the visual prompt). Scene numbers must remain absolute. "
+            "Use valid JSON string escaping: escape quotation marks inside "
+            "strings, do not use raw newlines inside JSON string values, and "
+            "do not use trailing commas. full_image_prompt must be one "
+            "continuous natural-language paragraph in the Production Stage 7 "
+            "reference format, must not begin with [M:SS], [MM:SS], or a bare "
+            "timestamp, and must not include timestamp metadata."
         )
 
     @staticmethod

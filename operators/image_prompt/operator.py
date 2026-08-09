@@ -466,6 +466,7 @@ class ImagePromptOperator:
             generation_request = GenerationRequest(
                 prompt=user_prompt,
                 system_prompt=system_prompt,
+                response_format="json_array",
             )
             response = self._get_provider_manager().generate(generation_request)
         except ProviderNotConfiguredError as exc:

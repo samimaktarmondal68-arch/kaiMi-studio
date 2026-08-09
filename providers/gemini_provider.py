@@ -90,12 +90,15 @@ class GeminiProvider(BaseProvider):
 
         model = request.model.strip() or self._resolved_model
         prompt = request.prompt
+        config = None
+        if request.response_format == "json_array":
+            config = {"response_mime_type": "application/json"}
 
         try:
-            response = self._client.models.generate_content(
-                model=model,
-                contents=prompt,
-            )
+            kwargs = {"model": model, "contents": prompt}
+            if config is not None:
+                kwargs["config"] = config
+            response = self._client.models.generate_content(**kwargs)
         except Exception as exc:
             raise self._translate_error(exc, model) from exc
 

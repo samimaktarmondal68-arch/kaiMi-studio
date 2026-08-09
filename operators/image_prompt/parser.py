@@ -92,14 +92,22 @@ class ImagePromptParser:
         return prompts
 
     def _extract_json(self, text: str) -> str:
-        """Extract JSON array from text.
+        """Return the raw JSON payload after removing harmless wrappers.
 
-        Handles cases where the AI includes text before or after the JSON.
+        FIX G: tolerate whitespace and a single Markdown JSON fence around an
+        otherwise valid response, but do not attempt to repair malformed JSON
+        or strip arbitrary commentary. Syntax correctness remains the decoder's
+        job so bad provider output still fails into the bounded retry path.
         """
-        match = re.search(r"\[.*\]", text, re.DOTALL)
-        if match:
-            return match.group(0)
-        return text.strip()
+        candidate = text.strip()
+        fence = re.fullmatch(
+            r"```(?:json|JSON)?\s*(.*?)\s*```",
+            candidate,
+            re.DOTALL,
+        )
+        if fence:
+            return fence.group(1).strip()
+        return candidate
 
     def _parse_json(self, json_str: str) -> Any:
         """Parse JSON string into Python object."""
