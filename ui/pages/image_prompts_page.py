@@ -675,10 +675,13 @@ class ImagePromptsPage(QWidget):
             self.failure_label.setVisible(False)
 
     def _poll_progress(self):
-        """Mirror TaskManager stage state into an indeterminate progress widget.
+        """Mirror TaskManager stage state into the progress widget.
 
-        No fabricated percentages: the bar runs indeterminate and the step
-        line shows the real pipeline stage plus elapsed time (RC-7).
+        RC-7.3 reports a REAL batch fraction through the task's progress
+        channel, so the bar is determinate with an exact percentage while
+        batches run (Batch 4/7 -> ~57%); only phases with no fraction yet
+        (preparing source, provider selection) use the animated indeterminate
+        treatment (FIX D).
         """
         if not self.task_manager.is_running:
             self._progress_poll.stop()
@@ -686,9 +689,16 @@ class ImagePromptsPage(QWidget):
         stage_key = self.task_manager.stage or "generating"
         stage_label = STAGE_LABELS.get(stage_key, stage_key.title())
         message = self.task_manager.status_message or "Generating image prompts..."
-        self.progress_widget.set_indeterminate(
-            status=message, step=f"Stage: {stage_label}"
-        )
+        fraction = self.task_manager.progress
+        if fraction > 0:
+            pct = max(1, min(100, int(round(fraction * 100))))
+            self.progress_widget.set_progress(
+                pct, status=message, step=f"Stage: {stage_label}"
+            )
+        else:
+            self.progress_widget.set_indeterminate(
+                status=message, step=f"Stage: {stage_label}"
+            )
         if self._gen_started_at is not None:
             self.progress_widget.set_elapsed(time.monotonic() - self._gen_started_at)
 

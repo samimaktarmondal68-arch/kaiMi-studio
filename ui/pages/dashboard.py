@@ -14,8 +14,8 @@ from core.project_manager import ProjectManager
 from core.theme import Fonts, Theme
 from ui.theme_pyside import ThemeManager
 from ui.widgets import (
-    EmptyState, IconProvider, ModernButton, ModernCard, MutedLabel,
-    PageTitle, rebuild_page_layout, SectionHeader, StatusBadge,
+    EmptyState, IconProvider, ModernButton, ModernCard, ModernProgressBar,
+    MutedLabel, PageTitle, rebuild_page_layout, SectionHeader, StatusBadge,
 )
 from ui.dialogs import NewProjectDialog
 
@@ -67,23 +67,6 @@ class _ContinueProjectCard(ModernCard):
         h_layout.setContentsMargins(0, 0, 0, 0)
         h_layout.setSpacing(20)
 
-        progress_ring = QFrame()
-        progress_ring.setFixedSize(80, 80)
-        gradient = f"qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {c.PRIMARY_LIGHT}, stop:1 {c.SURFACE})"
-        progress_ring.setStyleSheet(
-            f"background: {gradient}; border-radius: 40px; "
-            f"border: 2px solid {c.PRIMARY};"
-        )
-        ring_layout = QVBoxLayout(progress_ring)
-        ring_layout.setAlignment(Qt.AlignCenter)
-        pct_label = QLabel(f"{pct}%")
-        pct_label.setStyleSheet(f"{Fonts.css(22, 'bold', c.PRIMARY)} background: transparent;")
-        ring_layout.addWidget(pct_label)
-        pct_sub = QLabel("complete")
-        pct_sub.setStyleSheet(f"{Fonts.tiny(c.TEXT_MUTED)} background: transparent;")
-        ring_layout.addWidget(pct_sub)
-        h_layout.addWidget(progress_ring)
-
         col_content = QVBoxLayout()
         col_content.setSpacing(6)
 
@@ -95,20 +78,26 @@ class _ContinueProjectCard(ModernCard):
         meta_lbl.setStyleSheet(f"{Fonts.caption(c.TEXT_SECONDARY)} background: transparent;")
         col_content.addWidget(meta_lbl)
 
-        progress_bar_bg = QFrame()
-        progress_bar_bg.setFixedHeight(6)
-        progress_bar_bg.setStyleSheet(f"background-color: {c.SURFACE}; border-radius: 3px;")
-        progress_fill = QFrame()
-        progress_fill.setStyleSheet(
-            f"background-color: {c.PRIMARY}; border-radius: 3px; "
-            f"min-width: {max(pct, 2)}%; max-width: {pct}%; min-height: 6px; max-height: 6px;"
+        progress_row = QHBoxLayout()
+        progress_row.setSpacing(8)
+
+        # FIX E: the Continue card uses the shared modern animated bar.
+        progress_bar = ModernProgressBar()
+        progress_bar.setFixedHeight(6)
+        progress_bar.setValue(pct)
+        progress_row.addWidget(progress_bar, 1)
+
+        # FIX C: the percentage and 'complete' caption are plain text beside
+        # the real progress indicator — no decorative ring/box around them.
+        pct_lbl = QLabel(f"{pct}%")
+        pct_lbl.setStyleSheet(
+            f"{Fonts.caption(c.PRIMARY)} background: transparent; font-weight: 600;"
         )
-        bar_layout = QHBoxLayout(progress_bar_bg)
-        bar_layout.setContentsMargins(0, 0, 0, 0)
-        bar_layout.setSpacing(0)
-        bar_layout.addWidget(progress_fill)
-        bar_layout.addStretch()
-        col_content.addWidget(progress_bar_bg)
+        progress_row.addWidget(pct_lbl)
+        complete_lbl = QLabel("complete")
+        complete_lbl.setStyleSheet(f"{Fonts.tiny(c.TEXT_MUTED)} background: transparent;")
+        progress_row.addWidget(complete_lbl)
+        col_content.addLayout(progress_row)
 
         if action.label:
             stage_badge = QFrame()
@@ -224,19 +213,11 @@ class _RecentProjectCard(ModernCard):
 
         self.content_layout.addStretch()
 
-        progress_bg = QFrame()
-        progress_bg.setFixedHeight(4)
-        progress_bg.setStyleSheet(f"background-color: {c.SURFACE}; border-radius: 2px;")
-        progress_fill = QFrame()
-        progress_fill.setStyleSheet(
-            f"background-color: {c.PRIMARY}; border-radius: 2px; "
-            f"min-width: {max(pct, 2)}%; max-width: {pct}%; min-height: 4px; max-height: 4px;"
-        )
-        bar_layout = QHBoxLayout(progress_bg)
-        bar_layout.setContentsMargins(0, 0, 0, 0)
-        bar_layout.addWidget(progress_fill)
-        bar_layout.addStretch()
-        self.content_layout.addWidget(progress_bg)
+        # FIX E: recent-project card uses the shared modern animated bar.
+        progress_bar = ModernProgressBar()
+        progress_bar.setFixedHeight(4)
+        progress_bar.setValue(pct)
+        self.content_layout.addWidget(progress_bar)
 
         bottom = QHBoxLayout()
         bottom.setSpacing(8)

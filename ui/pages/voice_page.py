@@ -1880,13 +1880,20 @@ class VoicePage(QWidget):
         self._gen_thread.start()
 
     def _on_voice_stage(self, stage, message, fraction):
-        """Update the progress bar to the real pipeline stage.
+        """Update the progress display to the real pipeline stage.
 
-        ``fraction`` is the measured position of the completed stage, so the
-        bar lands on the actual stage instead of a fake percentage.
+        Measured stage milestones (model init, text prep, WAV encoding, file
+        save) drive the determinate bar. The blocking Kokoro synthesis stage
+        has no measurable completion percentage (the service reports only a
+        fixed entry fraction), so it uses the animated indeterminate
+        treatment with the elapsed-time readout rather than a fake percentage
+        (FIX D).
         """
-        if stage == "synthesis" and self._synthesis_started_at is None:
-            self._synthesis_started_at = time.monotonic()
+        if stage == "synthesis":
+            if self._synthesis_started_at is None:
+                self._synthesis_started_at = time.monotonic()
+            self.progress_widget.set_indeterminate(status=message)
+            return
         pct = int(max(0.0, min(1.0, fraction)) * 100)
         self.progress_widget.set_progress(pct, status=message)
 

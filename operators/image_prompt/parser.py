@@ -12,6 +12,32 @@ from operators.image_prompt.models import ImagePromptParseError
 
 _TIMESTAMP_PATTERN = re.compile(r"^\d{2}:\d{2}$")
 
+#: A leading bracketed [M:SS] / [MM:SS] timestamp prefix that some providers
+#: still prepend to the visual prompt despite the generation contract (FIX F).
+#: Deliberately narrow: anchored to the very beginning of the prompt and only
+#: matching the bracketed time forms the provider actually emits, so
+#: timestamp-like text inside legitimate scene content is never touched.
+_LEADING_TIMESTAMP_PREFIX = re.compile(r"^\s*\[\d{1,2}:\d{2}\]\s*")
+
+#: The FIX F invariant guard — after normalization no stored/generated prompt
+#: may begin with a [M:SS] metadata prefix. Requires whitespace after the
+#: bracket so it never flags bracketed scene content, and it is a strict
+#: subset of ``_LEADING_TIMESTAMP_PREFIX`` (the strip pattern also removes the
+#: zero-space form), so a prompt passing this check is guaranteed to have been
+#: left untouched by normalization.
+_LEADING_TIMESTAMP_INVARIANT = re.compile(r"^\s*\[\d{1,2}:\d{2}\]\s+")
+
+
+def has_leading_timestamp_prefix(prompt: str) -> bool:
+    """Report whether a prompt still begins with a [M:SS] metadata prefix.
+
+    The single source of truth for the FIX F invariant that every parsed,
+    stored and exported prompt must satisfy — tests reuse this helper instead
+    of duplicating the regex, so the guard and the parser's normalization can
+    never drift apart.
+    """
+    return bool(_LEADING_TIMESTAMP_INVARIANT.match(prompt))
+
 _REQUIRED_FIELDS = frozenset({
     "scene_number",
     "timestamp",
@@ -58,6 +84,7 @@ class ImagePromptParser:
         data = self._parse_json(json_str)
         prompts = self._validate_schema(data)
         self._validate_types(prompts)
+        self._normalize_prompts(prompts)
         self._validate_timestamps(prompts)
         self._validate_ordering(prompts)
         self._validate_duplicates(prompts)
@@ -131,6 +158,35 @@ class ImagePromptParser:
                         f"expected {expected_type.__name__}, "
                         f"got {type(value).__name__}."
                     )
+
+    @staticmethod
+    def strip_leading_timestamp(prompt: str) -> str:
+        """Remove a leading [M:SS] metadata prefix from a visual prompt.
+
+        FIX F: the scene timestamp is structured metadata only, so
+        ``full_image_prompt`` must never begin with a timestamp. Providers
+        occasionally echo a leading "[0:00]" prefix despite the generation
+        contract; this strips exactly that LEADING bracketed timestamp and
+        leaves everything else byte-identical. Timestamp-like text inside
+        the scene content (e.g. 'a clock reading 00:00') is never touched.
+        """
+        match = _LEADING_TIMESTAMP_PREFIX.match(prompt)
+        if not match:
+            return prompt
+        return prompt[match.end():].lstrip()
+
+    def _normalize_prompts(self, prompts: list[dict]) -> None:
+        """Enforce the FIX F invariant: no prompt begins with a timestamp.
+
+        Runs right after type validation so the clean visual prompt — never
+        the duplicated metadata — is what gets validated, stored, displayed
+        and exported. A prompt that consists of nothing but a timestamp
+        prefix becomes empty and is then rejected by ``_validate_non_empty``.
+        """
+        for prompt in prompts:
+            prompt["full_image_prompt"] = self.strip_leading_timestamp(
+                prompt["full_image_prompt"]
+            )
 
     def _validate_timestamps(self, prompts: list[dict]) -> None:
         """Validate that all timestamps are in MM:SS format."""

@@ -127,9 +127,7 @@ class ScriptPage(QWidget):
         self.preset_name_label.setStyleSheet(f"{Fonts.css(13, '600', c.PRIMARY)}")
         self.preset_range_label.setStyleSheet(f"{Fonts.caption(c.TEXT_SECONDARY)}")
         self.preset_duration_label.setStyleSheet(f"{Fonts.caption(c.TEXT_SECONDARY)}")
-        self.selection_frame.setStyleSheet(
-            f"background-color: {c.SURFACE}; border: 1px solid {c.BORDER}; border-radius: 10px;"
-        )
+        self.selection_frame.setStyleSheet("background-color: transparent; border: none;")
         self.status_badge.update_colors(c.PRIMARY, c.PRIMARY_LIGHT)
 
     def cleanup(self):
@@ -219,11 +217,11 @@ class ScriptPage(QWidget):
         # selection change.
         self.selection_frame = QFrame()
         self.selection_frame.setAttribute(Qt.WA_StyledBackground, True)
-        self.selection_frame.setStyleSheet(
-            f"background-color: {c.SURFACE}; border: 1px solid {c.BORDER}; border-radius: 10px;"
-        )
+        # FIX C: this panel is informational metadata — render as clean
+        # Label/Value rows with no surrounding box.
+        self.selection_frame.setStyleSheet("background-color: transparent; border: none;")
         selection_layout = QVBoxLayout(self.selection_frame)
-        selection_layout.setContentsMargins(12, 10, 12, 10)
+        selection_layout.setContentsMargins(0, 2, 0, 2)
         selection_layout.setSpacing(4)
 
         self.selection_title = QLabel("Selected Script Length")

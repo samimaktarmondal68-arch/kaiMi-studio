@@ -4,13 +4,13 @@ from operators.image_prompt.models import ImagePromptRequest
 from core.prompts import load_all_system_prompts
 
 #: Production Stage 7 reference template embedded in every generation request.
-#: The model must reproduce this exact writing style: timestamp line first,
-#: then one continuous natural-language paragraph opening with
-#: "Hand-drawn 2D doodle cartoon animation, ..." that flows through style,
-#: character, environment, action, camera, narration focus, negative wording,
-#: aspect ratio, and the KaiMi style tag — with no labels or metadata.
+#: The model must reproduce this exact writing style: one continuous
+#: natural-language paragraph opening with "Hand-drawn 2D doodle cartoon
+#: animation, ..." that flows through style, character, environment, action,
+#: camera, narration focus, negative wording, aspect ratio, and the KaiMi
+#: style tag — with no labels or metadata. The scene timestamp is structured
+#: metadata and must NEVER appear inside the prompt text (FIX F).
 PROMPT_TEMPLATE = (
-    "[0:00]\n"
     "Hand-drawn 2D doodle cartoon animation, soft hand-drawn lines with clean "
     "bold outlines and gentle pastel fills, a friendly teacher character "
     "standing beside a large chalkboard, inside a bright sunny classroom, the "
@@ -161,27 +161,31 @@ class ImagePromptBuilder:
             f"Return your response as a JSON array of prompt objects.\n\n"
             f"Each object must have exactly these keys (all values must be non-empty):\n"
             f'- "scene_number": integer\n'
-            f'- "timestamp": zero-padded "MM:SS" string, e.g. "00:00" (the in-prompt '
-            f"first line uses [M:SS] without padding, e.g. [0:00], for the same scene)\n"
+            f'- "timestamp": zero-padded "MM:SS" string, e.g. "00:00" (structured '
+            f"metadata — never embed it in the prompt text)\n"
             f'- "prompt_title": short descriptive title\n'
             f'- "full_image_prompt": complete production-ready prompt\n\n'
             f"The full_image_prompt must follow the Production Stage 7 reference "
             f"format exactly:\n"
-            f"- First line: the scene timestamp in [M:SS] format without zero-padding "
-            f"(e.g. [0:00]), matching the transcript scene it illustrates.\n"
-            f"- Then one continuous natural-language paragraph that opens with "
+            f"- One continuous natural-language paragraph that opens with "
             f"'Hand-drawn 2D doodle cartoon animation, ...' and flows through, "
             f"in order: illustration style and line quality, character "
             f"description, environment description, scene action, camera angle, "
             f'Narration focus: "<narration quote verbatim from that transcript '
             f'scene>", negative wording, "16:9 aspect ratio", "KaiMi educational '
-            f"doodle style\".\n\n"
+            f"doodle style\".\n"
+            f"- The scene timestamp is structured metadata ONLY: the prompt text "
+            f"must NEVER begin with a timestamp (no [0:00], no [00:00], no bare "
+            f"00:00 at the start) and must never repeat metadata.\n\n"
             f"Reference template:\n{PROMPT_TEMPLATE}\n\n"
             f"Rules:\n"
             f"- One prompt per transcript scene; never merge or split transcript scenes.\n"
             f"- Write the whole description as one continuous sentence joined "
             f"with commas. No headings, no labels, no metadata, no bullet "
             f"points, no blank lines and no line breaks inside a prompt.\n"
+            f"- Never start the prompt with a timestamp or a 'Scene N:' / "
+            f"'Timestamp:' prefix — the scene number and timestamp are the "
+            f"structured fields, never part of the prompt text.\n"
             f"- Never write labels such as: "
             f"{', '.join(_FORBIDDEN_LABELS)}.\n"
             f"- Preserve the same illustration style, line quality, brush style, "
@@ -212,7 +216,8 @@ class ImagePromptBuilder:
             "(string: one continuous natural-language paragraph in the "
             "Production Stage 7 reference format, opening with the hand-drawn "
             "2D doodle cartoon animation style phrase and ending with the "
-            "16:9 aspect ratio and the KaiMi educational doodle style tag). "
+            "16:9 aspect ratio and the KaiMi educational doodle style tag, "
+            "with no leading timestamp or metadata prefix). "
             "No markdown, no explanations, no extra text."
         )
 

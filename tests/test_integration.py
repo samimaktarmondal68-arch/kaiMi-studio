@@ -26,6 +26,11 @@ from core.image_prompt_storage import ImagePromptStorage
 from core.history_manager import HistoryManager
 from core.export_service import ExportService
 from core.task_manager import TaskManager, TaskCancelledError
+from operators.image_prompt.parser import (
+    ImagePromptParseError,
+    ImagePromptParser,
+    has_leading_timestamp_prefix,
+)
 from core.workflow import (
     WORKFLOW_STAGES,
     build_initial_workflow_state,
@@ -1923,7 +1928,9 @@ class TestImagePromptBuilderReferenceFormat:
         assert "Narration focus" in prompt
         assert "16:9 aspect ratio" in prompt
         assert "KaiMi educational doodle style" in prompt
-        assert "[0:00]" in prompt  # reference template timestamp line
+        # FIX F: the contract no longer asks for a timestamp inside the prompt.
+        assert "First line: the scene timestamp" not in prompt
+        assert "timestamp is structured metadata" in prompt
 
     def test_orders_reference_elements(self):
         prompt = self._build_user_prompt()
@@ -1939,6 +1946,7 @@ class TestImagePromptBuilderReferenceFormat:
         assert "never merge or split transcript scenes" in prompt
 
     def test_reference_template_has_no_metadata_labels(self):
+        import re as _re
         from operators.image_prompt.prompt_builder import PROMPT_TEMPLATE
         for label in (
             "Master Style Lock:",
@@ -1951,6 +1959,10 @@ class TestImagePromptBuilderReferenceFormat:
             "Visual Description:",
         ):
             assert label not in PROMPT_TEMPLATE, f"'{label}' leaked into template"
+        # FIX F: the reference prompt opens with the visual paragraph, never a
+        # timestamp line (that caused '[00:00] [0:00] ...' in exports).
+        assert PROMPT_TEMPLATE.startswith("Hand-drawn 2D doodle cartoon animation")
+        assert not _re.match(r"^\s*\[\d{1,2}:\d{2}\]", PROMPT_TEMPLATE)
 
     def test_instructions_warn_against_labels_and_metadata(self):
         prompt = self._build_user_prompt()
@@ -4358,6 +4370,1003 @@ class TestRC71GoogleFlowExportFormat:
         assert len(lines) == 34
         assert all(line.startswith("[") and "] " in line for line in lines)
         assert "Prompts exported successfully." in page.export_status_label.text()
+
+
+class TestRC71ExportSingleTimestampGuarantee:
+    """FIX A: the exported Image Prompt TXT must never carry a duplicate or
+    extra timestamp — exactly one ``[MM:SS]`` prefix per scene line, taken
+    from the stored timestamp, with the prompt text verbatim after it.
+
+    Guards the strict Google Flow queue format even when the stored prompt
+    text itself mentions times or contains line breaks (regression: the
+    serializer must neither duplicate the timestamp nor let a prompt wrap
+    across physical lines). Prompt text is always preserved verbatim: the
+    serializer only ever adds the single [MM:SS] prefix and never strips or
+    rewrites content.
+    """
+
+    @staticmethod
+    def _prompts_with_time_like_text():
+        """Mirror the generation contract: prompt text may mention times
+        ('scene 2 at 00:08') but carries no bracketed timestamp of its own,
+        so the exported line must contain exactly the one [MM:SS] prefix."""
+        return [
+            {
+                "scene_number": 1,
+                "timestamp": "00:00",
+                "prompt_title": "Opening",
+                "full_image_prompt": (
+                    "Hand-drawn 2D doodle cartoon animation, the curious "
+                    "student enters, 16:9 aspect ratio, KaiMi style"
+                ),
+            },
+            {
+                "scene_number": 2,
+                "timestamp": "00:08",
+                "prompt_title": "Same student",
+                "full_image_prompt": (
+                    "Hand-drawn 2D doodle cartoon animation, scene 2 at 00:08, "
+                    "the same curious student looks up, 16:9, KaiMi style"
+                ),
+            },
+            {
+                "scene_number": 3,
+                "timestamp": "00:15",
+                "prompt_title": "Walk",
+                "full_image_prompt": (
+                    "Hand-drawn 2D doodle cartoon animation, the student walks "
+                    "through the classroom at 00:15, 16:9, KaiMi style"
+                ),
+            },
+        ]
+
+    def test_each_line_has_exactly_one_bracketed_mm_ss(self):
+        """A line carries exactly one [MM:SS] prefix — even when the prompt
+        text itself mentions times (unbracketed), the serializer never adds
+        a second bracketed timestamp."""
+        import re
+        prompts = self._prompts_with_time_like_text()
+        lines = ExportService.build_image_prompts_txt(prompts).splitlines()
+        assert len(lines) == 3
+        for line, prompt in zip(lines, prompts):
+            # Exactly one bracketed MM:SS token per line (the prefix).
+            assert len(re.findall(r"\[\d{2}:\d{2}\]", line)) == 1, line
+            # The prefix is the stored timestamp; the prompt follows verbatim.
+            assert line == f"[{prompt['timestamp']}] {prompt['full_image_prompt']}"
+            assert "Title:" not in line
+
+    def test_prompt_with_bracketed_non_time_tokens_stays_verbatim(self):
+        """Bracketed content inside the prompt (e.g. '[soft light]') is
+        preserved verbatim; only the single [MM:SS] prefix is added."""
+        prompts = [{
+            "scene_number": 1,
+            "timestamp": "00:04",
+            "prompt_title": "Light",
+            "full_image_prompt": "Animate [soft light] at 00:04, keep 16:9 framing",
+        }]
+        lines = ExportService.build_image_prompts_txt(prompts).splitlines()
+        assert lines == ["[00:04] Animate [soft light] at 00:04, keep 16:9 framing"]
+
+    def test_embedded_newlines_never_wrap_a_prompt(self):
+        """A stored prompt containing \n / \r\n collapses to ONE physical
+        line — Google Flow must never read one scene as several queue items."""
+        prompts = [
+            {"scene_number": 1, "timestamp": "00:00", "prompt_title": "A",
+             "full_image_prompt": "Line one.\nLine two.\r\nLine three."},
+            {"scene_number": 2, "timestamp": "00:10", "prompt_title": "B",
+             "full_image_prompt": "Only one line"},
+        ]
+        lines = ExportService.build_image_prompts_txt(prompts).splitlines()
+        assert len(lines) == 2
+        assert lines[0] == "[00:00] Line one. Line two. Line three."
+        assert lines[1] == "[00:10] Only one line"
+
+    def test_full_project_export_uses_the_same_strict_format(self, pm, es):
+        """The full-project TXT export renders its Image Prompts section with
+        the same strict Google Flow lines, and never mutates stored prompts."""
+        name = "FullExportStrict"
+        _create_sample_project(pm, name)
+        _fill_script(pm, name)
+        _write_json(pm.PROJECTS_DIR / name / "voice.json", {
+            "transcript": "[0:00] Narration segment.\n\n[0:04] Next segment.",
+            "segments": [{"start": 0, "end": 4, "text": "Narration segment.",
+                          "time": "00:00"}],
+        })
+        prompts = self._prompts_with_time_like_text()
+        _write_json(pm.PROJECTS_DIR / name / "image_prompts.json", {"prompts": prompts})
+
+        proj = pm.load_project(name)
+        out = es.export_project(proj, fmt="txt")
+        assert out.exists()
+        # Export must never mutate the stored prompt data.
+        assert _read_json(pm, name, "image_prompts.json")["prompts"] == prompts
+
+        doc_lines = out.read_text(encoding="utf-8").splitlines()
+        # The prompt block is appended last and contains no blank lines, so
+        # everything after the final blank line is the prompt section.
+        last_blank = max(i for i, ln in enumerate(doc_lines) if ln == "")
+        prompt_lines = doc_lines[last_blank + 1:]
+        assert len(prompt_lines) == len(prompts)
+        for line, prompt in zip(prompt_lines, prompts):
+            assert line == f"[{prompt['timestamp']}] {prompt['full_image_prompt']}"
+        assert not any("Scene " in ln for ln in prompt_lines)
+        assert not any("Title:" in ln for ln in prompt_lines)
+
+
+class TestExportPageButton:
+    """FIX B: the Export page's 'Export TXT' button must be usable — enabled
+    once the prerequisite stages (Script, Voice, Image Prompts) are complete
+    (previously gated on the Export stage itself being COMPLETED, which could
+    only happen after a successful export: a deadlock that left the button
+    permanently disabled), and must drive the shared ExportService with the
+    real project data, surfacing failures instead of silently doing nothing.
+    """
+
+    @staticmethod
+    def _make_page(pm, monkeypatch):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from core.pipeline_service import PipelineService
+        from ui.pages.export_page import ExportPage
+
+        QApplication.instance() or QApplication([])
+        monkeypatch.setattr("core.script_storage._PROJECTS_DIR", pm.PROJECTS_DIR)
+        monkeypatch.setattr("core.image_prompt_storage._PROJECTS_DIR", pm.PROJECTS_DIR)
+        page = ExportPage()
+        page.manager = pm
+        page.export_service.project_manager = pm
+        service = PipelineService()
+        service._pm = pm
+        page._pipeline = service
+        return page
+
+    @staticmethod
+    def _install_storage_loader(pm, service):
+        """Point the pipeline's Export-stage validation at the temp project dir."""
+        def _fake_load(storage_name, project_name):
+            filenames = {
+                "script": "script.json",
+                "voice": "voice.json",
+                "image_prompts": "image_prompts.json",
+            }
+            data = _read_json(pm, project_name, filenames[storage_name])
+            return data if data else None
+        service._load_storage = _fake_load
+
+    @staticmethod
+    def _seed_ready_project(pm, name="ExportReady"):
+        """A project with Script, Voice and Image Prompts completed but no
+        export yet — the exact state that previously deadlocked the button."""
+        from core.workflow import advance_workflow_state
+        pm.create_project(
+            name=name, topic="AI Education", platform="YouTube",
+            video_type="Educational", language="English",
+        )
+        _write_json(pm.PROJECTS_DIR / name / "script.json", {
+            "script_output": "INT. CLASSROOM - DAY\nTeacher introduces AI to students.",
+        })
+        _write_json(pm.PROJECTS_DIR / name / "voice.json", {
+            "transcript": "Welcome to class.",
+            "segments": [{"start": 0, "end": 3, "text": "Welcome to class.", "time": "00:00"}],
+        })
+        _write_json(pm.PROJECTS_DIR / name / "transcript.json", {"text": "Welcome to class."})
+        _write_json(pm.PROJECTS_DIR / name / "image_prompts.json", {"prompts": [
+            {"scene_number": 1, "timestamp": "00:00", "prompt_title": "Opening",
+             "full_image_prompt": "Hand-drawn 2D doodle cartoon animation, classroom wide shot, 16:9"},
+            {"scene_number": 2, "timestamp": "00:08", "prompt_title": "Teacher",
+             "full_image_prompt": "Hand-drawn 2D doodle cartoon animation, teacher points at a board, 16:9"},
+        ]})
+        data = pm.load_project(name)
+        data["workflow_state"] = advance_workflow_state(data["workflow_state"], "Script")
+        data["workflow_state"] = advance_workflow_state(data["workflow_state"], "Voice")
+        data["workflow_state"] = advance_workflow_state(data["workflow_state"], "Image Prompts")
+        pm.update_project(name, data)
+        return name
+
+    def test_button_enabled_when_prereq_stages_complete(self, pm, monkeypatch):
+        """FIX B deadlock regression: the button must be enabled when
+        Script/Voice/Image Prompts are COMPLETED even though the Export stage
+        itself is still NOT_STARTED (no export has happened yet)."""
+        name = self._seed_ready_project(pm)
+        page = self._make_page(pm, monkeypatch)
+        page.set_project(name)
+        from core.pipeline_service import StageStatus
+        assert page._pipeline.get_pipeline_state(name)["Export"] == StageStatus.NOT_STARTED
+        assert page.export_btn.isEnabled()
+
+    def test_button_disabled_until_prereq_stages_complete(self, pm, monkeypatch):
+        """A fresh project with no completed stages keeps the button disabled."""
+        name = _create_sample_project(pm)
+        page = self._make_page(pm, monkeypatch)
+        page.set_project(name)
+        assert not page.export_btn.isEnabled()
+
+    def test_click_export_txt_writes_valid_txt_and_feedback(self, pm, monkeypatch):
+        """Full click path: export_btn -> _do_export -> ExportService ->
+        TXT on disk -> success feedback in the UI (requirements A-E)."""
+        from PySide6.QtWidgets import QApplication
+        QApplication.instance() or QApplication([])
+        name = self._seed_ready_project(pm)
+        page = self._make_page(pm, monkeypatch)
+        self._install_storage_loader(pm, page._pipeline)
+        page.set_project(name)
+        assert page.export_btn.isEnabled()
+
+        page.export_btn.click()
+
+        out = pm.PROJECTS_DIR / name / "exports" / name / f"{name}.txt"
+        assert out.exists()
+        content = out.read_text(encoding="utf-8")
+        # Project header and Script section present.
+        assert "Project: " in content
+        assert "SCRIPT" in content
+        assert "Teacher introduces AI" in content
+        # Image Prompts section in the exact Google Flow format (F/G).
+        assert "[00:00] Hand-drawn 2D doodle cartoon animation, classroom wide shot, 16:9" in content
+        assert "[00:08] Hand-drawn 2D doodle cartoon animation, teacher points at a board, 16:9" in content
+        assert "Scene 1" not in content and "Scene 2" not in content
+        assert "Title:" not in content
+        # Success feedback in the UI (requirement 5).
+        assert "Exported to" in page.status_label.text()
+        # Export history refreshed.
+        assert "Recent:" in page.history_label.text()
+
+    def test_do_export_passes_project_data_dict(self, pm, monkeypatch):
+        """Requirement A: the export callback invokes ExportService with the
+        project data dict (not a name string) and the txt format."""
+        from PySide6.QtWidgets import QApplication
+        QApplication.instance() or QApplication([])
+        name = self._seed_ready_project(pm)
+        page = self._make_page(pm, monkeypatch)
+        self._install_storage_loader(pm, page._pipeline)
+        page.set_project(name)
+
+        captured = {}
+
+        def _capture(project_data, fmt="txt"):
+            captured["data"] = project_data
+            captured["fmt"] = fmt
+            out = pm.PROJECTS_DIR / name / "exports" / name / f"{name}.txt"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text("ok", encoding="utf-8")
+            return out
+
+        monkeypatch.setattr(page.export_service, "export_project", _capture)
+        page.export_btn.click()
+
+        assert captured["fmt"] == "txt"
+        assert isinstance(captured["data"], dict)
+        assert captured["data"].get("name") == name
+        assert "Exported to" in page.status_label.text()
+
+    def test_export_failure_shown_in_ui(self, pm, monkeypatch):
+        """Requirement H: a failing export surfaces an error in the UI
+        instead of silently doing nothing."""
+        from PySide6.QtWidgets import QApplication
+        QApplication.instance() or QApplication([])
+        name = self._seed_ready_project(pm)
+        page = self._make_page(pm, monkeypatch)
+        self._install_storage_loader(pm, page._pipeline)
+        page.set_project(name)
+
+        def _boom(project_data, fmt="txt"):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(page.export_service, "export_project", _boom)
+        page.export_btn.click()
+
+        assert "Export failed" in page.status_label.text()
+        assert "disk full" in page.status_label.text()
+        from core.pipeline_service import StageStatus
+        assert page._pipeline.get_pipeline_state(name)["Export"] == StageStatus.FAILED
+
+    def test_pipeline_export_project_uses_project_data_contract(self, pm, monkeypatch):
+        """FIX B: PipelineService.export_project must pass the project dict
+        (not the name string) to ExportService and return the written path."""
+        from core.pipeline_service import PipelineService
+        name = self._seed_ready_project(pm)
+        service = PipelineService()
+        service._pm = pm
+        self._install_storage_loader(pm, service)
+
+        result = service.export_project(name)
+        assert result is not None
+        out = Path(result)
+        assert out.exists()
+        content = out.read_text(encoding="utf-8")
+        assert "Teacher introduces AI" in content
+        assert "[00:00]" in content
+
+
+class TestFixCVisualCleanup:
+    """FIX C: decorative boxes around static information were removed — the
+    Dashboard Continue-Working percentage is plain text beside the real
+    progress bar, and the Script page's Selected Script Length metadata is an
+    unboxed Label/Value panel. These tests pin the functional side of the
+    cleanup: progress values stay accurate, the Continue card still works,
+    and the script panel still displays its metadata.
+    """
+
+    @staticmethod
+    def _app():
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        return QApplication.instance() or QApplication([])
+
+    def test_dashboard_continue_card_shows_accurate_progress_value(self, pm, monkeypatch):
+        """1 of 4 stages complete -> exactly '25%', the 'complete' caption,
+        the project name, and the Continue action are all still present."""
+        from PySide6.QtWidgets import QLabel
+        from core.pipeline_service import PipelineService
+        from core.workflow import advance_workflow_state
+        from ui.pages.dashboard import DashboardPage
+        from ui.widgets import ModernButton
+
+        self._app()
+        name = "DashProgress"
+        _create_sample_project(pm, name)
+        _fill_script(pm, name)
+        data = pm.load_project(name)
+        data["workflow_state"] = advance_workflow_state(data["workflow_state"], "Script")
+        pm.update_project(name, data)
+
+        svc = PipelineService()
+        svc._pm = pm
+        monkeypatch.setattr("ui.pages.dashboard.get_pipeline_service", lambda: svc)
+
+        page = DashboardPage()
+        page.pm = pm
+        page.set_project()
+
+        texts = [lbl.text() for lbl in page.findChildren(QLabel)]
+        assert "25%" in texts          # progress value preserved exactly
+        assert "complete" in texts     # completion caption preserved
+        assert name in texts           # project name shown
+        continue_btns = [b for b in page.findChildren(ModernButton) if b.text() == "Continue"]
+        assert continue_btns           # Continue Working card still functions
+        # FIX C: the decorative 80px ring box is gone.
+        from PySide6.QtWidgets import QFrame
+        ring_styles = [
+            f.styleSheet() for f in page.findChildren(QFrame)
+            if "border-radius: 40px" in f.styleSheet()
+        ]
+        assert ring_styles == []
+
+    def test_dashboard_continue_card_percentage_updates(self, pm, monkeypatch):
+        """3 of 4 stages complete -> the Continue card reports '75%'."""
+        from PySide6.QtWidgets import QLabel
+        from core.pipeline_service import PipelineService
+        from core.workflow import advance_workflow_state
+        from ui.pages.dashboard import DashboardPage
+
+        self._app()
+        name = "DashProgress2"
+        _create_sample_project(pm, name)
+        _fill_script(pm, name)
+        _write_json(pm.PROJECTS_DIR / name / "voice.json", {
+            "transcript": "Hi", "segments": [],
+        })
+        _write_json(pm.PROJECTS_DIR / name / "transcript.json", {"text": "Hi"})
+        _write_json(pm.PROJECTS_DIR / name / "image_prompts.json", {"prompts": []})
+        data = pm.load_project(name)
+        for stage in ("Script", "Voice", "Image Prompts"):
+            data["workflow_state"] = advance_workflow_state(data["workflow_state"], stage)
+        pm.update_project(name, data)
+
+        svc = PipelineService()
+        svc._pm = pm
+        monkeypatch.setattr("ui.pages.dashboard.get_pipeline_service", lambda: svc)
+
+        page = DashboardPage()
+        page.pm = pm
+        page.set_project()
+
+        texts = [lbl.text() for lbl in page.findChildren(QLabel)]
+        assert "75%" in texts
+
+    def test_script_selected_length_panel_unboxed_and_displays(self, pm, monkeypatch):
+        """The Selected Script Length panel has no border box and its
+        metadata rows still display."""
+        from ui.pages.script_page import ScriptPage
+
+        self._app()
+        page = ScriptPage()
+        sheet = page.selection_frame.styleSheet()
+        assert "border: none" in sheet
+        assert "1px solid" not in sheet
+        assert page.selection_title.text() == "Selected Script Length"
+        assert page.preset_name_label.text()          # Name value shown
+        assert "characters" in page.preset_range_label.text()
+        assert page.preset_duration_label.text()      # Duration value shown
+
+    def test_script_editor_unchanged_by_cleanup(self, pm, monkeypatch):
+        """The script editor is still the editable text area with metrics."""
+        from PySide6.QtWidgets import QPlainTextEdit
+        from ui.pages.script_page import ScriptPage
+
+        self._app()
+        page = ScriptPage()
+        assert isinstance(page.editor, QPlainTextEdit)
+        page.editor.setPlainText("a" * 4380)
+        from PySide6.QtWidgets import QApplication
+        QApplication.processEvents()
+        assert page.char_count_label.text() == "4380 / 4500 minimum"
+
+    def test_dialogs_still_build(self):
+        """All major dialogs still construct offscreen after the cleanup."""
+        self._app()
+        from core.voice_generation_service import VOICE_PROFILES
+        from ui.dialogs import NewProjectDialog
+        from ui.dialogs.about_dialog import AboutDialog
+        from ui.dialogs.voice_selection import VoiceSelectionDialog
+        from ui.pages.version_history import VersionHistoryDialog
+        from ui.pages.voice_page import KOKORO_VOICE_CATALOG
+
+        AboutDialog().close()
+        NewProjectDialog().close()
+        VersionHistoryDialog("DemoProject").close()
+
+        recommended = [(p.id, p.name, p.description, "") for p in VOICE_PROFILES]
+        recommended_ids = {p.id for p in VOICE_PROFILES}
+        remaining = [
+            (vid, name, desc, "")
+            for vid, (name, desc) in KOKORO_VOICE_CATALOG.items()
+            if vid not in recommended_ids
+        ]
+        VoiceSelectionDialog("af_heart", recommended, remaining).close()
+
+
+class TestFixDProgressSystem:
+    """FIX D: modern, consistent percentage-based progress — real workflow
+    fractions drive determinate bars with an exact percentage; operations
+    without measurable progress (blocking Kokoro synthesis, pre-batch
+    phases) use the animated indeterminate treatment and never fabricate a
+    percentage.
+    """
+
+    @staticmethod
+    def _app():
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        return QApplication.instance() or QApplication([])
+
+    # --- Shared ProgressWidget contract ------------------------------------
+    def test_determinate_shows_exact_percentage(self):
+        from ui.widgets import ProgressWidget
+        self._app()
+        w = ProgressWidget()
+        w.set_progress(67, "Generating", "Stage: Generating")
+        assert w.progress_bar.value() == 67
+        assert w.percentage_label.text() == "67%"
+        assert w.indeterminate_bar.isHidden()
+        assert not w.progress_bar.isHidden()
+
+    def test_zero_and_complete_percentages(self):
+        from ui.widgets import ProgressWidget
+        self._app()
+        w = ProgressWidget()
+        w.reset()
+        assert w.percentage_label.text() == "0%"
+        w.show_complete("Done")
+        assert w.percentage_label.text() == "100%"
+        assert w.progress_bar.value() == 100
+
+    def test_intermediate_percentage(self):
+        from ui.widgets import ProgressWidget
+        self._app()
+        w = ProgressWidget()
+        w.set_progress(42)
+        assert w.percentage_label.text() == "42%"
+
+    def test_percentage_is_not_in_a_box(self):
+        from ui.widgets import ProgressWidget
+        self._app()
+        w = ProgressWidget()
+        w.set_progress(75)
+        assert "border" not in w.percentage_label.styleSheet().lower()
+
+    def test_indeterminate_never_fabricates_percentage(self):
+        from ui.widgets import ProgressWidget
+        self._app()
+        w = ProgressWidget()
+        w.set_indeterminate(status="Synthesizing Narration...")
+        assert w.percentage_label.text() == ""
+        assert not w.indeterminate_bar.isHidden()
+        assert w.progress_bar.isHidden()
+
+    # --- Image Prompts: the real RC-7.3 batch fraction drives the bar ------
+    def test_image_prompts_poll_uses_real_batch_fraction(self):
+        from ui.pages.image_prompts_page import ImagePromptsPage
+        self._app()
+        page = ImagePromptsPage()
+        page.task_manager._is_running = True
+        page.task_manager.update_progress(
+            0.57,
+            "Generating image prompts — Batch 4/7 (scenes 31–40 of 67)",
+            stage="generating",
+        )
+        page._gen_started_at = 0.0
+        page._poll_progress()
+        assert page.progress_widget.progress_bar.value() == 57
+        assert page.progress_widget.percentage_label.text() == "57%"
+        assert "Batch 4/7" in page.progress_widget.status_label.text()
+        assert page.progress_widget.indeterminate_bar.isHidden()
+
+    def test_image_prompts_pre_batch_is_indeterminate_not_fake(self):
+        from ui.pages.image_prompts_page import ImagePromptsPage
+        self._app()
+        page = ImagePromptsPage()
+        page.task_manager._is_running = True
+        page.task_manager.update_progress(0, "Preparing source...", stage="validating_source")
+        page._gen_started_at = 0.0
+        page._poll_progress()
+        assert not page.progress_widget.indeterminate_bar.isHidden()
+        assert page.progress_widget.percentage_label.text() == ""
+
+    # --- Voice: synthesis indeterminate, other stages determinate ----------
+    def test_voice_synthesis_stage_uses_indeterminate(self):
+        from ui.pages.voice_page import VoicePage
+        self._app()
+        page = VoicePage()
+        page._synthesis_started_at = None
+        page._on_voice_stage("synthesis", "Synthesizing Narration...", 0.35)
+        assert not page.progress_widget.indeterminate_bar.isHidden()
+        assert page.progress_widget.percentage_label.text() == ""
+        assert "Synthesizing" in page.progress_widget.status_label.text()
+
+    def test_voice_other_stages_stay_determinate(self):
+        from ui.pages.voice_page import VoicePage
+        self._app()
+        page = VoicePage()
+        page._synthesis_started_at = None
+        page._on_voice_stage("wav_encode", "Encoding WAV...", 0.90)
+        assert page.progress_widget.progress_bar.value() == 90
+        assert page.progress_widget.percentage_label.text() == "90%"
+        assert page.progress_widget.indeterminate_bar.isHidden()
+
+    # --- Script: staged determinate milestones unchanged -------------------
+    def test_script_progress_uses_stage_milestones(self):
+        from ui.pages.script_page import ScriptPage
+        self._app()
+        page = ScriptPage()
+        page._progress_index = 0
+        page._animate_progress()
+        assert page.progress_widget.progress_bar.value() > 0
+        assert page.progress_widget.status_label.text() in (
+            "Researching...", "Finding sources...", "Analyzing...",
+            "Writing...", "Improving...", "Finalizing...",
+        )
+
+
+# =====================================================================
+# FIX E — Modern animated progress bars + project list reflow
+# =====================================================================
+
+
+class TestFixEModernProgressBars:
+    """FIX E: every existing horizontal progress bar now uses the shared
+    modern animated presentation (ModernProgressBar) — determinate values
+    stay exact, the fill eases without ever fabricating progress, the
+    indeterminate treatment remains percentage-free, and no new progress
+    bars were introduced into unrelated UI.
+    """
+
+    @staticmethod
+    def _app():
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        return QApplication.instance() or QApplication([])
+
+    def test_progress_widget_bar_is_modern(self):
+        from ui.widgets import ModernProgressBar, ProgressWidget
+        self._app()
+        w = ProgressWidget()
+        assert isinstance(w.progress_bar, ModernProgressBar)
+
+    def test_determinate_value_stays_exact(self):
+        from ui.widgets import ProgressWidget
+        self._app()
+        w = ProgressWidget()
+        w.set_progress(67, "Generating", "Stage: Generating")
+        assert w.progress_bar.value() == 67
+        assert w.percentage_label.text() == "67%"
+        assert not w.progress_bar.isHidden()
+
+    def test_zero_percent_renders(self):
+        from ui.widgets import ProgressWidget
+        self._app()
+        w = ProgressWidget()
+        w.reset()
+        assert w.progress_bar.value() == 0
+        assert w.percentage_label.text() == "0%"
+
+    def test_hundred_percent_renders(self):
+        from ui.widgets import ProgressWidget
+        self._app()
+        w = ProgressWidget()
+        w.show_complete("Done")
+        assert w.progress_bar.value() == 100
+        assert w.percentage_label.text() == "100%"
+
+    def test_intermediate_percentages_render(self):
+        from ui.widgets import ProgressWidget
+        self._app()
+        w = ProgressWidget()
+        for pct in (25, 42, 75):
+            w.set_progress(pct)
+            assert w.progress_bar.value() == pct
+            assert w.percentage_label.text() == f"{pct}%"
+
+    def test_animation_never_alters_underlying_value(self):
+        """The eased fill may move, but the real value and the painted fill
+        never exceed what was stored — no fabrication of progress."""
+        from ui.widgets import ModernProgressBar
+        self._app()
+        bar = ModernProgressBar()
+        bar.setValue(42)
+        assert bar.value() == 42
+        assert bar._display <= 42.0  # fill never exceeds the real value
+        # Progressing upward eases but stays bounded by the real value.
+        bar.setValue(75)
+        assert bar.value() == 75
+        assert bar._display <= 75.0
+        # Going backward must snap down, never sit above the new real value.
+        bar.setValue(10)
+        assert bar.value() == 10
+        assert bar._display <= 10.0
+
+    def test_determinate_mode_remains_determinate(self):
+        from ui.widgets import ProgressWidget
+        self._app()
+        w = ProgressWidget()
+        w.set_progress(50, "Working")
+        assert not w.progress_bar.isHidden()
+        assert w.indeterminate_bar.isHidden()
+        assert not w.indeterminate_bar.is_animating()
+
+    def test_shimmer_runs_while_visible_and_stops_on_hide(self):
+        """The subtle sheen only ticks while the bar is visible — no idle CPU
+        on static cards once the page is hidden."""
+        from PySide6.QtWidgets import QApplication
+        from ui.widgets import ModernProgressBar
+        self._app()
+        bar = ModernProgressBar()
+        bar.setValue(50)
+        bar.show()
+        QApplication.instance().processEvents()
+        assert bar._shimmer_timer.isActive()
+        bar.hide()
+        QApplication.instance().processEvents()
+        assert not bar._shimmer_timer.isActive()
+        assert bar._shimmer == 0.0
+
+    def test_stop_syncs_fill_to_real_value(self):
+        """Stopping mid-transition must not leave the fill contradicting the
+        stored value (e.g. cancel right after setValue(100))."""
+        from ui.widgets import ModernProgressBar
+        self._app()
+        bar = ModernProgressBar()
+        bar.setValue(100)
+        bar.stop()
+        assert bar._display == 100.0
+        assert bar.value() == 100
+
+    def test_shimmer_never_runs_for_zero_value(self):
+        from ui.widgets import ModernProgressBar
+        self._app()
+        bar = ModernProgressBar()
+        bar.setValue(0)
+        bar.show()
+        assert not bar._shimmer_timer.isActive()
+
+    def test_indeterminate_never_fabricates_percentage(self):
+        from ui.widgets import ProgressWidget
+        self._app()
+        w = ProgressWidget()
+        w.set_indeterminate(status="Synthesizing Narration...")
+        assert w.percentage_label.text() == ""
+        assert w.progress_bar.isHidden()
+        assert not w.indeterminate_bar.isHidden()
+        assert w.indeterminate_bar.is_animating()
+
+    def test_image_prompt_batch_percentage_accurate(self):
+        from ui.pages.image_prompts_page import ImagePromptsPage
+        self._app()
+        page = ImagePromptsPage()
+        page.task_manager._is_running = True
+        page.task_manager.update_progress(
+            0.57,
+            "Generating image prompts — Batch 4/7 (scenes 31–40 of 67)",
+            stage="generating",
+        )
+        page._gen_started_at = 0.0
+        page._poll_progress()
+        assert page.progress_widget.progress_bar.value() == 57
+        assert page.progress_widget.percentage_label.text() == "57%"
+        assert "Batch 4/7" in page.progress_widget.status_label.text()
+        assert page.progress_widget.indeterminate_bar.isHidden()
+
+    def test_voice_synthesis_stays_indeterminate(self):
+        from ui.pages.voice_page import VoicePage
+        self._app()
+        page = VoicePage()
+        page._synthesis_started_at = None
+        page._on_voice_stage("synthesis", "Synthesizing Narration...", 0.35)
+        assert page.progress_widget.percentage_label.text() == ""
+        assert not page.progress_widget.indeterminate_bar.isHidden()
+        assert page.progress_widget.progress_bar.isHidden()
+        # Real milestone stages stay determinate.
+        page._on_voice_stage("wav_encode", "Encoding WAV...", 0.90)
+        assert page.progress_widget.progress_bar.value() == 90
+
+    def test_dashboard_cards_use_modern_bar_with_accurate_value(self, pm, monkeypatch):
+        from PySide6.QtWidgets import QLabel
+        from core.pipeline_service import PipelineService
+        from core.workflow import advance_workflow_state
+        from ui.pages.dashboard import DashboardPage, _ContinueProjectCard
+        from ui.widgets import ModernProgressBar
+
+        self._app()
+        name = "FixEProj"
+        _create_sample_project(pm, name)
+        _fill_script(pm, name)
+        data = pm.load_project(name)
+        data["workflow_state"] = advance_workflow_state(data["workflow_state"], "Script")
+        pm.update_project(name, data)
+
+        svc = PipelineService()
+        svc._pm = pm
+        monkeypatch.setattr("ui.pages.dashboard.get_pipeline_service", lambda: svc)
+
+        page = DashboardPage()
+        page.pm = pm
+        page.set_project()
+
+        texts = [lbl.text() for lbl in page.findChildren(QLabel)]
+        assert "25%" in texts  # real value preserved
+        cards = [c for c in page.findChildren(_ContinueProjectCard)]
+        assert cards
+        bars = [b for b in cards[0].findChildren(ModernProgressBar)]
+        assert bars and bars[0].value() == 25  # modern bar carries the real %
+
+    def test_project_cards_use_modern_bar(self, pm, monkeypatch):
+        from ui.pages.projects import ProjectsPage, _ProjectCard
+        from ui.widgets import ModernProgressBar
+        self._app()
+        _create_sample_project(pm, "Alpha")
+        page = self._make_page(pm, monkeypatch)
+        card = page._cards["Alpha"]
+        assert isinstance(card, _ProjectCard)
+        bars = card.findChildren(ModernProgressBar)
+        assert bars  # project card carries the shared modern bar
+
+    def test_no_new_progress_bars_in_unrelated_ui(self, pm, monkeypatch):
+        """Export, Settings, and the sidebar must not suddenly contain bars."""
+        from PySide6.QtWidgets import QProgressBar
+        from ui.pages.export_page import ExportPage
+        from ui.pages.settings_page import SettingsPage
+        from ui.widgets import ModernProgressBar
+        from ui.sidebar import Sidebar
+        self._app()
+
+        export_page = ExportPage()
+        settings_page = SettingsPage()
+        sidebar = Sidebar()
+        for widget in (export_page, settings_page, sidebar):
+            modern = widget.findChildren(ModernProgressBar)
+            legacy = widget.findChildren(QProgressBar)
+            assert modern == [], type(widget).__name__
+            assert legacy == [], type(widget).__name__
+
+    @staticmethod
+    def _make_page(pm, monkeypatch):
+        from core.pipeline_service import get_pipeline_service
+        from core.project_manager import ProjectManager
+        from ui.pages.projects import ProjectsPage
+
+        monkeypatch.setattr(ProjectManager, "PROJECTS_DIR", pm.PROJECTS_DIR)
+        service = get_pipeline_service()
+        service._pm = pm
+
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication([])
+
+        page = ProjectsPage()
+        page.manager = pm
+        page.refresh()
+        app.processEvents()
+        return page
+
+
+class TestFixEProjectReflow:
+    """FIX E: deleting a project must reflow the remaining cards into the
+    freed slot immediately — no stale spacer keeps a gap where the deleted
+    card used to be. Covers first/middle/last deletion, selection, active
+    state, search/filter, and the empty state.
+    """
+
+    @staticmethod
+    def _make_page(pm, monkeypatch):
+        from core.pipeline_service import get_pipeline_service
+        from core.project_manager import ProjectManager
+        from ui.pages.projects import ProjectsPage
+
+        monkeypatch.setattr(ProjectManager, "PROJECTS_DIR", pm.PROJECTS_DIR)
+        service = get_pipeline_service()
+        service._pm = pm
+
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication([])
+
+        page = ProjectsPage()
+        page.manager = pm
+        page.refresh()
+        app.processEvents()
+        return page
+
+    @staticmethod
+    def _install_delete(monkeypatch, result="delete"):
+        import ui.pages.projects as projects_mod
+        _DeleteMessageBox.result = result
+        _DeleteMessageBox.instances = []
+        monkeypatch.setattr(projects_mod, "QMessageBox", _DeleteMessageBox)
+
+    @staticmethod
+    def _layout_items(page):
+        """Return (widgets, spacers) split of the cards layout."""
+        widgets, spacers = [], []
+        for i in range(page.cards_layout.count()):
+            item = page.cards_layout.itemAt(i)
+            w = item.widget()
+            if w is not None:
+                widgets.append(w)
+            elif item.spacerItem() is not None:
+                spacers.append(item.spacerItem())
+        return widgets, spacers
+
+    def test_two_cards_reflow_after_deleting_first(self, pm, monkeypatch):
+        from PySide6.QtWidgets import QApplication
+        _create_sample_project(pm, "Alpha")
+        _create_sample_project(pm, "Beta")
+        page = self._make_page(pm, monkeypatch)
+        self._install_delete(monkeypatch)
+        self._select(page, "Alpha")
+        page.delete_btn.click()
+        QApplication.instance().processEvents()
+
+        assert "Alpha" not in page._cards
+        assert "Beta" in page._cards
+        widgets, spacers = self._layout_items(page)
+        # Exactly one card widget, and it occupies the FIRST layout slot —
+        # no leading spacer where the deleted card used to be.
+        assert widgets == [page._cards["Beta"]]
+        assert len(spacers) == 1  # only the trailing stretch remains
+
+    def test_no_blank_vertical_gap_after_delete(self, pm, monkeypatch):
+        from PySide6.QtCore import QPoint
+        from PySide6.QtWidgets import QApplication
+        _create_sample_project(pm, "Alpha")
+        _create_sample_project(pm, "Beta")
+        page = self._make_page(pm, monkeypatch)
+        # Fresh two-card layout: Beta sits directly under Alpha (measured in
+        # the cards container's own coordinates, not the page header).
+        page.show()
+        QApplication.instance().processEvents()
+        container = page.cards_container
+        beta_before = page._cards["Beta"].mapTo(container, QPoint(0, 0)).y()
+        alpha_y = page._cards["Alpha"].mapTo(container, QPoint(0, 0)).y()
+        gap_before = beta_before - alpha_y
+        assert gap_before > 0
+
+        self._install_delete(monkeypatch)
+        self._select(page, "Alpha")
+        page.delete_btn.click()
+        QApplication.instance().processEvents()
+
+        beta_after = page._cards["Beta"].mapTo(container, QPoint(0, 0)).y()
+        # Beta moved up into the freed top slot: its y is now much smaller.
+        assert beta_after < beta_before - gap_before // 2, (
+            f"Beta stayed at y={beta_after} (was {beta_before}); "
+            f"the deleted card left a gap"
+        )
+        # And Beta now starts at the very top of the list (first slot).
+        assert beta_after <= 4, f"Beta not at the first slot: y={beta_after}"
+
+    def test_deleting_middle_card_closes_the_gap(self, pm, monkeypatch):
+        from PySide6.QtWidgets import QApplication
+        for name in ("Alpha", "Beta", "Gamma"):
+            _create_sample_project(pm, name)
+        page = self._make_page(pm, monkeypatch)
+        self._install_delete(monkeypatch)
+        self._select(page, "Beta")
+        page.delete_btn.click()
+        QApplication.instance().processEvents()
+
+        assert "Beta" not in page._cards
+        assert set(page._cards) == {"Alpha", "Gamma"}
+        widgets, spacers = self._layout_items(page)
+        assert widgets == [page._cards["Alpha"], page._cards["Gamma"]]
+        assert len(spacers) == 1
+
+    def test_deleting_last_card_reflows_remaining(self, pm, monkeypatch):
+        from PySide6.QtWidgets import QApplication
+        _create_sample_project(pm, "Alpha")
+        _create_sample_project(pm, "Beta")
+        _create_sample_project(pm, "Gamma")
+        page = self._make_page(pm, monkeypatch)
+        self._install_delete(monkeypatch)
+        self._select(page, "Gamma")
+        page.delete_btn.click()
+        QApplication.instance().processEvents()
+        widgets, spacers = self._layout_items(page)
+        assert widgets == [page._cards["Alpha"], page._cards["Beta"]]
+        assert len(spacers) == 1
+
+    def test_empty_state_after_deleting_final_project(self, pm, monkeypatch):
+        from PySide6.QtWidgets import QApplication
+        _create_sample_project(pm, "Solo")
+        page = self._make_page(pm, monkeypatch)
+        self._install_delete(monkeypatch)
+        self._select(page, "Solo")
+        page.delete_btn.click()
+        QApplication.instance().processEvents()
+
+        assert page._cards == {}
+        assert page.count_label.text() == "0 projects"
+        widgets, spacers = self._layout_items(page)
+        from ui.widgets import EmptyState
+        empty = [w for w in widgets if isinstance(w, EmptyState)]
+        assert empty  # empty state shows instead of a stale blank slot
+
+    def test_selection_state_cleared_after_delete(self, pm, monkeypatch):
+        from PySide6.QtWidgets import QApplication
+        _create_sample_project(pm, "Alpha")
+        _create_sample_project(pm, "Beta")
+        page = self._make_page(pm, monkeypatch)
+        self._install_delete(monkeypatch)
+        self._select(page, "Alpha")
+        assert page._selected_project == "Alpha"
+        page.delete_btn.click()
+        QApplication.instance().processEvents()
+        assert page._selected_project is None
+        assert not page.delete_btn.isEnabled()
+
+    def test_active_project_state_unchanged_by_other_delete(self, pm, monkeypatch):
+        from PySide6.QtWidgets import QApplication
+        _create_sample_project(pm, "ActiveProj")
+        _create_sample_project(pm, "OtherProj")
+        page = self._make_page(pm, monkeypatch)
+        page.set_project("ActiveProj")
+        self._install_delete(monkeypatch)
+        self._select(page, "OtherProj")
+        page.delete_btn.click()
+        QApplication.instance().processEvents()
+        assert page._active_project == "ActiveProj"
+        assert "ActiveProj" in page._cards
+
+    def test_search_filter_results_reflow(self, pm, monkeypatch):
+        from PySide6.QtWidgets import QApplication
+        _create_sample_project(pm, "Alpha")
+        _create_sample_project(pm, "Beta")
+        _create_sample_project(pm, "Gamma")
+        page = self._make_page(pm, monkeypatch)
+
+        page.search_input.setText("Beta")
+        QApplication.instance().processEvents()
+        assert set(page._cards) == {"Beta"}
+        widgets, spacers = self._layout_items(page)
+        assert widgets == [page._cards["Beta"]]
+        assert len(spacers) == 1  # filtered list reflows to the first slot
+
+        page.search_input.setText("")
+        QApplication.instance().processEvents()
+        assert set(page._cards) == {"Alpha", "Beta", "Gamma"}
+
+    @staticmethod
+    def _select(page, name):
+        page._select_project(name)
 
 
 class TestRC71ProgressAnimation:
@@ -7141,3 +8150,333 @@ class TestRC73BatchedGeneration:
 
         assert ImagePromptOperator._resolve_batch_size(None, 67) == 10
         assert ImagePromptOperator._resolve_batch_size(3, 67) == 3
+
+
+# =====================================================================
+# FIX F — No duplicate timestamps at the generation/storage boundary
+# =====================================================================
+
+class TestFixFDeduplicateTimestamps:
+    """FIX F: the scene timestamp is structured metadata ONLY. The stored
+    ``full_image_prompt`` must NEVER begin with a timestamp — the generation
+    contract no longer asks the model to embed one, and the parser
+    defensively strips a leading [M:SS] prefix that a provider still echoes.
+    Export therefore renders exactly one ``[MM:SS]`` per line and never the
+    production defect ``[00:00] [0:00] Hand-drawn ...``.
+    """
+
+    @staticmethod
+    def _assert_clean(prompts):
+        """Strong invariant: no stored/generated prompt begins with [M:SS].
+
+        Uses the parser's own invariant helper (FIX F) so the guard and the
+        normalization regex can never drift apart.
+        """
+        for prompt in prompts:
+            assert not has_leading_timestamp_prefix(
+                prompt["full_image_prompt"]
+            ), prompt["full_image_prompt"]
+
+    # --- Parser boundary normalization (8.A / 8.B / 9) ------------------
+
+    def test_parser_strips_leading_short_timestamp(self):
+        """8.A: '[0:00] Hand-drawn ...' stores 'Hand-drawn ...' + '00:00'."""
+        raw = json.dumps([{
+            "scene_number": 1, "timestamp": "00:00", "prompt_title": "Opening",
+            "full_image_prompt": (
+                "[0:00] Hand-drawn 2D doodle cartoon animation, a classroom, 16:9"
+            ),
+        }])
+        prompts = ImagePromptParser().parse(raw)
+        assert prompts[0]["timestamp"] == "00:00"
+        assert prompts[0]["full_image_prompt"] == (
+            "Hand-drawn 2D doodle cartoon animation, a classroom, 16:9"
+        )
+        self._assert_clean(prompts)
+
+    def test_parser_strips_leading_padded_timestamp(self):
+        """8.B: '[00:00] Hand-drawn ...' stores 'Hand-drawn ...' + '00:00'."""
+        raw = json.dumps([{
+            "scene_number": 1, "timestamp": "00:00", "prompt_title": "Opening",
+            "full_image_prompt": "[00:00] Hand-drawn 2D doodle cartoon animation, a scene",
+        }])
+        prompts = ImagePromptParser().parse(raw)
+        assert prompts[0]["timestamp"] == "00:00"
+        assert prompts[0]["full_image_prompt"] == (
+            "Hand-drawn 2D doodle cartoon animation, a scene"
+        )
+        self._assert_clean(prompts)
+
+    def test_parser_strips_only_a_leading_prefix(self):
+        """Other provider forms ([1:23], leading whitespace) are stripped too;
+        a prompt that is only a timestamp becomes empty and is rejected."""
+        cases = (("[1:23]", "01:23"), ("[01:23]", "01:23"),
+                 ("  [0:00]", "00:00"), ("[0:00]  ", "00:00"))
+        for prefix, ts in cases:
+            raw = json.dumps([{
+                "scene_number": 1, "timestamp": ts,
+                "prompt_title": "A",
+                "full_image_prompt": prefix + "Hand-drawn 2D doodle cartoon animation, x",
+            }])
+            prompts = ImagePromptParser().parse(raw)
+            assert prompts[0]["full_image_prompt"] == (
+                "Hand-drawn 2D doodle cartoon animation, x"
+            ), prefix
+            self._assert_clean(prompts)
+
+    def test_timestamp_only_prompt_rejected(self):
+        """A prompt reduced to '' by normalization fails non-empty validation."""
+        raw = json.dumps([{
+            "scene_number": 1, "timestamp": "00:00", "prompt_title": "A",
+            "full_image_prompt": "[0:00]",
+        }])
+        with pytest.raises(ImagePromptParseError):
+            ImagePromptParser().parse(raw)
+
+    def test_invariant_holds_for_both_timestamp_forms(self):
+        """9: the strong invariant holds for [0:00] and [00:00] inputs."""
+        payloads = [
+            "[0:00] Hand-drawn 2D doodle cartoon animation, a",
+            "[00:00] Hand-drawn 2D doodle cartoon animation, b",
+            "[0:59] Hand-drawn 2D doodle cartoon animation, c",
+        ]
+        prompts = [{
+            "scene_number": i + 1, "timestamp": "00:00",
+            "prompt_title": f"P{i}", "full_image_prompt": body,
+        } for i, body in enumerate(payloads)]
+        prompts = ImagePromptParser().parse(json.dumps(prompts))
+        self._assert_clean(prompts)
+        assert [p["full_image_prompt"] for p in prompts] == [
+            "Hand-drawn 2D doodle cartoon animation, a",
+            "Hand-drawn 2D doodle cartoon animation, b",
+            "Hand-drawn 2D doodle cartoon animation, c",
+        ]
+
+    # --- Legitimate content must survive untouched (8.C / 8.D) -----------
+
+    def test_time_like_content_inside_prompt_unchanged(self):
+        """8.C: 'Show a digital clock reading 00:00 on the wall' is kept verbatim."""
+        body = "Show a digital clock reading 00:00 on the wall"
+        raw = json.dumps([{
+            "scene_number": 1, "timestamp": "00:00", "prompt_title": "Clock",
+            "full_image_prompt": body,
+        }])
+        prompts = ImagePromptParser().parse(raw)
+        assert prompts[0]["full_image_prompt"] == body
+        self._assert_clean(prompts)
+
+    def test_bracketed_time_in_content_unchanged(self):
+        """8.D: non-leading bracketed times are legitimate scene content."""
+        for body in (
+            "Show a glowing [00:00] digital clock in the background",
+            "A clock face showing [0:00] on the wall",
+            "An alarm clock reads [07:30] next to the bed",
+        ):
+            raw = json.dumps([{
+                "scene_number": 1, "timestamp": "00:00",
+                "prompt_title": "Clock", "full_image_prompt": body,
+            }])
+            prompts = ImagePromptParser().parse(raw)
+            assert prompts[0]["full_image_prompt"] == body
+            self._assert_clean(prompts)
+
+    # --- Export stays exactly one timestamp per line (8.E / 8.J) ---------
+
+    def test_export_never_duplicates_timestamp(self):
+        """8.E: export produces '[00:00] Hand-drawn ...' and never a doubled prefix."""
+        prompts = [{
+            "scene_number": 1, "timestamp": "00:00", "prompt_title": "Opening",
+            "full_image_prompt": "Hand-drawn 2D doodle cartoon animation, a classroom, 16:9",
+        }]
+        text = ExportService.build_image_prompts_txt(prompts)
+        assert text == "[00:00] Hand-drawn 2D doodle cartoon animation, a classroom, 16:9"
+        assert "[00:00] [0:00]" not in text
+        assert "[00:00] [00:00]" not in text
+
+    def test_long_prompt_only_leading_prefix_removed(self):
+        """8.G: a long prompt is untouched apart from the leading prefix strip."""
+        body = (
+            "Hand-drawn 2D doodle cartoon animation, "
+            + "flowing detailed scene narration, " * 200
+            + "16:9 aspect ratio, KaiMi educational doodle style"
+        )
+        assert len(body) > 5000
+        raw = json.dumps([{
+            "scene_number": 1, "timestamp": "00:03", "prompt_title": "Long",
+            "full_image_prompt": "[0:03] " + body,
+        }])
+        prompts = ImagePromptParser().parse(raw)
+        assert prompts[0]["full_image_prompt"] == body
+        assert prompts[0]["timestamp"] == "00:03"
+        # And the export line still holds the full prompt after its prefix.
+        line = ExportService.build_image_prompts_txt(prompts).splitlines()[0]
+        assert line == "[00:03] " + body
+
+    # --- Full generation -> storage -> reopen -> export (8.H / 8.I / 8.J) --
+
+    def test_generate_save_reopen_keeps_prompt_clean(self, pm, monkeypatch):
+        """8.I: generate -> save -> reopen, no leading timestamp in stored data."""
+        from core.image_prompt_storage import ImagePromptStorage
+        from operators.image_prompt.models import ImagePromptRequest
+        from operators.image_prompt.operator import ImagePromptOperator
+        from providers.models import GenerationResponse
+
+        monkeypatch.setattr("core.image_prompt_storage._PROJECTS_DIR", pm.PROJECTS_DIR)
+        name = "FixFReopen"
+
+        class FakeProviderManager:
+            def generate(self, request):
+                return GenerationResponse(text=json.dumps([{
+                    "scene_number": 1, "timestamp": "00:00",
+                    "prompt_title": "Opening",
+                    "full_image_prompt": (
+                        "[0:00] Hand-drawn 2D doodle cartoon animation, a classroom, 16:9"
+                    ),
+                }]))
+
+        request = ImagePromptRequest(
+            script_text="A short script.",
+            transcript="[0:00] Hello",
+            timestamps=[{"start": 0, "end": 3, "text": "Hello", "time": "00:00"}],
+            topic="Science",
+            language="English",
+        )
+        operator = ImagePromptOperator(provider_manager=FakeProviderManager())
+        prompts = operator.generate_prompts(request, max_retries=0)
+        assert prompts[0]["full_image_prompt"] == (
+            "Hand-drawn 2D doodle cartoon animation, a classroom, 16:9"
+        )
+
+        ImagePromptStorage().save(name, prompts)
+        reopened = ImagePromptStorage().load(name)["prompts"]
+        assert reopened[0]["full_image_prompt"] == (
+            "Hand-drawn 2D doodle cartoon animation, a classroom, 16:9"
+        )
+        assert reopened[0]["timestamp"] == "00:00"
+        self._assert_clean(reopened)
+
+    def test_batch_generation_preserves_invariant(self):
+        """8.H: every batch normalizes leading timestamps; timestamps intact."""
+        from operators.image_prompt.models import ImagePromptRequest
+        from operators.image_prompt.operator import ImagePromptOperator
+        from providers.models import GenerationResponse
+
+        timestamps = [
+            {"start": i * 3, "end": i * 3 + 3, "text": f"Segment {i + 1}.",
+             "time": f"{i * 3:02d}:00"}
+            for i in range(5)
+        ]
+        request = ImagePromptRequest(
+            script_text="A long educational script.",
+            transcript="\n".join(f"[{t['time']}] {t['text']}" for t in timestamps),
+            timestamps=timestamps,
+            topic="Science",
+        )
+
+        class FakeProviderManager:
+            def generate(self, gen_request):
+                scenes = _rc73_scenes_from_prompt(gen_request.prompt)
+                payload = []
+                for number, ts in scenes:
+                    minutes = str(int(ts.split(":")[0]))
+                    short = f"[{minutes}:{ts.split(':')[1]}]"
+                    payload.append({
+                        "scene_number": number,
+                        "timestamp": ts,
+                        "prompt_title": f"Scene {number}",
+                        "full_image_prompt": (
+                            f"{short} Hand-drawn 2D doodle cartoon animation, "
+                            f"scene {number} visual, 16:9, KaiMi style"
+                        ),
+                    })
+                return GenerationResponse(text=json.dumps(payload))
+
+        operator = ImagePromptOperator(provider_manager=FakeProviderManager())
+        prompts = operator.generate_prompts(request, batch_size=2, max_retries=0)
+        assert len(prompts) == 5
+        self._assert_clean(prompts)
+        assert [p["timestamp"] for p in prompts] == [t["time"] for t in timestamps]
+        for prompt in prompts:
+            assert prompt["full_image_prompt"].startswith(
+                "Hand-drawn 2D doodle cartoon animation"
+            )
+
+    def test_generation_to_export_smoke_no_duplicate_timestamp(
+        self, pm, monkeypatch, es
+    ):
+        """Verification smoke: real generation -> parser -> storage -> reopen
+        -> full-project export with a provider returning '[0:00] ...' and
+        '[0:03] ...'; the final TXT contains '[00:00] ...' / '[00:03] ...'
+        exactly once each."""
+        from core.image_prompt_storage import ImagePromptStorage
+        from operators.image_prompt.models import ImagePromptRequest
+        from operators.image_prompt.operator import ImagePromptOperator
+        from providers.models import GenerationResponse
+
+        monkeypatch.setattr("core.image_prompt_storage._PROJECTS_DIR", pm.PROJECTS_DIR)
+        name = "FixFSmoke"
+        _create_sample_project(pm, name)
+        _fill_script(pm, name)
+        _write_json(pm.PROJECTS_DIR / name / "voice.json", {
+            "transcript": "Segment one.\n\nSegment two.",
+            "segments": [
+                {"start": 0, "end": 3, "text": "Segment one.", "time": "00:00"},
+                {"start": 3, "end": 6, "text": "Segment two.", "time": "00:03"},
+            ],
+        })
+        _write_json(pm.PROJECTS_DIR / name / "transcript.json", {
+            "text": "Segment one.\n\nSegment two.",
+        })
+
+        class FakeProviderManager:
+            def generate(self, request):
+                return GenerationResponse(text=json.dumps([
+                    {"scene_number": 1, "timestamp": "00:00",
+                     "prompt_title": "Opening",
+                     "full_image_prompt": (
+                         "[0:00] Hand-drawn 2D doodle cartoon animation, "
+                         "classroom wide shot, 16:9"
+                     )},
+                    {"scene_number": 2, "timestamp": "00:03",
+                     "prompt_title": "Teacher",
+                     "full_image_prompt": (
+                         "[0:03] Hand-drawn 2D doodle cartoon animation, "
+                         "teacher at the board, 16:9"
+                     )},
+                ]))
+
+        operator = ImagePromptOperator(provider_manager=FakeProviderManager())
+        request = ImagePromptRequest(
+            script_text="INT. CLASSROOM - DAY\nTeacher introduces AI.",
+            transcript="[0:00] Segment one.\n\n[0:03] Segment two.",
+            timestamps=[
+                {"start": 0, "end": 3, "text": "Segment one.", "time": "00:00"},
+                {"start": 3, "end": 6, "text": "Segment two.", "time": "00:03"},
+            ],
+            topic="AI Education",
+        )
+        prompts = operator.generate_prompts(request, max_retries=0)
+        ImagePromptStorage().save(name, prompts)
+
+        # Reopen (fresh load == restart): stored prompts are clean.
+        reopened = ImagePromptStorage().load(name)["prompts"]
+        self._assert_clean(reopened)
+        assert reopened[0]["full_image_prompt"].startswith(
+            "Hand-drawn 2D doodle cartoon animation"
+        )
+
+        # Full-project TXT export: exactly one [MM:SS] prefix per line.
+        out = es.export_project(pm.load_project(name), fmt="txt")
+        content = out.read_text(encoding="utf-8")
+        assert (
+            "[00:00] Hand-drawn 2D doodle cartoon animation, classroom wide shot, 16:9"
+            in content
+        )
+        assert (
+            "[00:03] Hand-drawn 2D doodle cartoon animation, teacher at the board, 16:9"
+            in content
+        )
+        assert "[00:00] [0:00]" not in content
+        assert "[00:03] [0:03]" not in content
+        assert content.count("[00:00]") == 1
+        assert content.count("[00:03]") == 1

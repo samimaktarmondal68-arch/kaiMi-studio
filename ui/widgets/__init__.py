@@ -1,10 +1,14 @@
+import time
+
 from PySide6.QtCore import (
     Property,
     QAbstractAnimation,
     QByteArray,
+    QEasingCurve,
     QPropertyAnimation,
     QRectF,
     Qt,
+    QTimer,
 )
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
@@ -13,7 +17,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QProgressBar,
     QPushButton,
     QSizePolicy,
     QVBoxLayout,
@@ -411,6 +414,158 @@ class IndeterminateBar(QWidget):
         painter.end()
 
 
+class ModernProgressBar(QWidget):
+    """Modern animated determinate progress bar (FIX E).
+
+    A custom-painted rounded bar whose fill always reflects the REAL value.
+    When the value changes the fill eases smoothly toward the new value (a
+    gentle interpolation that never overshoots), and while the bar is visible
+    a soft highlight sweeps across the filled region only — clipped so the
+    animation can never represent progress beyond the stored value. Theme
+    tokens are read on every paint, so runtime theme switches need no
+    rebuild. Animation runs only while the widget is visible and stops
+    immediately when hidden (no idle CPU), matching IndeterminateBar.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(8)
+        self._min = 0
+        self._max = 100
+        self._value = 0          # the real value, never animated upward
+        self._display = 0.0      # eased fill position (0..value)
+        self._shimmer = 0.0      # highlight sweep offset (0..1)
+
+        # Eased fill transition: display eases toward the real value so the
+        # fill breathes smoothly between updates without overshooting.
+        self._fill_anim = QPropertyAnimation(self, b"display", self)
+        self._fill_anim.setDuration(350)
+        self._fill_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._fill_anim.valueChanged.connect(self.update)
+
+        # Soft highlight sweeping across the FILLED region only. Driven by a
+        # modest 40 ms timer (~25 fps) rather than a high-frequency animation
+        # so a page full of static cards never consumes significant CPU — the
+        # sweep still reads as a gentle sheen without hammering the paint.
+        self._shimmer_timer = QTimer(self)
+        self._shimmer_timer.setInterval(40)
+        self._shimmer_timer.timeout.connect(self._tick_shimmer)
+        self._shimmer_started = 0.0
+
+    # -- Qt properties driving the paint -----------------------------------
+    def _get_display(self):
+        return self._display
+
+    def _set_display(self, value: float) -> None:
+        # Clamp to the real value: the fill can only ever represent up to
+        # the last stored value, so no animation can fabricate progress.
+        self._display = max(0.0, min(float(self._value), value))
+        self.update()
+
+    display = Property(float, _get_display, _set_display)
+
+    # -- QProgressBar-compatible API ---------------------------------------
+    def setRange(self, minimum: int, maximum: int):
+        self._min = int(minimum)
+        self._max = int(maximum)
+
+    def setValue(self, value: int):
+        value = max(self._min, min(self._max, int(value)))
+        self._value = value
+        self._fill_anim.stop()
+        self._fill_anim.setStartValue(self._display)
+        self._fill_anim.setEndValue(float(value))
+        self._fill_anim.start()
+        self._sync_shimmer()
+        self.update()
+
+    def value(self) -> int:
+        return self._value
+
+    def setTextVisible(self, visible: bool):
+        pass  # text is rendered by the caller's percentage label, not the bar
+
+    def stop(self):
+        """Freeze all animation immediately (idempotent).
+
+        Also syncs the eased fill to the real value so a bar that is stopped
+        mid-transition never renders a partial fill that disagrees with its
+        stored progress (FIX E).
+        """
+        self._fill_anim.stop()
+        self._shimmer_timer.stop()
+        self._display = float(self._value)
+        self._shimmer = 0.0
+        self.update()
+
+    def _tick_shimmer(self):
+        """Advance the highlight sweep phase once per timer tick."""
+        elapsed = time.monotonic() - self._shimmer_started
+        self._shimmer = (elapsed / 2.4) % 1.0
+        self.update()
+
+    def _sync_shimmer(self):
+        active = self.isVisible() and self._value > 0
+        if active and not self._shimmer_timer.isActive():
+            self._shimmer_started = time.monotonic()
+            self._shimmer_timer.start()
+        elif not active and self._shimmer_timer.isActive():
+            self._shimmer_timer.stop()
+            self._shimmer = 0.0
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._sync_shimmer()
+
+    def hideEvent(self, event):
+        self._shimmer_timer.stop()
+        self._fill_anim.stop()
+        super().hideEvent(event)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        width = self.width()
+        height = self.height()
+        if width <= 0 or height <= 0:
+            painter.end()
+            return
+        c = ThemeManager.instance().colors()
+        radius = height / 2.0
+
+        # Track
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(c.INPUT_BG))
+        painter.drawRoundedRect(QRectF(0, 0, width, height), radius, radius)
+
+        # Fill — width derives from the eased display, always <= real value.
+        fill_w = width * (self._display / max(1, self._max - self._min))
+        if fill_w <= 0:
+            painter.end()
+            return
+        fill_rect = QRectF(0, 0, min(fill_w, width), height)
+        painter.setBrush(QColor(c.PRIMARY))
+        painter.drawRoundedRect(fill_rect, radius, radius)
+
+        # Soft highlight sweeping across the filled region only — clipped so
+        # it can never represent progress beyond the real value.
+        if self._shimmer_timer.isActive():
+            band_w = max(16.0, fill_w * 0.3)
+            span = fill_w + band_w
+            x = -band_w + self._shimmer * span
+            painter.save()
+            painter.setClipRect(fill_rect)
+            grad = QLinearGradient(x, 0, x + band_w, 0)
+            base = QColor(c.PRIMARY)
+            grad.setColorAt(0.0, QColor(base.red(), base.green(), base.blue(), 0))
+            grad.setColorAt(0.5, QColor(base.red(), base.green(), base.blue(), 120))
+            grad.setColorAt(1.0, QColor(base.red(), base.green(), base.blue(), 0))
+            painter.setBrush(grad)
+            painter.drawRect(QRectF(x, 0, band_w, height))
+            painter.restore()
+        painter.end()
+
+
 class ProgressWidget(QWidget):
 
     def __init__(self, parent=None):
@@ -427,11 +582,9 @@ class ProgressWidget(QWidget):
 
         bar_row = QHBoxLayout()
         bar_row.setSpacing(8)
-        self.progress_bar = QProgressBar()
+        self.progress_bar = ModernProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
-        self.progress_bar.setTextVisible(False)
-        self.progress_bar.setFixedHeight(8)
         bar_row.addWidget(self.progress_bar, 1)
 
         self.indeterminate_bar = IndeterminateBar()
@@ -472,12 +625,14 @@ class ProgressWidget(QWidget):
         super().hideEvent(event)
 
     def stop(self):
-        """Stop the indeterminate animation immediately (idempotent).
+        """Stop all progress animation immediately (idempotent).
 
         Called by pages when a generation succeeds, fails, or is cancelled so
-        the marquee never keeps ticking after the run has ended (RC-7.1).
+        the marquee and the determinate fill transition never keep ticking
+        after the run has ended (RC-7.1 / FIX E).
         """
         self.indeterminate_bar.stop()
+        self.progress_bar.stop()
 
     def set_progress(self, pct, status="", step="", eta=""):
         self.indeterminate_bar.stop()

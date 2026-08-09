@@ -173,12 +173,16 @@ class ExportPage(QWidget):
         pipeline_state = self._pipeline.get_pipeline_state(self.project_name)
         health = self._pipeline.get_project_health(self.project_name)
 
-        all_completed = all(
+        # FIX B: the Export stage itself only becomes COMPLETED after a
+        # successful export, so gating on it would leave the button disabled
+        # forever before the first export (a deadlock). Enable once every
+        # prerequisite stage is complete; _do_export re-validates on click.
+        prerequisites_complete = all(
             pipeline_state.get(s) == StageStatus.COMPLETED
-            for s in STAGE_LABELS
+            for s in ("Script", "Voice", "Image Prompts")
         )
 
-        self.export_btn.setEnabled(all_completed)
+        self.export_btn.setEnabled(prerequisites_complete)
 
         project_data = self.manager.load_project(self.project_name)
         if project_data:
@@ -235,7 +239,10 @@ class ExportPage(QWidget):
         from pathlib import Path
         exports_dir = self.manager.PROJECTS_DIR / self.project_name / "exports"
         if exports_dir.exists():
-            files = list(exports_dir.glob("*.txt"))
+            # Exports live under exports/<project>/<project>.txt (full project)
+            # and exports/<project>_image_prompts.txt (image prompts page), so
+            # a recursive scan is required to surface either (FIX B).
+            files = list(exports_dir.rglob("*.txt"))
             if files:
                 text = "Recent: " + ", ".join(f.name for f in files[-3:])
                 self.history_label.setText(text)

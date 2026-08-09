@@ -21,10 +21,12 @@ from ui.widgets import (
     IconProvider,
     ModernButton,
     ModernCard,
+    ModernProgressBar,
     MutedLabel,
     PageTitle,
     SearchInput,
     StatusBadge,
+    clear_layout,
 )
 from ui.dialogs import NewProjectDialog
 from ui.pages.version_history import VersionHistoryDialog
@@ -212,25 +214,10 @@ class _ProjectCard(ModernCard):
             stats_row.addLayout(col)
         content.addLayout(stats_row)
 
-        progress_bar = QFrame()
-        bar_layout = QHBoxLayout(progress_bar)
-        bar_layout.setContentsMargins(0, 0, 0, 0)
-        bar_layout.setSpacing(0)
-
-        bar_bg = QFrame()
-        bar_bg.setStyleSheet(f"background-color: {c.SURFACE}; border-radius: 3px; min-height: 4px; max-height: 4px;")
-        bar_fill = QFrame()
-        bar_fill.setStyleSheet(
-            f"background-color: {c.PRIMARY}; border-radius: 3px; "
-            f"min-height: 4px; max-height: 4px; min-width: {max(pct, 4)}%; max-width: {pct}%;"
-        )
-
-        bar_fill_layout = QHBoxLayout(bar_bg)
-        bar_fill_layout.setContentsMargins(0, 0, 0, 0)
-        bar_fill_layout.addWidget(bar_fill)
-        bar_fill_layout.addStretch()
-
-        bar_layout.addWidget(bar_bg)
+        # FIX E: project cards use the shared modern animated bar.
+        progress_bar = ModernProgressBar()
+        progress_bar.setFixedHeight(4)
+        progress_bar.setValue(pct)
         content.addWidget(progress_bar)
 
         step_labels = QHBoxLayout()
@@ -425,12 +412,11 @@ class ProjectsPage(QWidget):
         self.refresh()
 
     def _build_cards(self, projects):
-        for i in reversed(range(self.cards_layout.count())):
-            item = self.cards_layout.itemAt(i)
-            widget = item.widget()
-            if widget:
-                widget.setParent(None)
-                widget.deleteLater()
+        # FIX E: fully clear the container — widgets AND spacer items — so a
+        # rebuild after deletion never leaves stale stretches above the
+        # remaining cards (the old loop only removed widget items and leaked
+        # every addStretch() spacer, pushing cards down after a delete).
+        clear_layout(self.cards_layout)
 
         if not projects:
             empty = EmptyState(

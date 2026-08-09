@@ -347,18 +347,28 @@ class PipelineService:
         return [s for s in WORKFLOW_STAGES if pipeline.get(s) == StageStatus.COMPLETED]
 
     def export_project(self, project_name: str) -> str | None:
+        """Export a project to TXT through the shared ExportService.
+
+        Loads the project record and passes the full project data structure
+        to ``ExportService.export_project``, which expects a dict (project
+        metadata), not a name string (FIX B: previously the name was passed
+        directly, raising an AttributeError that was silently swallowed, so
+        this wrapper always returned None). Returns the written TXT path, or
+        None when validation fails or the project cannot be found. Genuine
+        export errors propagate to the caller instead of being swallowed.
+        """
         validation = self.validate_stage(project_name, "Export")
         if not validation.passed:
             return None
-        try:
-            from core.export_service import ExportService
-            service = ExportService()
-            result = service.export_project(project_name)
-            if result:
-                self._events.export_completed.emit(project_name, result)
-            return result
-        except Exception:
+        data = self._pm.load_project(project_name)
+        if data is None:
             return None
+        from core.export_service import ExportService
+        service = ExportService(self._pm)
+        result = service.export_project(data, fmt="txt")
+        if result:
+            self._events.export_completed.emit(project_name, str(result))
+        return str(result) if result else None
 
 
 _pipeline_service_instance = None

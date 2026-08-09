@@ -8,17 +8,12 @@ no labels, no metadata, no bullet points, no blank lines inside a prompt.
 
 ## Prompt Format (exact ordering)
 
-Each full_image_prompt has exactly two parts:
-
-1. The scene timestamp on its own first line, in [M:SS] format (minutes are
-   not zero-padded), matching the transcript scene it illustrates. Example: [0:00]
-
-2. One continuous paragraph that opens with:
+Each full_image_prompt is ONE continuous paragraph that opens with:
 
    Hand-drawn 2D doodle cartoon animation, ...
 
-   and continues in a single flowing natural-language sentence that weaves in,
-   in this order:
+and continues in a single flowing natural-language sentence that weaves in,
+in this order:
    - the illustration style and line / brush / rendering quality
    - the character or subject description
    - the environment or background description
@@ -32,11 +27,16 @@ Each full_image_prompt has exactly two parts:
 The paragraph is one continuous sentence joined with commas — never a list,
 never separate sentences with labels, never wrapped across multiple lines.
 
+The scene timestamp is STRUCTURED METADATA, never part of the prompt text.
+The prompt must NOT begin with a timestamp (no "[0:00]", no "[00:00]", no
+bare "00:00" at the start) and must NOT contain "Scene N:", "Timestamp:",
+or any other duplicated metadata. The timestamp lives only in the separate
+"timestamp" field.
+
 ## Example
 
 The paragraph below is a single line in the actual prompt:
 
-[0:00]
 Hand-drawn 2D doodle cartoon animation, soft hand-drawn lines with clean bold outlines and gentle pastel fills, a friendly teacher character standing beside a large chalkboard, inside a bright sunny classroom, the teacher points at a diagram of the water cycle while raindrops fall outside the window, medium shot with a gentle push-in toward the board, Narration focus: "Water is always moving around us.", no text, no labels, no watermark, no realistic shading, no photography, no 3D render, 16:9 aspect ratio, KaiMi educational doodle style
 
 ## Style Consistency
@@ -50,7 +50,9 @@ environment description) instead of introducing new phrasing.
 ## Rules
 
 - One prompt per transcript scene. Never merge or split transcript scenes.
-- The timestamp line must match the transcript scene it illustrates.
+- The timestamp of the scene is structured metadata (the "timestamp" field
+  only). Never write it into full_image_prompt and never duplicate any
+  metadata — the prompt text must never begin with a timestamp.
 - The narration focus quote must be the actual narration from that transcript
   scene, quoted verbatim.
 - Never write section labels such as "Master Style Lock:", "Character:",
@@ -62,9 +64,9 @@ environment description) instead of introducing new phrasing.
 - Return prompts as a clean JSON array with these exact keys (all values must
   be non-empty):
   - scene_number: integer
-  - timestamp: zero-padded "MM:SS" string, e.g. "00:00" (the in-prompt first
-    line uses [M:SS] without padding, e.g. [0:00], for the same scene)
+  - timestamp: zero-padded "MM:SS" string, e.g. "00:00" (structured metadata)
   - prompt_title: short descriptive title
-  - full_image_prompt: complete prompt string (reference format above)
+  - full_image_prompt: complete VISUAL prompt only — one continuous
+    natural-language paragraph, never beginning with a timestamp
 
 Return ONLY valid JSON. No markdown, no explanation, no extra text.
