@@ -99,17 +99,29 @@ def build(onefile: bool = False):
         sys.executable, "-m", "PyInstaller",
         "--noconfirm",
         "--clean",
+        # The committed "KaiMi Studio.spec" is the reviewed, centralized
+        # configuration (identity via core.version, branding via
+        # resources/branding). PyInstaller always writes a generated spec
+        # next to the build, so divert it into build/ to keep the committed
+        # spec intact and reproducible.
+        "--specpath", str(BUILD),
         "--name", APP_NAME,
         "--windowed",
         "--icon", str(ROOT / "resources" / "branding" / "app_icon.ico"),
         "--version-file", str(ROOT / "file_version_info.txt"),
-        "--add-data", f"resources{os.pathsep}resources",
-        "--add-data", f"config{os.pathsep}config",
+        # Absolute source paths: the generated spec is written into build/
+        # (--specpath) and PyInstaller resolves relative data sources against
+        # the spec's own directory.
+        "--add-data", f"{ROOT / 'resources'}{os.pathsep}resources",
+        "--add-data", f"{ROOT / 'config'}{os.pathsep}config",
         "--strip",
         "--exclude-module", "tkinter.test",
         "--exclude-module", "unittest",
         "--exclude-module", "test",
-        "--exclude-module", "distutils",
+        # distutils is intentionally NOT excluded: on Python 3.12+ it is
+        # only a setuptools shim and PyInstaller's hook-distutils aliases
+        # it; excluding it makes that hook raise "already imported as
+        # ExcludedModule" and abort the release build.
         "--exclude-module", "setuptools",
         "--exclude-module", "pip",
         "--exclude-module", "pytest",

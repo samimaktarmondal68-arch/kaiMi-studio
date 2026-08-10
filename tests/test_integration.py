@@ -8941,3 +8941,235 @@ class TestFixFDeduplicateTimestamps:
         assert "[00:03] [0:03]" not in content
         assert content.count("[00:00]") == 1
         assert content.count("[00:03]") == 1
+
+
+# =====================================================================
+# FIX H — Dynamic scene variety (anti-repetition + motion feel)
+# =====================================================================
+
+class TestFixHDynamicSceneVariety:
+    """FIX H: consecutive scenes must feel like the NEXT SHOT of the same
+    production — identical KaiMi art style, deliberately different
+    composition/camera/action. The variation plan is deterministic (keyed by
+    absolute scene number), the narration stays the source of truth, and the
+    FIX F / FIX G / RC-7.3 invariants are untouched."""
+
+    @staticmethod
+    def _request(n):
+        return TestRC73BatchedGeneration._request(n, topic="Dream Science")
+
+    def test_style_lock_and_variety_rules_coexist(self):
+        """1+5: the style lock survives AND the variety rules are present."""
+        from operators.image_prompt.models import ImagePromptRequest
+        from operators.image_prompt.prompt_builder import ImagePromptBuilder
+
+        request = ImagePromptRequest(
+            script_text="A script about sleep.",
+            transcript="[0:00] Sleep helps memory.",
+            timestamps=[{"time": "00:00", "text": "Sleep helps memory."}],
+            topic="Sleep",
+        )
+        prompt = ImagePromptBuilder().build(request)[1]
+        for phrase in (
+            "Hand-drawn 2D doodle cartoon animation",
+            "Narration focus",
+            "16:9 aspect ratio",
+            "KaiMi educational doodle style",
+            "Preserve the same illustration style",
+        ):
+            assert phrase in prompt
+        assert "Dynamic scene variety" in prompt
+        assert "NEVER from changing the art style" in prompt
+        assert "subtle motion-friendly language" in prompt
+
+    def test_consecutive_scenes_get_distinct_beats(self):
+        """2+3: adjacent scenes never share composition/camera/focus, and the
+        plan is fully deterministic (controlled variety)."""
+        from operators.image_prompt.prompt_builder import (
+            SCENE_VARIATION_CYCLE,
+            scene_visual_direction,
+        )
+
+        assert len(SCENE_VARIATION_CYCLE) >= 2
+        for scene_number in range(1, 30):
+            current = scene_visual_direction(scene_number)
+            following = scene_visual_direction(scene_number + 1)
+            assert current["composition"] != following["composition"]
+            assert current["camera"] != following["camera"]
+            assert current["focus"] != following["focus"]
+            # Same input -> same plan, always.
+            assert scene_visual_direction(scene_number) == current
+        # The cycle itself contains no duplicate beats.
+        assert len({beat["composition"] for beat in SCENE_VARIATION_CYCLE}) == len(
+            SCENE_VARIATION_CYCLE
+        )
+
+    def test_direction_section_varies_consecutive_scenes(self):
+        """2+3: the rendered direction section plans a different composition
+        for every consecutive scene."""
+        from operators.image_prompt.prompt_builder import ImagePromptBuilder
+
+        timestamps = [
+            {"time": "00:00", "text": "A."},
+            {"time": "00:03", "text": "B."},
+            {"time": "00:06", "text": "C."},
+            {"time": "00:09", "text": "D."},
+        ]
+        section = ImagePromptBuilder.scene_direction_section(timestamps)
+        compositions = [
+            match.split(", ", 1)[0]
+            for match in _re.findall(r"^Scene \d+: (.+)$", section, _re.MULTILINE)
+        ]
+        assert len(compositions) == 4
+        assert len(set(compositions)) == 4
+
+    def test_direction_section_uses_absolute_scene_numbers(self):
+        """Scene-to-scene memory across batches: directions for a later batch
+        are numbered absolutely (11..), never batch-locally (1..)."""
+        from operators.image_prompt.models import ImagePromptRequest
+        from operators.image_prompt.prompt_builder import ImagePromptBuilder
+
+        timestamps = [
+            {"time": f"{i:02d}:00", "text": f"Segment {i + 1} narration."}
+            for i in range(3)
+        ]
+        request = ImagePromptRequest(
+            script_text="A script.", transcript="x", timestamps=timestamps,
+        )
+        _, user = ImagePromptBuilder().build_batch(
+            request, timestamps, start_scene=11, end_scene=13
+        )
+        assert "Scene 11:" in user
+        assert "Scene 12:" in user
+        assert "Scene 13:" in user
+        assert "Scene 1:" not in user
+        # Scene 11 (a batch start) is told the previous scene's planned beat.
+        assert "scene 10 planned:" in user
+
+    def test_direction_lines_carry_motion_language(self):
+        """4: every planned beat names a subtle motion element."""
+        from operators.image_prompt.prompt_builder import (
+            ImagePromptBuilder,
+            scene_visual_direction,
+        )
+
+        for scene_number in (1, 2, 7, 13):
+            assert scene_visual_direction(scene_number)["motion"].strip()
+        timestamps = [
+            {"time": "00:00", "text": "A."},
+            {"time": "00:05", "text": "B."},
+        ]
+        section = ImagePromptBuilder.scene_direction_section(timestamps)
+        assert section.startswith("Scene visual directions")
+        assert section.count("subtle motion:") == 2
+
+    def test_variation_never_changes_art_style(self):
+        """5: the direction plan only touches composition/camera/focus/motion,
+        never style vocabulary, and the rules forbid changing the style."""
+        from operators.image_prompt.models import ImagePromptRequest
+        from operators.image_prompt.prompt_builder import ImagePromptBuilder
+
+        timestamps = [
+            {"time": "00:00", "text": "A."},
+            {"time": "00:03", "text": "B."},
+        ]
+        section = ImagePromptBuilder.scene_direction_section(timestamps)
+        for style_word in ("art style", "palette", "line quality", "rendering"):
+            assert style_word not in section
+        request = ImagePromptRequest(
+            script_text="S.", transcript="[0:00] A.",
+            timestamps=[{"time": "00:00", "text": "A."}],
+        )
+        assert "NEVER from changing the art style" in ImagePromptBuilder().build(request)[1]
+
+    def test_narration_remains_semantic_priority(self):
+        """6: the narration is explicitly the source of truth."""
+        from operators.image_prompt.models import ImagePromptRequest
+        from operators.image_prompt.prompt_builder import ImagePromptBuilder
+
+        request = ImagePromptRequest(
+            script_text="A script.", transcript="[0:00] A.",
+            timestamps=[{"time": "00:00", "text": "A."}],
+        )
+        prompt = ImagePromptBuilder().build(request)[1]
+        assert "the narration is the source of truth" in prompt
+        assert "Never invent visuals that contradict the narration" in prompt
+        assert "quoted verbatim" in prompt
+
+    def test_same_input_produces_identical_directions(self):
+        """Controlled variety: the direction section is fully reproducible."""
+        from operators.image_prompt.prompt_builder import ImagePromptBuilder
+
+        timestamps = [
+            {"time": "00:00", "text": "A."},
+            {"time": "00:03", "text": "B."},
+            {"time": "00:06", "text": "C."},
+        ]
+        first = ImagePromptBuilder.scene_direction_section(timestamps)
+        second = ImagePromptBuilder.scene_direction_section(timestamps)
+        assert first == second
+
+    def test_json_contract_remains_valid_with_directions(self):
+        """8: the strict JSON contract wording survives the addition."""
+        from operators.image_prompt.prompt_builder import ImagePromptBuilder
+
+        prompt = ImagePromptBuilder().build(self._request(3))[1]
+        for key in ("scene_number", "timestamp", "prompt_title", "full_image_prompt"):
+            assert f'"{key}"' in prompt
+
+    def test_single_shot_path_carries_directions(self):
+        """The legacy single-request path also receives the directions."""
+        from operators.image_prompt.operator import ImagePromptOperator
+        from providers.models import GenerationResponse
+
+        request = self._request(2)
+        captured = []
+
+        class FakeProviderManager:
+            def generate(self, gen_request):
+                captured.append(gen_request.prompt)
+                scenes = _rc73_scenes_from_prompt(gen_request.prompt)
+                if not scenes:
+                    scenes = [(1, "00:00"), (2, "00:01")]
+                return SimpleNamespace(text=json.dumps(
+                    [_rc73_prompt(n, ts) for n, ts in scenes]
+                ))
+
+        operator = ImagePromptOperator(provider_manager=FakeProviderManager())
+        prompts = operator.generate_prompts(request, max_retries=0)
+        assert len(prompts) == 2
+        assert "Scene visual directions" in captured[0]
+        assert "Scene 1:" in captured[0] and "Scene 2:" in captured[0]
+
+    def test_batched_generation_keeps_all_invariants_with_directions(self):
+        """7+8+9: end-to-end smoke over multiple consecutive scenes — with the
+        direction section present, batching still yields exact scene
+        numbers/timestamps, valid JSON and no leading timestamps, and every
+        batch carries absolute-numbered directions."""
+        from operators.image_prompt.operator import ImagePromptOperator
+        from providers.models import GenerationResponse
+
+        request = self._request(20)
+        captured = []
+
+        class FakeProviderManager:
+            def generate(self, gen_request):
+                captured.append(gen_request.prompt)
+                scenes = _rc73_scenes_from_prompt(gen_request.prompt)
+                return SimpleNamespace(text=json.dumps(
+                    [_rc73_prompt(n, ts) for n, ts in scenes]
+                ))
+
+        operator = ImagePromptOperator(provider_manager=FakeProviderManager())
+        prompts = operator.generate_prompts(request, batch_size=10, max_retries=1)
+        assert len(prompts) == 20
+        assert [p["scene_number"] for p in prompts] == list(range(1, 21))
+        assert [p["timestamp"] for p in prompts] == [t["time"] for t in request.timestamps]
+        assert all(
+            not has_leading_timestamp_prefix(p["full_image_prompt"])
+            for p in prompts
+        )
+        assert "Scene visual directions" in captured[0]
+        assert "Scene 11:" in captured[1]
+        assert "scene 10 planned:" in captured[1]
+        assert "Return ONLY valid JSON" in captured[1]

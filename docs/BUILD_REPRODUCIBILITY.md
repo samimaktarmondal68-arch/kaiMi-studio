@@ -93,8 +93,12 @@ dist/
 ## Excluded Modules
 
 ```
-tkinter.test, unittest, test, distutils, setuptools, pip, pytest, _pytest
+tkinter.test, unittest, test, setuptools, pip, pytest, _pytest
 ```
+
+Note: `distutils` is intentionally not excluded — on Python 3.12+ it is
+only a setuptools shim, and PyInstaller's `hook-distutils` pre-safe-import
+hook aliases it; excluding it makes that hook abort the build.
 
 ## Reproducibility Notes
 

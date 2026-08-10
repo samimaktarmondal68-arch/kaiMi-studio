@@ -47,6 +47,30 @@ When consecutive scenes share a location or character, reuse the same natural
 continuity language from the previous prompt (same character description, same
 environment description) instead of introducing new phrasing.
 
+## Dynamic Scene Variety
+
+Every scene must feel like the NEXT SHOT of the same animated production: the
+KaiMi art style stays identical, but the visual storytelling changes.
+
+- Consecutive scenes must not repeat the same camera framing, camera angle,
+  character pose, environment composition, visual focus, action, or subject
+  placement. If consecutive scenes intentionally continue the same location
+  or character, keep the continuity language but change at least some
+  meaningful visual dimensions (composition, camera, action, focus, scale).
+- Prefer subtle motion-friendly language where it fits the narration: a
+  gentle camera push-in or pull-back, hair or clothing moving softly,
+  curtains moving in airflow, drifting clouds, floating particles, changing
+  light, the subject turning, looking, reaching, walking or reacting,
+  objects entering or leaving the frame, subtle foreground/background
+  parallax. Motion stays natural and subtle — never turn a calm scene into
+  an action scene.
+- The narration is the source of truth. Scene visual directions are
+  suggestions; never invent visuals that contradict the narration merely to
+  create variety.
+- Variety comes from visual storytelling (composition, camera, action,
+  focus), NEVER from changing the art style, rendering style, color
+  palette, line quality, brush style, or character design.
+
 ## Rules
 
 - One prompt per transcript scene. Never merge or split transcript scenes.

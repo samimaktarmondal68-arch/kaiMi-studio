@@ -26,7 +26,6 @@ Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
-PrivilegesRequiredOverridingOwnedFolder
 VersionInfoVersion={#MyAppVersion}.0
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription={#MyAppName} Setup
@@ -43,7 +42,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
-Name: "startmenuicon"; Description: "{cm:CreateProgramGroup}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checked
+Name: "startmenuicon"; Description: "Create a Start Menu shortcut"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
 Source: "dist\KaiMi Studio\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -56,13 +55,63 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
-[UninstallDelete]
-Type: filesandordirs; Name: "{app}"
-Type: filesandordirs; Name: "{localappdata}\KaiMi"
+; No blanket [UninstallDelete] of {app}: KaiMi Studio stores user-created
+; projects and exports under the app folder at runtime. The [Code] section
+; sweeps leftover app files on uninstall while preserving those directories.
 
 [Code]
 var
   InstallPercentLabel: TNewStaticText;
+
+// True for runtime-created directories that hold user data (projects and
+// per-project exports). They must survive uninstallation; the app's own
+// installed files are removed by the uninstaller automatically.
+function IsUserDataDir(const DirName: string): Boolean;
+begin
+  Result := (CompareText(DirName, 'projects') = 0)
+         or (CompareText(DirName, 'exports') = 0);
+end;
+
+// Recursively delete every file and folder below Path except directories
+// that hold user data ('projects' / 'exports' at any nesting level).
+procedure DeleteAppTreeExceptUserData(const Path: string);
+var
+  FindRec: TFindRec;
+  ChildPath: string;
+begin
+  if FindFirst(Path + '\*', FindRec) then
+  begin
+    try
+      repeat
+        if (FindRec.Name <> '.') and (FindRec.Name <> '..') then
+        begin
+          ChildPath := Path + '\' + FindRec.Name;
+          if (FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then
+          begin
+            if not IsUserDataDir(FindRec.Name) then
+            begin
+              DeleteAppTreeExceptUserData(ChildPath);
+              RemoveDir(ChildPath);
+            end;
+          end
+          else
+            DeleteFile(ChildPath);
+        end;
+      until not FindNext(FindRec);
+    finally
+      FindClose(FindRec);
+    end;
+  end;
+end;
+
+procedure CurUninstallStepChanged(CurStep: TUninstallStep);
+begin
+  // After the uninstaller has removed every installed file, sweep the
+  // runtime leftovers (logs, settings, cache) while preserving the
+  // user-created projects and exports directories.
+  if CurStep = usPostUninstall then
+    DeleteAppTreeExceptUserData(ExpandConstant('{app}'));
+end;
 
 function InitializeSetup(): Boolean;
 begin

@@ -34,6 +34,67 @@ _FORBIDDEN_LABELS = (
     "Visual Description:",
 )
 
+#: FIX H — deterministic scene-variation cycle. The plan cycles through six
+#: distinct visual beats (establishing, character action, close-up, concept
+#: metaphor, environment activity, character reaction) keyed by the ABSOLUTE
+#: scene number, so the same transcript always produces the same plan and
+#: consecutive scenes always receive different composition/camera/focus
+#: suggestions. The model is instructed to adapt each beat to the narration:
+#: the cycle prevents repetition, it never overrides content.
+SCENE_VARIATION_CYCLE = (
+    {
+        "composition": "wide establishing shot of the environment",
+        "camera": "gentle push-in toward the scene",
+        "focus": "the full environment and the location of the action",
+        "motion": "soft drifting particles in the air and slowly shifting light",
+    },
+    {
+        "composition": "medium shot on the main subject in action",
+        "camera": "slow lateral pan following the subject",
+        "focus": "the subject's movement and interaction with the environment",
+        "motion": "hair or clothing moving gently with the subject's motion",
+    },
+    {
+        "composition": "close-up detail shot",
+        "camera": "shallow push-in toward the detail",
+        "focus": "one meaningful detail such as the hands, the face or an object",
+        "motion": "the detail subtly moving while the background drifts past",
+    },
+    {
+        "composition": "visual concept or metaphor composition",
+        "camera": "slow pull-back revealing the concept in context",
+        "focus": "a symbolic visual that explains the narration idea",
+        "motion": "floating symbolic elements appearing, orbiting or flowing",
+    },
+    {
+        "composition": "environmental activity shot",
+        "camera": "low or high angle across the environment",
+        "focus": "the environment responding to the subject's presence",
+        "motion": (
+            "objects entering or leaving the frame, curtains, clouds or "
+            "leaves moving"
+        ),
+    },
+    {
+        "composition": "character reaction shot",
+        "camera": "over-the-shoulder or side-profile framing",
+        "focus": "the subject's facial reaction and body language",
+        "motion": "the subject turning, looking, reaching or reacting",
+    },
+)
+
+
+def scene_visual_direction(scene_number: int) -> dict:
+    """Return the deterministic FIX H visual-direction beat for a scene.
+
+    Keyed by the ABSOLUTE scene number so the plan is identical whether the
+    scene is generated in a single request or inside a batch (scene 11 always
+    plans the same beat either way). Adjacent scenes always receive different
+    beats, which is the anti-repetition backbone; the model adapts each beat
+    to the narration and never forces variety that contradicts the content.
+    """
+    return SCENE_VARIATION_CYCLE[(scene_number - 1) % len(SCENE_VARIATION_CYCLE)]
+
 
 class ImagePromptBuilder:
 
@@ -54,7 +115,8 @@ class ImagePromptBuilder:
         layer expects — the LLM is never trusted to invent or normalize
         timestamps or numbering. ``previous_prompts`` pins the project's
         locked visual direction for later batches so chunking never causes
-        style drift.
+        style drift, and the final anchor prompt doubles as FIX H
+        scene-to-scene memory so a batch never reopens with a duplicate shot.
 
         Returns:
             (system_prompt, user_prompt) ready for a single provider call.
@@ -72,7 +134,7 @@ class ImagePromptBuilder:
             topic=request.topic,
             language=request.language,
         )
-        system, user = self.build(batch_request)
+        system, user = self.build(batch_request, start_scene=start_scene)
 
         scene_count = len(timestamps)
         user += (
@@ -98,6 +160,16 @@ class ImagePromptBuilder:
             )
             for index, prompt_text in enumerate(previous_prompts, 1):
                 user += f"{index}. {prompt_text}\n"
+            # FIX H — scene-to-scene memory across the batch boundary: the
+            # final anchor prompt is the previous scene's actual composition,
+            # so the batch must not reopen with a duplicate shot.
+            user += (
+                "\nThe FINAL prompt above is the previous scene's actual "
+                "composition. Vary the first scenes of this batch against it "
+                "(different framing, camera angle, action and focus) unless the "
+                "narration demands the same shot — while keeping the style "
+                "identical.\n"
+            )
 
         return system, user
 
@@ -111,6 +183,44 @@ class ImagePromptBuilder:
             text = (segment.get("text") or "").strip()
             lines.append(f"Scene {scene_number} [{time_value}]: {text}")
         return lines
+
+    @staticmethod
+    def scene_direction_section(
+        timestamps: list[dict], start_scene: int = 1
+    ) -> str:
+        """Render per-scene FIX H visual-direction suggestions.
+
+        One line per scene, keyed by the scene's ABSOLUTE number so the plan
+        stays stable across regeneration and across batch boundaries. Every
+        line states the planned composition/camera/focus/motion beat plus the
+        beat planned for the previous scene, giving the model the lightweight
+        scene-to-scene memory it needs to avoid duplicate shots while keeping
+        the narration the source of truth.
+        """
+        lines = [
+            "Scene visual directions — suggested starting points for visual "
+            "variety; adapt each one to the narration, which is the source of "
+            "truth:"
+        ]
+        for offset in range(len(timestamps)):
+            scene_number = start_scene + offset
+            beat = scene_visual_direction(scene_number)
+            if scene_number == 1:
+                previous = "none — this is the opening shot"
+            else:
+                previous_beat = scene_visual_direction(scene_number - 1)
+                previous = (
+                    f"scene {scene_number - 1} planned: "
+                    f"{previous_beat['composition']} — choose a clearly "
+                    f"different composition, camera angle, action and focus"
+                )
+            lines.append(
+                f"Scene {scene_number}: {beat['composition']}, "
+                f"{beat['camera']}, visual focus on {beat['focus']}, "
+                f"subtle motion: {beat['motion']}. "
+                f"(previous: {previous}.)"
+            )
+        return "\n".join(lines) + "\n\n"
 
     @staticmethod
     def format_scene_time(segment: dict) -> str:
@@ -132,7 +242,9 @@ class ImagePromptBuilder:
         total = int(raw)
         return f"{total // 60:02d}:{total % 60:02d}"
 
-    def build(self, request: ImagePromptRequest) -> tuple[str, str]:
+    def build(
+        self, request: ImagePromptRequest, start_scene: int = 1
+    ) -> tuple[str, str]:
         system = load_all_system_prompts()
 
         script_text = self._normalize_text(request.script_text)
@@ -155,6 +267,7 @@ class ImagePromptBuilder:
             for t in request.timestamps:
                 ts_lines.append(f"{t.get('time', '')}: {t.get('text', '')}")
             user += f"Timestamps:\n" + "\n".join(ts_lines) + "\n\n"
+            user += self.scene_direction_section(request.timestamps, start_scene)
 
         user += (
             f"Generate one image prompt per transcript scene. "
@@ -193,6 +306,28 @@ class ImagePromptBuilder:
             f"scenes of the project.\n"
             f"- When consecutive scenes share a location or character, reuse the "
             f"same natural continuity language as the previous prompt.\n"
+            f"- Dynamic scene variety: consecutive scenes must NOT repeat the "
+            f"same camera framing, camera angle, character pose, environment "
+            f"composition, visual focus, action, or subject placement. If "
+            f"consecutive scenes intentionally continue the same location or "
+            f"character, keep the character and environment continuity language "
+            f"but change at least some meaningful visual dimensions "
+            f"(composition, camera, action, focus, scale).\n"
+            f"- The scene visual directions listed above are suggestions only: "
+            f"the narration is the source of truth. Never invent visuals that "
+            f"contradict the narration just to create variety.\n"
+            f"- Prefer subtle motion-friendly language where it fits the "
+            f"narration: a gentle camera push-in or pull-back, hair or clothing "
+            f"moving softly, curtains moving in airflow, drifting clouds, "
+            f"floating particles, changing light, the subject turning, looking, "
+            f"reaching, walking or reacting, objects entering or leaving the "
+            f"frame, subtle foreground/background parallax. Motion must stay "
+            f"natural and subtle — never turn a calm scene into an action "
+            f"scene.\n"
+            f"- Variety must come from visual storytelling (composition, "
+            f"camera, action, focus) — NEVER from changing the art style, "
+            f"rendering style, color palette, line quality, brush style or "
+            f"character design.\n"
             f"- The narration focus quote must be the exact narration from that "
             f"transcript scene, quoted verbatim.\n\n"
             f"Return ONLY valid JSON. No markdown, no explanation, no extra text."
