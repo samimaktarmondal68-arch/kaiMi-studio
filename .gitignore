@@ -60,3 +60,7 @@ docs/SECURITY_REMEDIATION.md
 docs/BUILD_EVALUATION.md
 docs/CODE_SIGNING.md
 docs/DEPENDENCY_AUDIT.md
+
+# Portable release build (distributed via GitHub Releases, not Git)
+release/KaiMi Studio v1.0.0 Aurora/KaiMi Studio.exe
+release/KaiMi Studio v1.0.0 Aurora/_internal/

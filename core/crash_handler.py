@@ -69,7 +69,7 @@ def _show_error_dialog(exc_type, exc_value, log_path: str) -> None:
         title = f"{APP_NAME} — Unexpected Error"
         message = (
             f"{APP_NAME} encountered an unexpected error.\n\n"
-            f"Error: {exc_type.__name__}: {exc_value}\n\n"
+            f"Error: {mask_secrets(f'{exc_type.__name__}: {exc_value}')}\n\n"
             f"A crash log has been saved to:\n{log_path}\n\n"
             f"Please restart the application.\n"
             f"If this problem persists, report the issue with the crash log "

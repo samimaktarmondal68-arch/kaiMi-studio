@@ -35,6 +35,15 @@ _DEFAULTS: dict = {
 }
 
 
+def default_settings_data() -> dict:
+    """Return a copy of the default application settings.
+
+    Contains no credentials — used to generate the settings.json shipped in
+    release builds.
+    """
+    return dict(_DEFAULTS)
+
+
 class AppSettings:
     _instance: Optional["AppSettings"] = None
 
@@ -47,7 +56,7 @@ class AppSettings:
         if getattr(self, "_loaded", False):
             return
         _SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
-        self._data: dict = dict(_DEFAULTS)
+        self._data: dict = default_settings_data()
         self._load()
         self._loaded = True
 

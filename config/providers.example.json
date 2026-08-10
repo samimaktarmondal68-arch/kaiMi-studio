@@ -1,0 +1,101 @@
+{
+    "active_provider": "gemini",
+    "providers": {
+        "gemini": {
+            "enabled": true,
+            "api_key": "",
+            "base_url": "",
+            "model": ""
+        },
+        "anthropic": {
+            "enabled": false,
+            "api_key": "",
+            "base_url": "https://api.anthropic.com",
+            "model": ""
+        },
+        "openai": {
+            "enabled": false,
+            "api_key": "",
+            "base_url": "https://api.openai.com/v1",
+            "model": ""
+        },
+        "openrouter": {
+            "enabled": false,
+            "api_key": "",
+            "base_url": "https://openrouter.ai/api/v1",
+            "model": ""
+        },
+        "opencode": {
+            "enabled": false,
+            "api_key": "",
+            "base_url": "https://opencode.ai/zen",
+            "model": ""
+        },
+        "groq": {
+            "enabled": false,
+            "api_key": "",
+            "base_url": "https://api.groq.com/openai/v1",
+            "model": ""
+        },
+        "deepseek": {
+            "enabled": false,
+            "api_key": "",
+            "base_url": "https://api.deepseek.com/v1",
+            "model": ""
+        },
+        "mistral": {
+            "enabled": false,
+            "api_key": "",
+            "base_url": "https://api.mistral.ai/v1",
+            "model": ""
+        },
+        "cohere": {
+            "enabled": false,
+            "api_key": "",
+            "base_url": "https://api.cohere.com",
+            "model": ""
+        },
+        "xai": {
+            "enabled": false,
+            "api_key": "",
+            "base_url": "https://api.x.ai/v1",
+            "model": ""
+        },
+        "ollama": {
+            "enabled": false,
+            "api_key": "",
+            "base_url": "http://localhost:11434/v1",
+            "model": ""
+        },
+        "lmstudio": {
+            "enabled": false,
+            "api_key": "",
+            "base_url": "http://localhost:1234/v1",
+            "model": ""
+        },
+        "localai": {
+            "enabled": false,
+            "api_key": "",
+            "base_url": "http://localhost:8080/v1",
+            "model": ""
+        },
+        "vllm": {
+            "enabled": false,
+            "api_key": "",
+            "base_url": "http://localhost:8000/v1",
+            "model": ""
+        },
+        "llamacpp": {
+            "enabled": false,
+            "api_key": "",
+            "base_url": "http://localhost:8080/v1",
+            "model": ""
+        },
+        "textgenwebui": {
+            "enabled": false,
+            "api_key": "",
+            "base_url": "http://localhost:5000/v1",
+            "model": ""
+        }
+    }
+}

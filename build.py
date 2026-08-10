@@ -12,6 +12,7 @@ Usage:
 """
 
 import compileall
+import json
 import os
 import re
 import shutil
@@ -66,6 +67,41 @@ def write_branding_icon():
     ensure_installer_wizard_images()
 
 
+def _write_release_config(build_dir: Path | None = None) -> Path:
+    """Stage a credential-free release ``config/`` directory for the bundle.
+
+    The packaged application must never inherit a developer's personal API
+    keys. ``providers.json`` is generated from the credential-free defaults
+    and ``settings.json`` from the default app settings; the live ``config/``
+    directory on the developer's machine is never packaged.
+
+    Args:
+        build_dir: Directory that receives ``release_config/`` (defaults to
+            the project ``build/`` directory).
+
+    Returns:
+        Path to the staged release config directory.
+    """
+    from core.settings import default_settings_data
+    from providers.provider_manager import default_provider_configuration
+
+    staging = (build_dir or BUILD) / "release_config"
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True, exist_ok=True)
+
+    (staging / "providers.json").write_text(
+        json.dumps(default_provider_configuration(), indent=4),
+        encoding="utf-8",
+    )
+    (staging / "settings.json").write_text(
+        json.dumps(default_settings_data(), indent=4),
+        encoding="utf-8",
+    )
+    print(f"Credential-free release config staged at: {staging}")
+    return staging
+
+
 def clean():
     """Remove previous build artifacts."""
     for d in [DIST, BUILD]:
@@ -94,6 +130,14 @@ def build(onefile: bool = False):
 
     write_release_metadata()
     write_branding_icon()
+    release_config = _write_release_config()
+
+    # Remove a stale generated spec so the build always regenerates with the
+    # current datas. An old build/<APP_NAME>.spec (e.g. one that packaged the
+    # live config/) would otherwise be silently reused by PyInstaller.
+    stale_spec = BUILD / f"{APP_NAME}.spec"
+    if stale_spec.exists():
+        stale_spec.unlink()
 
     cmd = [
         sys.executable, "-m", "PyInstaller",
@@ -113,7 +157,9 @@ def build(onefile: bool = False):
         # (--specpath) and PyInstaller resolves relative data sources against
         # the spec's own directory.
         "--add-data", f"{ROOT / 'resources'}{os.pathsep}resources",
-        "--add-data", f"{ROOT / 'config'}{os.pathsep}config",
+        # Only the credential-free staged config is packaged; the developer's
+        # live config/providers.json never reaches dist/.
+        "--add-data", f"{release_config}{os.pathsep}config",
         "--strip",
         "--exclude-module", "tkinter.test",
         "--exclude-module", "unittest",

@@ -24,22 +24,51 @@ from typing import Optional
 
 _SECRET_PATTERNS = [
     re.compile(r'(api[_-]?key|token|secret|password|credential)\s*[=:]\s*["\']?([^\s"\']{8})[^\s"\']*', re.IGNORECASE),
-    re.compile(r'(sk-[a-zA-Z0-9]{4})[a-zA-Z0-9]+', re.IGNORECASE),
+    re.compile(r'(sk-[a-zA-Z0-9]{4})[a-zA-Z0-9_-]+', re.IGNORECASE),
     re.compile(r'(AQ\.[a-zA-Z0-9]{4})[a-zA-Z0-9]+'),
 ]
+
+# Authorization-style headers: "Authorization: Bearer <secret>",
+# "authorization: <secret>", "x-api-key: <secret>".
+_HEADER_PATTERN = re.compile(
+    r'((?:authorization|x-api-key)\s*[=:]\s*(?:bearer\s+)?)[^\s"\',;]{8,}',
+    re.IGNORECASE,
+)
 
 _MASK = "********************************"
 
 
 def mask_secrets(text: str) -> str:
-    """Mask sensitive values (API keys, tokens) in log output."""
-    masked = text
+    """Mask sensitive values (API keys, tokens, auth headers) in output."""
+    masked = str(text)
+    masked = _HEADER_PATTERN.sub(lambda m: m.group(1) + _MASK, masked)
     for pattern in _SECRET_PATTERNS:
         masked = pattern.sub(
             lambda m: m.group(1) + "=" + _MASK if "=" in m.group(0) or ":" in m.group(0) else m.group(1) + _MASK,
             masked,
         )
     return masked
+
+
+class SecretMaskingFormatter(logging.Formatter):
+    """Formatter that masks credentials in every log line and traceback.
+
+    Attached to every handler so records from ANY logger — including the
+    provider modules that log directly through the standard ``logging``
+    package — are sanitized before they are written.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        try:
+            rendered = record.getMessage()
+            record.msg = mask_secrets(rendered)
+            record.args = ()
+        except Exception:
+            pass
+        return super().format(record)
+
+    def formatException(self, exc_info) -> str:
+        return mask_secrets(super().formatException(exc_info))
 
 
 class AppLogger:
@@ -68,7 +97,7 @@ class AppLogger:
         self.logger.propagate = False
 
         if not self.logger.handlers:
-            formatter = logging.Formatter(
+            formatter = SecretMaskingFormatter(
                 "%(asctime)s | %(levelname)-8s | %(name)-20s | %(message)s",
                 datefmt="%Y-%m-%d %H:%M:%S",
             )

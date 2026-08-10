@@ -20,11 +20,40 @@ from core.version import APP_NAME
 #: Directory that contains this spec file (provided by PyInstaller).
 ROOT = Path(SPECPATH)
 
+
+def _stage_release_config():
+    """Stage a credential-free release config/ for the bundle.
+
+    The packaged app must never inherit a developer's personal API keys.
+    ``providers.json`` is generated from the credential-free defaults and
+    ``settings.json`` from the default app settings. The live config/ on the
+    developer's machine is never packaged.
+    """
+    import json as _json
+
+    from core.settings import default_settings_data
+    from providers.provider_manager import default_provider_configuration
+
+    staging = ROOT / "build" / "release_config"
+    staging.mkdir(parents=True, exist_ok=True)
+    (staging / "providers.json").write_text(
+        _json.dumps(default_provider_configuration(), indent=4),
+        encoding="utf-8",
+    )
+    (staging / "settings.json").write_text(
+        _json.dumps(default_settings_data(), indent=4),
+        encoding="utf-8",
+    )
+    return staging
+
+
+_RELEASE_CONFIG = _stage_release_config()
+
 a = Analysis(
     ['main.py'],
     pathex=[str(ROOT)],
     binaries=[],
-    datas=[('resources', 'resources'), ('config', 'config')],
+    datas=[('resources', 'resources'), (str(_RELEASE_CONFIG), 'config')],
     hiddenimports=[
         'core.theme',
         'core.version',

@@ -13,9 +13,13 @@ No operator should ever know which concrete provider is active.
 from __future__ import annotations
 
 import base64
+import ctypes
+import ctypes.wintypes
 import hashlib
 import json
 import logging
+import os
+import sys
 import uuid
 from pathlib import Path
 
@@ -42,23 +46,117 @@ logger = logging.getLogger("kaimi_studio.providers.manager")
 # prefix are treated as legacy plaintext and still work.
 _ENCRYPTED_KEY_PREFIX = "enc:v1:"
 
+# Marker prefix for API keys protected with Windows DPAPI (CryptProtectData).
+# Newly saved keys use this scheme; it is user+machine scoped and decrypts only
+# on the same Windows account that encrypted it.
+_DPAPI_KEY_PREFIX = "dpapi:v1:"
+
+
+class _DATA_BLOB(ctypes.Structure):
+    """Win32 DATA_BLOB used by CryptProtectData / CryptUnprotectData."""
+
+    _fields_ = [
+        ("cbData", ctypes.wintypes.DWORD),
+        ("pbData", ctypes.POINTER(ctypes.c_char)),
+    ]
+
+
+_crypt32_configured = False
+
+
+def _dpapi_available() -> bool:
+    """Return True when Windows DPAPI can be used, configuring it on first use."""
+    global _crypt32_configured
+    try:
+        crypt32 = ctypes.windll.crypt32
+        if not _crypt32_configured:
+            crypt32.CryptProtectData.argtypes = [
+                ctypes.POINTER(_DATA_BLOB), ctypes.c_wchar_p, ctypes.POINTER(_DATA_BLOB),
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.wintypes.DWORD,
+                ctypes.POINTER(_DATA_BLOB),
+            ]
+            crypt32.CryptProtectData.restype = ctypes.wintypes.BOOL
+            crypt32.CryptUnprotectData.argtypes = [
+                ctypes.POINTER(_DATA_BLOB), ctypes.POINTER(ctypes.c_wchar_p),
+                ctypes.POINTER(_DATA_BLOB), ctypes.c_void_p, ctypes.c_void_p,
+                ctypes.wintypes.DWORD, ctypes.POINTER(_DATA_BLOB),
+            ]
+            crypt32.CryptUnprotectData.restype = ctypes.wintypes.BOOL
+            ctypes.windll.kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+            ctypes.windll.kernel32.LocalFree.restype = ctypes.c_void_p
+            _crypt32_configured = True
+        return True
+    except (AttributeError, OSError):
+        return False
+
+
+def _dpapi_protect(plaintext: str) -> str | None:
+    """Protect a value with Windows DPAPI, scoped to the current user + machine."""
+    if not _dpapi_available():
+        return None
+    data = plaintext.encode("utf-8")
+    buffer = ctypes.create_string_buffer(data, len(data))
+    in_blob = _DATA_BLOB(len(data), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_char)))
+    out_blob = _DATA_BLOB()
+    crypt32 = ctypes.windll.crypt32
+    if not crypt32.CryptProtectData(
+        ctypes.byref(in_blob), "kaimi", None, None, None, 0, ctypes.byref(out_blob)
+    ):
+        return None
+    try:
+        raw = ctypes.string_at(out_blob.pbData, out_blob.cbData)
+        return _DPAPI_KEY_PREFIX + base64.urlsafe_b64encode(raw).decode("ascii")
+    finally:
+        ctypes.windll.kernel32.LocalFree(out_blob.pbData)
+
+
+def _dpapi_unprotect(stored: str) -> str | None:
+    """Unprotect a ``dpapi:v1:`` value with Windows DPAPI."""
+    if not _dpapi_available():
+        return None
+    try:
+        encoded = base64.urlsafe_b64decode(stored[len(_DPAPI_KEY_PREFIX):].encode("ascii"))
+    except (ValueError, TypeError):
+        return None
+    buffer = ctypes.create_string_buffer(encoded, len(encoded))
+    in_blob = _DATA_BLOB(len(encoded), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_char)))
+    out_blob = _DATA_BLOB()
+    crypt32 = ctypes.windll.crypt32
+    if not crypt32.CryptUnprotectData(
+        ctypes.byref(in_blob), None, None, None, None, 0, ctypes.byref(out_blob)
+    ):
+        return None
+    try:
+        raw = ctypes.string_at(out_blob.pbData, out_blob.cbData)
+        return raw.decode("utf-8")
+    finally:
+        ctypes.windll.kernel32.LocalFree(out_blob.pbData)
+
 
 def _machine_key() -> bytes:
     """Derive an obfuscation key from a machine identifier.
 
-    API keys are XOR-encoded with a key derived from the machine's node ID
-    (MAC address). The stored value is not readable as plaintext and can only
-    be decoded on the same machine. This protects keys at rest in
-    config/providers.json without requiring an OS keyring or extra deps.
+    Fallback obfuscation for platforms without Windows DPAPI. API keys are
+    XOR-encoded with a key derived from the machine's node ID (MAC address).
+    The stored value is not readable as plaintext and can only be decoded on
+    the same machine.
     """
     return hashlib.sha256(f"kaimi:{uuid.getnode()}".encode("utf-8")).digest()
 
 
 def _encrypt_api_key(plaintext: str) -> str:
-    """Obfuscate an API key before it is written to providers.json."""
+    """Protect an API key before it is written to providers.json.
+
+    Uses Windows DPAPI (CryptProtectData) when available — the protected blob
+    is scoped to the current user and machine. On non-Windows platforms it
+    falls back to the legacy machine-scoped XOR obfuscation.
+    """
     plaintext = (plaintext or "").strip()
     if not plaintext:
         return ""
+    protected = _dpapi_protect(plaintext)
+    if protected is not None:
+        return protected
     data = plaintext.encode("utf-8")
     key = _machine_key()
     encoded = bytes(value ^ key[index % len(key)] for index, value in enumerate(data))
@@ -66,10 +164,16 @@ def _encrypt_api_key(plaintext: str) -> str:
 
 
 def _decrypt_api_key(stored: str) -> str:
-    """Return the plaintext API key from a stored (possibly encoded) value."""
+    """Return the plaintext API key from a stored (possibly protected) value.
+
+    Supports, in order: DPAPI-protected values (``dpapi:v1:``), the legacy
+    machine-scoped XOR values (``enc:v1:``), and legacy plaintext values.
+    """
     stored = (stored or "").strip()
     if not stored:
         return ""
+    if stored.startswith(_DPAPI_KEY_PREFIX):
+        return _dpapi_unprotect(stored) or ""
     if not stored.startswith(_ENCRYPTED_KEY_PREFIX):
         return stored  # legacy plaintext value
     try:
@@ -77,7 +181,22 @@ def _decrypt_api_key(stored: str) -> str:
         key = _machine_key()
         return bytes(value ^ key[index % len(key)] for index, value in enumerate(encoded)).decode("utf-8")
     except Exception:
-        return stored
+        return ""
+
+
+def _env_api_key(provider_name: str) -> str:
+    """Return an API key supplied via environment variables.
+
+    Environment keys are an advanced/development mechanism and are never
+    written into providers.json or any release artifact. Lookup order is
+    ``KAIMI_<PROVIDER>_API_KEY`` then ``<PROVIDER>_API_KEY`` (e.g.
+    ``KAIMI_GEMINI_API_KEY`` or ``GEMINI_API_KEY``).
+    """
+    name = provider_name.strip().lower()
+    value = os.getenv(f"KAIMI_{name.upper()}_API_KEY", "").strip()
+    if not value:
+        value = os.getenv(f"{name.upper()}_API_KEY", "").strip()
+    return value
 
 # Provider metadata: display name, default base URL, whether API key is required
 PROVIDER_METADATA: dict[str, dict] = {
@@ -180,6 +299,26 @@ PROVIDER_METADATA: dict[str, dict] = {
 }
 
 
+def default_provider_configuration() -> dict:
+    """Return the credential-free default provider configuration.
+
+    Every ``api_key`` is empty. This is the exact configuration shipped in
+    release builds — credentials are never embedded in packaged configuration.
+    """
+    providers = {}
+    for name, meta in PROVIDER_METADATA.items():
+        providers[name] = {
+            "enabled": name == "gemini",
+            "api_key": "",
+            "base_url": meta["base_url"],
+            "model": "",
+        }
+    return {
+        "active_provider": "gemini",
+        "providers": providers,
+    }
+
+
 class ProviderManager:
     """Manages AI provider lifecycle, configuration, and generation.
 
@@ -276,18 +415,7 @@ class ProviderManager:
     # ── Configuration ────────────────────────────────────────────────
 
     def _default_configuration(self) -> dict:
-        providers = {}
-        for name, meta in PROVIDER_METADATA.items():
-            providers[name] = {
-                "enabled": name == "gemini",
-                "api_key": "",
-                "base_url": meta["base_url"],
-                "model": "",
-            }
-        return {
-            "active_provider": "gemini",
-            "providers": providers,
-        }
+        return default_provider_configuration()
 
     def _load_configuration(self) -> dict:
         if not self._config_path.exists():
@@ -337,12 +465,13 @@ class ProviderManager:
     def get_provider_api_key(self, provider_name: str | None = None) -> str:
         """Return the plaintext API key for a provider.
 
-        Stored keys are obfuscated at rest; this method decodes them before
-        returning so callers always receive a usable value.
+        Stored keys are protected at rest; this method decodes them before
+        returning so callers always receive a usable value. When no key is
+        stored, an environment variable key (advanced/development) is used.
         """
         target = provider_name.strip().lower() if provider_name else self.get_active_provider_name()
         cfg = self._config.get("providers", {}).get(target, {})
-        return _decrypt_api_key(cfg.get("api_key", ""))
+        return _decrypt_api_key(cfg.get("api_key", "")) or _env_api_key(target)
 
     def get_provider_base_url(self, provider_name: str | None = None) -> str:
         """Return the configured base URL for a provider."""
@@ -429,7 +558,7 @@ class ProviderManager:
         raw = self._config.get("providers", {}).get(name, {})
         return ProviderConfig(
             name=name,
-            api_key=_decrypt_api_key(raw.get("api_key", "")),
+            api_key=_decrypt_api_key(raw.get("api_key", "")) or _env_api_key(name),
             base_url=raw.get("base_url", ""),
             model=raw.get("model", ""),
             enabled=raw.get("enabled", False),
@@ -461,10 +590,13 @@ class ProviderManager:
     # ── Validation & capabilities ────────────────────────────────────
 
     def validate_provider_configuration(self, provider_name: str | None = None) -> bool:
-        """Check if a provider has a valid API key configured."""
+        """Check if a provider has a valid API key configured.
+
+        A stored key or an environment-variable key counts as configured.
+        """
         target = provider_name.strip().lower() if provider_name else self.get_active_provider_name()
         raw = self._config.get("providers", {}).get(target, {})
-        api_key = _decrypt_api_key(raw.get("api_key", "")).strip()
+        api_key = (_decrypt_api_key(raw.get("api_key", "")) or _env_api_key(target)).strip()
         return bool(api_key)
 
     def get_provider_capabilities(self, provider_name: str | None = None) -> ProviderCapabilities:
@@ -741,7 +873,8 @@ class ProviderManager:
 
         meta = self.get_provider_metadata(name)
         if meta.get("requires_key", True):
-            return bool(_decrypt_api_key(cfg.get("api_key", "")).strip())
+            stored = _decrypt_api_key(cfg.get("api_key", ""))
+            return bool((stored or _env_api_key(name)).strip())
 
         return True
 

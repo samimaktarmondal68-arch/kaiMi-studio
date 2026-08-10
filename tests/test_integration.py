@@ -62,6 +62,22 @@ def es(pm):
     return ExportService(pm)
 
 
+@pytest.fixture(autouse=True)
+def _no_provider_env_keys(monkeypatch):
+    """Keep provider-credential environment variables out of every test.
+
+    BYOK env-var support (``KAIMI_*_API_KEY`` / ``*_API_KEY``) must never let
+    a test accidentally pick up ambient developer credentials.
+    """
+    for name in (
+        "GEMINI", "OPENAI", "OPENROUTER", "OPENCODE", "ANTHROPIC", "COHERE",
+        "GROQ", "DEEPSEEK", "MISTRAL", "XAI", "OLLAMA", "LMSTUDIO",
+        "LOCALAI", "VLLM", "LLAMACPP", "TEXTGENWEBUI",
+    ):
+        monkeypatch.delenv(f"{name}_API_KEY", raising=False)
+        monkeypatch.delenv(f"KAIMI_{name}_API_KEY", raising=False)
+
+
 def _proj_path(pm, name):
     """Get the projects dir from a ProjectManager fixture."""
     return pm.PROJECTS_DIR / name
@@ -752,6 +768,171 @@ class TestProviderPreflight:
         assert "set_active_provider" not in changed_src
         save_src = inspect.getsource(SettingsPage._save_provider)
         assert "set_active_provider" in save_src
+
+
+# =====================================================================
+# PHASE 7D — BYOK / Release Credential Security (RC-8 security fix)
+# =====================================================================
+
+class TestByokSecurity:
+    """Bring-Your-Own-Key release security regression tests.
+
+    The released application must be credential-free: every provider is
+    configured by the user, no developer credential is ever embedded, and
+    secrets never reach projects, logs, or release artifacts.
+    """
+
+    SYNTHETIC = "TEST_API_KEY_NOT_REAL"
+
+    # ── 1. Release provider configuration contains no credentials ─────
+    def test_default_release_config_is_credential_free(self):
+        from providers.provider_manager import default_provider_configuration
+        cfg = default_provider_configuration()
+        assert cfg["providers"]
+        for name, pcfg in cfg["providers"].items():
+            assert str(pcfg.get("api_key", "")).strip() == "", f"{name} ships a key"
+
+    def test_example_config_is_credential_free(self):
+        example = Path("config/providers.example.json")
+        if not example.exists():
+            pytest.skip("example config not present")
+        data = json.loads(example.read_text(encoding="utf-8"))
+        for name, pcfg in data.get("providers", {}).items():
+            assert not str(pcfg.get("api_key", "")).strip(), f"{name} has a key in example"
+
+    # ── 2. Build configuration contains no credentials ────────────────
+    def test_build_staged_release_config_is_credential_free(self, tmp_path):
+        import build
+        staging = build._write_release_config(tmp_path / "build")
+        providers = json.loads((staging / "providers.json").read_text(encoding="utf-8"))
+        for name, pcfg in providers.get("providers", {}).items():
+            assert not str(pcfg.get("api_key", "")).strip(), f"{name} ships a key via build"
+        settings = json.loads((staging / "settings.json").read_text(encoding="utf-8"))
+        assert "api_key" not in str(settings).lower()
+        assert "secret" not in str(settings).lower()
+
+    # ── 3. No real API key exists in release resources ────────────────
+    def test_no_real_key_in_release_resources(self):
+        candidates = [
+            Path("config/providers.json"),
+            Path("config/providers.example.json"),
+            Path("release/KaiMi Studio v1.0.0 Aurora/_internal/config/providers.json"),
+        ]
+        scanned = 0
+        for path in candidates:
+            if not path.exists():
+                continue
+            scanned += 1
+            text = path.read_text(encoding="utf-8", errors="replace")
+            for needle in ("AIza", "sk-", "enc:v1:", "dpapi:v1:", self.SYNTHETIC):
+                assert needle not in text, f"{needle} found in {path}"
+        if scanned == 0:
+            pytest.skip("no release resources present on disk")
+
+    # ── 4. Provider with no key → safe 'configuration required' state ─
+    def test_missing_key_enters_configuration_required_state(self, tmp_path):
+        from providers.provider_manager import ProviderManager
+        pm = ProviderManager(config_path=tmp_path / "providers.json")
+        pm.set_active_provider("openai")
+        pm.set_provider_model("openai", "gpt-4o")
+        assert not pm.validate_provider_configuration("openai")
+        ok, msg = pm.preflight_check()
+        assert ok is False
+        assert "API key" in msg
+        ok2, msg2 = pm.test_provider_connection("openai")
+        assert ok2 is False
+        assert "API key" in msg2
+
+    # ── 5. User key configured through the settings save flow ─────────
+    def test_user_key_configured_through_settings_save(self, tmp_path):
+        from providers.provider_manager import ProviderManager
+        pm = ProviderManager(config_path=tmp_path / "providers.json")
+        pm.save_provider_config("gemini", api_key=self.SYNTHETIC, model="gemini-2.0-flash")
+        raw = (tmp_path / "providers.json").read_text(encoding="utf-8")
+        assert self.SYNTHETIC not in raw, "plaintext key leaked into providers.json"
+        reloaded = ProviderManager(config_path=tmp_path / "providers.json")
+        assert reloaded.get_provider_api_key("gemini") == self.SYNTHETIC
+        assert reloaded.validate_provider_configuration("gemini")
+
+    # ── 6. Configured key is used for the provider request ────────────
+    def test_configured_key_reaches_provider_request(self, tmp_path):
+        from providers.provider_manager import ProviderManager
+        pm = ProviderManager(config_path=tmp_path / "providers.json")
+        pm.save_provider_config("anthropic", api_key=self.SYNTHETIC, model="claude-x")
+        pm.save_provider_config("cohere", api_key=self.SYNTHETIC, model="command-r")
+        anthropic = pm._get_provider("anthropic")
+        cohere = pm._get_provider("cohere")
+        assert anthropic._get_headers()["x-api-key"] == self.SYNTHETIC
+        assert cohere._get_headers()["Authorization"] == f"Bearer {self.SYNTHETIC}"
+        assert pm._build_provider_config("anthropic").api_key == self.SYNTHETIC
+
+    # ── 7 & 10. Key never written into project files (portable) ───────
+    def test_project_files_never_contain_credentials(self, pm):
+        name = _create_sample_project(pm)
+        _fill_script(pm, name)
+        _fill_image_prompts(pm, name)
+        found = []
+        for f in pm.PROJECTS_DIR.rglob("*"):
+            if f.is_file():
+                text = f.read_text(encoding="utf-8", errors="ignore")
+                if self.SYNTHETIC in text or "api_key" in text.lower():
+                    found.append(str(f))
+        assert found == []
+
+    # ── 8. Configured key is not emitted into logs ────────────────────
+    def test_api_key_not_emitted_to_logs(self, tmp_path):
+        import io
+        import logging
+        from core.logger import SecretMaskingFormatter
+        logger = logging.getLogger("kaimi_studio.providers.byok_test")
+        logger.setLevel(logging.DEBUG)
+        logger.propagate = False
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(SecretMaskingFormatter("%(message)s"))
+        logger.addHandler(handler)
+        try:
+            logger.info("api_key=%s", self.SYNTHETIC)
+            logger.error("Authorization: Bearer %s", self.SYNTHETIC)
+        finally:
+            logger.removeHandler(handler)
+        out = stream.getvalue()
+        assert self.SYNTHETIC not in out
+        assert "*" in out
+
+    # ── 9. Authorization headers are redacted by logging ──────────────
+    def test_authorization_headers_redacted(self):
+        from core.logger import mask_secrets
+        samples = [
+            f"Authorization: Bearer {self.SYNTHETIC}",
+            f"authorization: {self.SYNTHETIC}",
+            f"x-api-key: {self.SYNTHETIC}",
+            f"api_key={self.SYNTHETIC}",
+            f"api-key: {self.SYNTHETIC}",
+            f"sk-{self.SYNTHETIC}",
+            f"secret={self.SYNTHETIC}",
+        ]
+        for sample in samples:
+            masked = mask_secrets(sample)
+            assert self.SYNTHETIC not in masked, sample
+            assert "*" in masked
+
+    # ── Environment variables: advanced/development mechanism only ────
+    def test_env_key_used_but_never_persisted(self, tmp_path, monkeypatch):
+        from providers.provider_manager import ProviderManager
+        monkeypatch.setenv("KAIMI_OPENAI_API_KEY", self.SYNTHETIC)
+        pm = ProviderManager(config_path=tmp_path / "providers.json")
+        assert pm.get_provider_api_key("openai") == self.SYNTHETIC
+        assert pm.validate_provider_configuration("openai")
+        cfg_path = tmp_path / "providers.json"
+        if cfg_path.exists():
+            assert self.SYNTHETIC not in cfg_path.read_text(encoding="utf-8")
+
+    def test_gemini_api_key_env_var_supported(self, tmp_path, monkeypatch):
+        from providers.provider_manager import ProviderManager
+        monkeypatch.setenv("GEMINI_API_KEY", self.SYNTHETIC)
+        pm = ProviderManager(config_path=tmp_path / "providers.json")
+        assert pm.get_provider_api_key("gemini") == self.SYNTHETIC
 
 
 class TestScriptGenerationPolish:
