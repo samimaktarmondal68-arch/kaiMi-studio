@@ -152,5 +152,5 @@ permission from KaiMi.
 
 ## Support
 
-- **Issues**: https://github.com/kaimi-studio/kaimi-studio/issues
+- **Issues**:https://github.com/samimaktarmondal68-arch/kaiMi-studio
 - **Documentation**: See `docs/` folder
